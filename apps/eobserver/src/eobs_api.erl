@@ -1,11 +1,12 @@
 %% @doc Request and subscription handlers behind the WebSocket protocol.
 %%
-%% request/2 serves one-shot requests; collect/2 produces the data for a
-%% subscription topic and is called on every tick. Both run in a worker
-%% process spawned by eobs_ws and return {ok, Result} | {error, Reason}.
+%% request/2 serves one-shot requests; collect/3 produces the data for a
+%% subscription topic and is called on every tick with the state the
+%% previous tick returned (undefined on the first). Both run in a worker
+%% process spawned by eobs_ws.
 -module(eobs_api).
 
--export([request/2, collect/2]).
+-export([request/2, collect/2, collect/3]).
 
 -define(TIMEOUT, 10000).
 
@@ -28,6 +29,19 @@ request(<<"node.summary">>, Params) ->
 request(Method, _Params) ->
     {error, {unknown_method, Method}}.
 
+-spec collect(binary(), map(), term()) -> {ok, term(), term()} | {error, term()}.
+collect(<<"node.load">>, #{<<"node">> := Node}, Prev) ->
+    case eobs_node:call(to_node(Node), load_sample, [node()], ?TIMEOUT) of
+        {ok, Sample} -> {ok, eobs_load:rates(Prev, Sample), Sample};
+        Error -> Error
+    end;
+collect(Topic, Params, State) ->
+    case collect(Topic, Params) of
+        {ok, Data} -> {ok, Data, State};
+        Error -> Error
+    end.
+
+%% Stateless topics.
 collect(<<"node.summary">>, #{<<"node">> := Node}) ->
     eobs_node:call(to_node(Node), node_summary, [], ?TIMEOUT);
 collect(Topic, _Params) ->

@@ -9,6 +9,7 @@ import { client } from '../api/ws'
 import type { ProcessDetail } from '../api/types'
 import { formatBytes, formatNumber } from '../api/format'
 import { useSettings } from '../stores/settings'
+import Term from './Term.vue'
 
 const props = defineProps<{ node: string; pid: string | null }>()
 const emit = defineEmits<{ 'update:pid': [string | null]; killed: [] }>()
@@ -136,16 +137,16 @@ const bytes = (words: number) => formatBytes(words * (detail.value?.word_size ??
       <NTabs v-else-if="detail" type="line" animated>
         <NTabPane name="overview" tab="概览">
           <NDescriptions :column="2" label-placement="left" size="small" bordered>
-            <NDescriptionsItem label="初始调用"><span class="mono">{{ detail.initial_call }}</span></NDescriptionsItem>
-            <NDescriptionsItem label="当前函数"><span class="mono">{{ detail.current_function }}</span></NDescriptionsItem>
-            <NDescriptionsItem label="Reductions">{{ formatNumber(detail.reductions) }}</NDescriptionsItem>
-            <NDescriptionsItem label="消息队列">{{ formatNumber(detail.message_queue_len) }}</NDescriptionsItem>
-            <NDescriptionsItem label="内存">{{ formatBytes(detail.memory) }}</NDescriptionsItem>
-            <NDescriptionsItem label="堆 / 总堆">{{ bytes(detail.heap_size) }} / {{ bytes(detail.total_heap_size) }}</NDescriptionsItem>
-            <NDescriptionsItem label="栈">{{ bytes(detail.stack_size) }}</NDescriptionsItem>
-            <NDescriptionsItem label="优先级">{{ detail.priority }}</NDescriptionsItem>
-            <NDescriptionsItem label="trap_exit">{{ detail.trap_exit ? '是' : '否' }}</NDescriptionsItem>
-            <NDescriptionsItem label="Group leader">
+            <NDescriptionsItem><template #label><Term label="初始调用" /></template><span class="mono">{{ detail.initial_call }}</span></NDescriptionsItem>
+            <NDescriptionsItem><template #label><Term label="当前函数" /></template><span class="mono">{{ detail.current_function }}</span></NDescriptionsItem>
+            <NDescriptionsItem><template #label><Term label="Reductions" /></template>{{ formatNumber(detail.reductions) }}</NDescriptionsItem>
+            <NDescriptionsItem><template #label><Term label="消息队列" /></template>{{ formatNumber(detail.message_queue_len) }}</NDescriptionsItem>
+            <NDescriptionsItem><template #label><Term label="内存" /></template>{{ formatBytes(detail.memory) }}</NDescriptionsItem>
+            <NDescriptionsItem><template #label><Term label="堆 / 总堆" /></template>{{ bytes(detail.heap_size) }} / {{ bytes(detail.total_heap_size) }}</NDescriptionsItem>
+            <NDescriptionsItem><template #label><Term label="栈" /></template>{{ bytes(detail.stack_size) }}</NDescriptionsItem>
+            <NDescriptionsItem><template #label><Term label="优先级" /></template>{{ detail.priority }}</NDescriptionsItem>
+            <NDescriptionsItem><template #label><Term label="trap_exit" /></template>{{ detail.trap_exit ? '是' : '否' }}</NDescriptionsItem>
+            <NDescriptionsItem><template #label><Term label="Group leader" /></template>
               <a class="mono link" @click="open(detail.group_leader)">{{ detail.group_leader }}</a>
             </NDescriptionsItem>
           </NDescriptions>
@@ -154,7 +155,7 @@ const bytes = (words: number) => formatBytes(words * (detail.value?.word_size ??
             { title: 'Monitors', items: detail.monitors },
             { title: 'Monitored by', items: detail.monitored_by },
           ]" :key="g.title" class="group">
-            <div class="group-title">{{ g.title }} <span class="count">{{ g.items.length }}</span></div>
+            <div class="group-title"><Term :label="g.title" /> <span class="count">{{ g.items.length }}</span></div>
             <NSpace v-if="g.items.length" :size="6">
               <NTag v-for="r in g.items" :key="r" size="small" class="mono"
                     :class="{ clickable: r.startsWith('<') }" @click="open(r)">{{ r }}</NTag>

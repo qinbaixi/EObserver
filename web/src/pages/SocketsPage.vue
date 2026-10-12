@@ -10,6 +10,7 @@ import PageHeader from '../components/PageHeader.vue'
 import NodeGuard from '../components/NodeGuard.vue'
 import PortDrawer from '../components/PortDrawer.vue'
 import ProcessDrawer from '../components/ProcessDrawer.vue'
+import { term } from '../api/term'
 
 const nodes = useNodes()
 const node = computed(() =>
@@ -48,7 +49,7 @@ const inetColumns: DataTableColumns<InetRow> = [
   { key: 'local', title: '本地地址', minWidth: 170, render: (r) => h('span', { class: 'mono' }, r.local ?? '-') },
   { key: 'remote', title: '远端地址', minWidth: 170,
     render: (r) => h('span', { class: r.remote ? 'mono' : 'mono muted' }, r.remote ?? (r.protocol === 'tcp' ? '监听中' : '-')) },
-  { key: 'connected', title: '所属进程', width: 120, render: (r) => pidLink(r.connected) },
+  { key: 'connected', title: term('所属进程'), width: 120, render: (r) => pidLink(r.connected) },
   { key: 'recv', title: '接收', width: 110, align: 'right',
     sorter: (a, b) => (a.stats.recv_oct ?? 0) - (b.stats.recv_oct ?? 0),
     render: (r) => h('span', { class: 'mono' }, formatBytes(r.stats.recv_oct ?? 0)) },
@@ -62,7 +63,7 @@ const socketColumns: DataTableColumns<SocketRow> = [
     render: (r) => h('span', { class: 'mono' }, `${r.domain ?? '?'} / ${r.type ?? '?'} / ${r.protocol ?? '?'}`) },
   { key: 'local', title: '本地地址', minWidth: 170, render: (r) => h('span', { class: 'mono' }, r.local ?? '-') },
   { key: 'remote', title: '远端地址', minWidth: 170, render: (r) => h('span', { class: 'mono' }, r.remote ?? '-') },
-  { key: 'owner', title: '所属进程', width: 120, render: (r) => pidLink(r.owner) },
+  { key: 'owner', title: term('所属进程'), width: 120, render: (r) => pidLink(r.owner) },
   { key: 'state', title: '状态', minWidth: 160,
     render: (r) => h('span', { class: 'mono muted' }, [...r.rstates, ...r.wstates].join(', ') || '-') },
   { key: 'read', title: '读取', width: 110, align: 'right', sorter: (a, b) => a.read_bytes - b.read_bytes,

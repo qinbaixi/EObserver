@@ -13,6 +13,9 @@
     "start": "electron .",
     "dist": "electron-builder --publish never"
   },
+  "dependencies": {
+    "electron-updater": "6.3.9"
+  },
   "devDependencies": {
     "electron": "33.4.11",
     "electron-builder": "25.1.8"
@@ -22,7 +25,7 @@
     "productName": "EObserver",
     "artifactName": "EObserver-${version}-${os}-${arch}.${ext}",
     "directories": { "output": "dist", "buildResources": "build" },
-    "files": ["main.js", "pages/**", "package.json"],
+    "files": ["main.js", "preload.js", "pages/**", "package.json"],
     "extraResources": [
       { "from": "../_build/default/rel/eobserver", "to": "eobserver", "filter": ["**/*"] }
     ],
@@ -33,6 +36,7 @@
     },
     "win": { "target": ["nsis", "zip"] },
     "nsis": { "oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true },
-    "linux": { "target": ["AppImage", "tar.gz"], "category": "Development" }
+    "linux": { "target": ["AppImage", "tar.gz"], "category": "Development" },
+    "publish": [{ "provider": "github", "owner": "qinbaixi", "repo": "EObserver" }]
   }
 }

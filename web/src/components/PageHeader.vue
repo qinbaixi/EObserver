@@ -4,7 +4,7 @@ defineProps<{ title: string; subtitle?: string }>()
 
 <template>
   <div class="page-header">
-    <div>
+    <div class="titles">
       <h2>{{ title }}</h2>
       <div v-if="subtitle" class="sub">{{ subtitle }}</div>
     </div>
@@ -17,7 +17,12 @@ defineProps<{ title: string; subtitle?: string }>()
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px 24px;
   margin-bottom: 20px;
+}
+.titles {
+  min-width: 0;
 }
 h2 {
   margin: 0;
@@ -26,5 +31,6 @@ h2 {
 .sub {
   margin-top: 4px;
   opacity: 0.6;
+  overflow-wrap: anywhere;
 }
 </style>

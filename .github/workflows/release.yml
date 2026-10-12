@@ -201,7 +201,8 @@ jobs:
         shell: bash
         run: |
           shopt -s nullglob
-          for f in electron/dist/*.{AppImage,tar.gz,dmg,zip,exe}; do cp "$f" out/; done
+          # latest*.yml and the blockmaps are what the desktop app's updater reads.
+          for f in electron/dist/*.{AppImage,tar.gz,dmg,zip,exe,blockmap} electron/dist/latest*.yml; do cp "$f" out/; done
           ls -la out
 
       # Every package is tested the way a user runs it: unpacked or installed

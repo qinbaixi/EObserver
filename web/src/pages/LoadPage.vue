@@ -10,6 +10,7 @@ import NodeGuard from '../components/NodeGuard.vue'
 import KpiTile from '../components/KpiTile.vue'
 import TimeSeriesChart, { type Series } from '../charts/TimeSeriesChart.vue'
 import SchedulerHeatmap from '../charts/SchedulerHeatmap.vue'
+import { term } from '../api/term'
 
 const load = useLoad()
 const nodes = useNodes()
@@ -117,32 +118,32 @@ const kpi = computed(() => {
     </NGrid>
     <NGrid cols="1 l:2" responsive="screen" :x-gap="16" :y-gap="16">
       <NGi>
-        <NCard title="调度器利用率" size="small">
+        <NCard :title="term('调度器利用率')" size="small">
           <TimeSeriesChart :series="schedSeries" :format="pct" :y-max="1" :y-interval="0.25" :window-ms="windowMs" />
         </NCard>
       </NGi>
       <NGi>
-        <NCard title="各调度器利用率" size="small">
+        <NCard :title="term('各调度器利用率')" size="small">
           <SchedulerHeatmap :points="visible" :types="heatTypes" />
         </NCard>
       </NGi>
       <NGi>
-        <NCard title="内存" size="small">
+        <NCard :title="term('内存', '按类别统计的 erlang:memory() 随时间的变化。')" size="small">
           <TimeSeriesChart :series="memSeries" :format="formatBytes" stacked :window-ms="windowMs" />
         </NCard>
       </NGi>
       <NGi>
-        <NCard title="IO 吞吐" size="small">
+        <NCard :title="term('IO 吞吐')" size="small">
           <TimeSeriesChart :series="ioSeries" :format="rate" :window-ms="windowMs" />
         </NCard>
       </NGi>
       <NGi>
-        <NCard title="运行队列" size="small">
+        <NCard :title="term('运行队列')" size="small">
           <TimeSeriesChart :series="runQueue" :format="count" integer :window-ms="windowMs" :height="180" />
         </NCard>
       </NGi>
       <NGi>
-        <NCard title="Reductions / 秒" size="small">
+        <NCard :title="term('Reductions / 秒')" size="small">
           <TimeSeriesChart :series="reductions" :format="compact" :window-ms="windowMs" :height="180" />
         </NCard>
       </NGi>

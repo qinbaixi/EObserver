@@ -3,21 +3,36 @@ import { computed, h, ref } from 'vue'
 import { useRoute, useRouter, RouterView } from 'vue-router'
 import {
   NLayout, NLayoutSider, NLayoutHeader, NLayoutContent, NMenu, NIcon, NButton,
-  NTooltip, NSpace, type MenuOption,
+  NTooltip, NSpace, useMessage, type MenuOption,
 } from 'naive-ui'
-import { MoonOutline, SunnyOutline } from '@vicons/ionicons5'
+import { MoonOutline, SunnyOutline, LinkOutline } from '@vicons/ionicons5'
 import { pages } from '../router'
 import { useTheme } from '../stores/theme'
 import { useNodes } from '../stores/nodes'
+import { useSettings } from '../stores/settings'
 import { client } from '../api/ws'
 import NodeSwitcher from './NodeSwitcher.vue'
 import WelcomePanel from './WelcomePanel.vue'
+import ConnectDialog from './ConnectDialog.vue'
+import { useUrlSync } from '../composables/useUrlSync'
 
 const route = useRoute()
 const router = useRouter()
 const theme = useTheme()
 const nodes = useNodes()
+const settings = useSettings()
 const collapsed = ref(false)
+const message = useMessage()
+useUrlSync()
+
+async function copyLink() {
+  try {
+    await navigator.clipboard.writeText(window.location.href)
+    message.success('已复制当前页面链接')
+  } catch {
+    message.info(window.location.href)
+  }
+}
 
 const menuOptions = computed<MenuOption[]>(() =>
   pages.map((p) => ({
@@ -49,6 +64,7 @@ const socketText = computed(() => ({
       <NMenu :value="String(route.name)" :options="menuOptions" :collapsed="collapsed"
              :collapsed-width="64" :collapsed-icon-size="20"
              @update:value="(k: string) => router.push({ name: k })" />
+      <div v-if="!collapsed && settings.version" class="version">v{{ settings.version }}</div>
     </NLayoutSider>
     <NLayout>
       <NLayoutHeader bordered class="header">
@@ -56,11 +72,25 @@ const socketText = computed(() => ({
           <NodeSwitcher />
         </div>
         <NSpace align="center" :size="12">
+          <NTooltip v-if="settings.readOnly">
+            <template #trigger>
+              <span class="ro">只读</span>
+            </template>
+            以 --read-only 启动：不能 kill 进程、发送消息或关闭端口
+          </NTooltip>
           <NTooltip>
             <template #trigger>
               <span class="socket-dot" :class="client.state.value" />
             </template>
             {{ socketText }}
+          </NTooltip>
+          <NTooltip>
+            <template #trigger>
+              <NButton quaternary circle @click="copyLink">
+                <template #icon><NIcon :component="LinkOutline" /></template>
+              </NButton>
+            </template>
+            复制当前页面链接（包含节点与打开的详情）
           </NTooltip>
           <NButton quaternary circle class="theme-toggle" @click="theme.toggle()">
             <template #icon>
@@ -76,6 +106,7 @@ const socketText = computed(() => ({
         </div>
       </NLayoutContent>
     </NLayout>
+    <ConnectDialog />
   </NLayout>
 </template>
 
@@ -114,6 +145,20 @@ const socketText = computed(() => ({
   padding: 24px;
   max-width: 1440px;
   margin: 0 auto;
+}
+.ro {
+  font-size: 12px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  border: 1px solid currentColor;
+  opacity: 0.7;
+}
+.version {
+  position: absolute;
+  bottom: 16px;
+  left: 24px;
+  font-size: 12px;
+  opacity: 0.4;
 }
 .socket-dot {
   display: inline-block;

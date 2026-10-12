@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useQueryRef } from '../composables/useQueryRef'
 import { computed, ref, watch } from 'vue'
 import { NCard, NSpin, NEmpty, NAlert, NTag, NButton, NIcon, NScrollbar, NInput } from 'naive-ui'
 import { RefreshOutline, SearchOutline } from '@vicons/ionicons5'
@@ -15,11 +16,11 @@ const node = computed(() =>
   nodes.currentInfo?.status === 'connected' ? nodes.currentInfo.node : null)
 
 const apps = ref<AppInfo[]>([])
-const selectedApp = ref<string | null>(null)
+const selectedApp = useQueryRef('app')
 const tree = ref<AppTree | null>(null)
 const loadingTree = ref(false)
 const error = ref<string | null>(null)
-const selectedPid = ref<string | null>(null)
+const selectedPid = useQueryRef('pid')
 const search = ref('')
 
 const visibleApps = computed(() => {

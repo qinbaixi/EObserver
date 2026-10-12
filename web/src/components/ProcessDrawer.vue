@@ -8,10 +8,12 @@ import { RefreshOutline, SkullOutline, SendOutline } from '@vicons/ionicons5'
 import { client } from '../api/ws'
 import type { ProcessDetail } from '../api/types'
 import { formatBytes, formatNumber } from '../api/format'
+import { useSettings } from '../stores/settings'
 
 const props = defineProps<{ node: string; pid: string | null }>()
 const emit = defineEmits<{ 'update:pid': [string | null]; killed: [] }>()
 
+const settings = useSettings()
 const dialog = useDialog()
 const message = useMessage()
 const detail = ref<ProcessDetail | null>(null)
@@ -205,7 +207,7 @@ const bytes = (words: number) => formatBytes(words * (detail.value?.word_size ??
           <NCode v-if="state" :code="state" word-wrap class="term" style="margin-top: 12px" />
         </NTabPane>
 
-        <NTabPane name="actions" tab="操作">
+        <NTabPane v-if="!settings.readOnly" name="actions" tab="操作">
           <div class="group-title">发送消息</div>
           <NInput v-model:value="sendText" type="textarea" class="mono"
                   placeholder="Erlang 项，例如 {hello, world}" :autosize="{ minRows: 2, maxRows: 6 }" />

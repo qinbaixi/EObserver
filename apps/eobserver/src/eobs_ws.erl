@@ -14,13 +14,47 @@
 -behaviour(cowboy_websocket).
 
 -export([init/2, websocket_init/1, websocket_handle/2, websocket_info/2]).
+-export([same_origin/2]).
 
 -define(MIN_INTERVAL, 500).
 -define(DEFAULT_INTERVAL, 2000).
 
-init(Req, _Opts) ->
-    {cowboy_websocket, Req, #{subs => #{}}, #{idle_timeout => 120000,
-                                               max_frame_size => 1048576}}.
+init(Req, Opts) ->
+    case same_origin(cowboy_req:header(<<"origin">>, Req), cowboy_req:header(<<"host">>, Req)) of
+        true ->
+            {cowboy_websocket, Req, #{subs => #{}}, #{idle_timeout => 120000,
+                                                       max_frame_size => 1048576}};
+        false ->
+            {ok, cowboy_req:reply(403, #{}, <<"cross-origin WebSocket refused\n">>, Req), Opts}
+    end.
+
+%% Browsers do not apply CORS to WebSockets, so without this check any web
+%% page the user visits could drive the UI's socket on localhost.
+same_origin(undefined, _Host) ->
+    true;
+same_origin(Origin, Host) when is_binary(Host) ->
+    case uri_string:parse(Origin) of
+        #{host := OHost} = U ->
+            OPort = maps:get(port, U, default_port(maps:get(scheme, U, <<"http">>))),
+            {HHost, HPort} = split_host(Host),
+            string:lowercase(OHost) =:= string:lowercase(HHost) andalso OPort =:= HPort;
+        _ ->
+            false
+    end;
+same_origin(_, _) ->
+    false.
+
+split_host(Host) ->
+    case string:split(Host, <<":">>, trailing) of
+        [H, P] when H =/= <<>> ->
+            try {string:trim(H, both, "[]"), binary_to_integer(P)}
+            catch _:_ -> {Host, 80}
+            end;
+        _ -> {Host, 80}
+    end.
+
+default_port(<<"https">>) -> 443;
+default_port(_) -> 80.
 
 websocket_init(State) ->
     eobs_events:subscribe(),

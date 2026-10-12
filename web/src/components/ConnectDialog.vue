@@ -1,15 +1,16 @@
 <script setup lang="ts">
 import { NModal, NCard } from 'naive-ui'
+import { useUi } from '../stores/ui'
 import ConnectForm from './ConnectForm.vue'
 
-const show = defineModel<boolean>('show', { default: false })
+const ui = useUi()
 </script>
 
 <template>
-  <NModal v-model:show="show">
+  <NModal v-model:show="ui.connectOpen">
     <NCard title="添加节点" style="width: 420px" :bordered="false" closable
-           @close="show = false">
-      <ConnectForm @connected="show = false" />
+           @close="ui.connectOpen = false">
+      <ConnectForm @connected="ui.connectOpen = false" />
     </NCard>
   </NModal>
 </template>

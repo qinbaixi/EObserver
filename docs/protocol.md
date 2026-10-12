@@ -39,6 +39,40 @@ Sending `sub` again with the same `id` replaces the subscription.
 - Arbitrary Erlang terms (messages, state, dictionary values) are pre-formatted
   strings with depth and length limits.
 - Node names in `params` must belong to a node the tool already observes.
+- When the tool runs with `--read-only`, `process.kill`, `process.send` and
+  `port.close` fail with `read_only`.
 
-The full list of methods and topics lives in
+## Security
+
+- The socket only accepts upgrades whose `Origin` matches the `Host` header
+  (or that send no `Origin`), so other web pages cannot drive it.
+- With `--password` (or `EOBS_PASSWORD`) every HTTP request, including the
+  WebSocket upgrade, needs HTTP Basic credentials; any user name is accepted.
+
+## Methods
+
+| Method | Params | Result |
+|---|---|---|
+| `settings.get` | | `read_only`, `version` |
+| `nodes.list` / `nodes.connect` / `nodes.disconnect` | `node`, `cookie` | node status |
+| `node.summary` | `node` | system overview |
+| `process.info` / `process.state` | `node`, `pid` | details / `sys:get_state` |
+| `process.kill` / `process.send` | `node`, `pid`, `message` | `ok` |
+| `apps.list` / `apps.tree` | `node`, `app` | applications / supervision tree |
+| `port.info` / `port.close` | `node`, `port` | port details / `ok` |
+| `ets.rows` / `mnesia.rows` | `node`, `table`, `offset`, `limit`, `search` | one page of objects |
+
+## Topics
+
+| Topic | Params | Data |
+|---|---|---|
+| `node.load` | `node` | rates since the previous tick |
+| `node.processes` | `node`, `sort`, `order`, `filter`, `offset`, `limit` | one page of processes |
+| `node.summary` | `node` | system overview |
+| `node.ports` / `node.inet` / `node.sockets` | `node` | ports, inet sockets, `socket` module sockets |
+| `node.ets` / `node.mnesia` | `node` | table lists |
+| `node.allocators` | `node` | block and carrier sizes per allocator |
+| `cluster` | | distribution links of every observed node |
+
+The handlers live in
 [`apps/eobserver/src/eobs_api.erl`](../apps/eobserver/src/eobs_api.erl).

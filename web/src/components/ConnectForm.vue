@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { NForm, NFormItem, NInput, NButton, useMessage } from 'naive-ui'
 import { useNodes } from '../stores/nodes'
+import { useUi } from '../stores/ui'
 
 const emit = defineEmits<{ connected: [] }>()
 const nodes = useNodes()
 const message = useMessage()
-const node = ref('')
+const ui = useUi()
+const node = ref(ui.connectNode)
+watch(() => ui.connectNode, (n) => { node.value = n })
 const cookie = ref('')
 const loading = ref(false)
 
@@ -21,6 +24,7 @@ async function submit() {
     await nodes.connect(name, cookie.value.trim())
     message.success(`已添加 ${name}`)
     node.value = ''
+    ui.connectNode = ''
     cookie.value = ''
     emit('connected')
   } catch (e) {

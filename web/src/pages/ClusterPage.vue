@@ -9,6 +9,7 @@ import { useChartTheme } from '../composables/useChartTheme'
 import type { ClusterInfo } from '../api/types'
 import { formatBytes } from '../api/format'
 import PageHeader from '../components/PageHeader.vue'
+import RefreshControl from '../components/RefreshControl.vue'
 import ClusterGraph from '../charts/ClusterGraph.vue'
 import { useResizableTable } from '../api/table'
 
@@ -17,7 +18,7 @@ const ui = useUi()
 const router = useRouter()
 const t = useChartTheme()
 // The topic covers every observed node; the parameter only starts it.
-const { data, error } = useTopic<ClusterInfo>('cluster', ref('all'), 3000)
+const { data, error, paused, interval, refresh } = useTopic<ClusterInfo>('cluster', ref('all'), 3000)
 
 interface Row { from: string; to: string; hidden: boolean; input: number | null; output: number | null; observed: boolean }
 const rows = computed<Row[]>(() => {
@@ -57,7 +58,9 @@ const connTable = useResizableTable(columns)
 </script>
 
 <template>
-  <PageHeader title="集群拓扑" :subtitle="data ? `观察 ${data.nodes.length} 个节点，发现 ${peers} 个相连节点` : undefined" />
+  <PageHeader title="集群拓扑" :subtitle="data ? `观察 ${data.nodes.length} 个节点，发现 ${peers} 个相连节点` : undefined">
+    <RefreshControl v-model:paused="paused" v-model:interval="interval" @refresh="refresh" />
+  </PageHeader>
   <NAlert v-if="error" type="error" style="margin-bottom: 12px">{{ error }}</NAlert>
   <NGrid :cols="1" :y-gap="12">
     <NGi>

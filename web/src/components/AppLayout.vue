@@ -3,11 +3,11 @@ import { computed, h, ref } from 'vue'
 import { useRoute, useRouter, RouterView } from 'vue-router'
 import {
   NLayout, NLayoutSider, NLayoutHeader, NLayoutContent, NMenu, NIcon, NButton,
-  NTooltip, NSpace, useMessage, type MenuOption,
+  NTooltip, NSpace, NDropdown, useMessage, type MenuOption,
 } from 'naive-ui'
-import { MoonOutline, SunnyOutline, LinkOutline } from '@vicons/ionicons5'
+import { MoonOutline, SunnyOutline, LinkOutline, ContrastOutline } from '@vicons/ionicons5'
 import { pages } from '../router'
-import { useTheme } from '../stores/theme'
+import { useTheme, type Mode } from '../stores/theme'
 import { useNodes } from '../stores/nodes'
 import { useSettings } from '../stores/settings'
 import { client } from '../api/ws'
@@ -25,6 +25,14 @@ const settings = useSettings()
 const collapsed = ref(false)
 const message = useMessage()
 useUrlSync()
+
+const themeOptions = computed(() => ([
+  ['system', '跟随系统', ContrastOutline], ['light', '浅色', SunnyOutline], ['dark', '深色', MoonOutline],
+] as const).map(([key, label, icon]) => ({
+  key,
+  label: theme.mode === key ? `${label} ✓` : label,
+  icon: () => h(NIcon, { component: icon }),
+})))
 
 async function copyLink() {
   try {
@@ -94,11 +102,14 @@ const socketText = computed(() => ({
             </template>
             复制当前页面链接（包含节点与打开的详情）
           </NTooltip>
-          <NButton quaternary circle class="theme-toggle" @click="theme.toggle()">
-            <template #icon>
-              <NIcon :component="theme.isDark ? SunnyOutline : MoonOutline" />
-            </template>
-          </NButton>
+          <NDropdown trigger="click" :options="themeOptions" :value="theme.mode"
+                     @select="(m: Mode) => theme.setMode(m)">
+            <NButton quaternary circle class="theme-toggle" title="主题">
+              <template #icon>
+                <NIcon :component="theme.mode === 'system' ? ContrastOutline : theme.isDark ? MoonOutline : SunnyOutline" />
+              </template>
+            </NButton>
+          </NDropdown>
         </NSpace>
       </NLayoutHeader>
       <NLayoutContent class="content" :native-scrollbar="false">

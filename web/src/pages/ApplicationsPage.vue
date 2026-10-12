@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useQueryRef } from '../composables/useQueryRef'
+import { errorText } from '../api/errors'
 import { computed, ref, watch } from 'vue'
 import { NCard, NSpin, NEmpty, NAlert, NTag, NButton, NIcon, NScrollbar, NInput } from 'naive-ui'
 import { RefreshOutline, SearchOutline } from '@vicons/ionicons5'
@@ -37,7 +38,7 @@ async function loadApps() {
       selectedApp.value = (running.find((a) => a.name === 'kernel') ?? running[0])?.name ?? null
     }
   } catch (e) {
-    error.value = (e as Error).message
+    error.value = errorText(e)
   }
 }
 
@@ -50,7 +51,7 @@ async function loadTree() {
   try {
     tree.value = await client.request<AppTree>('apps.tree', { node: node.value, app: app.name }, 40000)
   } catch (e) {
-    error.value = (e as Error).message
+    error.value = errorText(e)
   } finally {
     loadingTree.value = false
   }
@@ -58,6 +59,13 @@ async function loadTree() {
 
 watch(node, () => { apps.value = []; selectedApp.value = null; void loadApps() }, { immediate: true })
 watch(selectedApp, () => void loadTree())
+
+// Applications may have been started or stopped since the list was read.
+async function refreshAll() {
+  const before = selectedApp.value
+  await loadApps()
+  if (selectedApp.value === before) await loadTree()
+}
 
 const current = computed(() => apps.value.find((a) => a.name === selectedApp.value) ?? null)
 </script>
@@ -89,7 +97,7 @@ const current = computed(() => apps.value.find((a) => a.name === selectedApp.val
         <template #header-extra>
           <NTag v-if="tree?.master" size="small" :bordered="false">master {{ tree.master }}</NTag>
           <NButton quaternary circle size="small" :loading="loadingTree" style="margin-left: 8px"
-                   @click="loadTree">
+                   @click="refreshAll">
             <template #icon><NIcon :component="RefreshOutline" /></template>
           </NButton>
         </template>

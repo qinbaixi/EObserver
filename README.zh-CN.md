@@ -92,7 +92,7 @@ _build/default/rel/eobserver/bin/eobs --node myapp@myhost --cookie secret
 | `--port 8090` | 网页端口 |
 | `--listen 127.0.0.1` | 监听地址。默认只监听本机，因为页面可以 kill 目标节点上的进程 |
 | `--password PASS` | 访问密码（HTTP Basic 认证，用户名任意），也可以用环境变量 `EOBS_PASSWORD`。配合 `--listen` 使用 |
-| `--read-only` | 只读模式：禁止 kill 进程、发送消息和关闭端口 |
+| `--read-only` | 只读模式：禁止 kill 进程、发送消息、关闭端口和修改表记录 |
 | `--no-browser` | 不自动打开浏览器 |
 
 短节点名（`app@host`）和长节点名（`app@host.example.com`）会自动识别，但同一个 EObserver 实例只能使用其中一种。

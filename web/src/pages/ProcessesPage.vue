@@ -2,15 +2,19 @@
 import { useQueryRef } from '../composables/useQueryRef'
 import { computed, h, onBeforeUnmount, ref, watch } from 'vue'
 import {
-  NDataTable, NInput, NSpace, NSelect, NTag, NIcon, NButton, NAlert,
+  NDataTable, NInput, NSpace, NTag, NIcon, NAlert, NButton, NDropdown, NTooltip,
+  useDialog, useMessage, type DropdownOption,
   type DataTableColumns, type DataTableSortState,
 } from 'naive-ui'
-import { SearchOutline, PauseOutline, PlayOutline } from '@vicons/ionicons5'
+import { SearchOutline, CloseCircleOutline } from '@vicons/ionicons5'
 import { client } from '../api/ws'
 import { useNodes } from '../stores/nodes'
+import { useSettings } from '../stores/settings'
+import { errorText } from '../api/errors'
 import type { ProcessPage, ProcessRow } from '../api/types'
 import { formatBytes, formatNumber } from '../api/format'
 import PageHeader from '../components/PageHeader.vue'
+import RefreshControl from '../components/RefreshControl.vue'
 import NodeGuard from '../components/NodeGuard.vue'
 import ProcessDrawer from '../components/ProcessDrawer.vue'
 import { term } from '../api/term'
@@ -19,6 +23,9 @@ import { useResizableTable } from '../api/table'
 type SortKey = 'reds' | 'reductions' | 'memory' | 'message_queue_len' | 'name' | 'pid'
 
 const nodes = useNodes()
+const settings = useSettings()
+const dialog = useDialog()
+const message = useMessage()
 const node = computed(() =>
   nodes.currentInfo?.status === 'connected' ? nodes.currentInfo.node : null)
 
@@ -67,8 +74,10 @@ watch(paused, (p) => (p ? (stop?.(), (stop = null)) : subscribe()))
 watch(() => nodes.current, () => { data.value = null; page.value = 1 })
 onBeforeUnmount(() => stop?.())
 
+// Manual refresh (and after a kill): one update while paused, otherwise
+// restart the live subscription so the next update comes right away.
 function refreshOnce() {
-  subscribe(true)
+  subscribe(paused.value)
 }
 
 function onSort(s: DataTableSortState | null) {
@@ -91,6 +100,42 @@ function sorter(key: SortKey) {
 
 function queueClass(n: number) {
   return n >= 1000 ? 'q-bad' : n > 0 ? 'q-warn' : 'q-zero'
+}
+
+function kill(r: ProcessRow) {
+  const n = node.value
+  if (!n) return
+  dialog.error({
+    title: '杀死进程',
+    content: `向 ${r.pid}${r.name ? `（${r.name}）` : ''} 发送 kill 退出信号？这会影响目标节点上正在运行的系统。`,
+    positiveText: '杀死',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        await client.request('process.kill', { node: n, pid: r.pid })
+        message.success(`已杀死 ${r.pid}`)
+        refreshOnce()
+      } catch (e) {
+        message.error(errorText(e))
+      }
+    },
+  })
+}
+
+// Right-click menu on a row.
+const menu = ref<{ x: number; y: number; row: ProcessRow } | null>(null)
+const menuOptions = computed<DropdownOption[]>(() => [
+  { key: 'open', label: '查看详情' },
+  { key: 'copy', label: '复制 PID' },
+  ...(settings.readOnly ? [] : [{ type: 'divider', key: 'd' }, { key: 'kill', label: '杀死进程…' }]),
+])
+function onMenu(key: string) {
+  const row = menu.value?.row
+  menu.value = null
+  if (!row) return
+  if (key === 'open') selected.value = row.pid
+  else if (key === 'copy') void navigator.clipboard?.writeText(row.pid).then(() => message.success('已复制'))
+  else if (key === 'kill') kill(row)
 }
 
 const columns = computed<DataTableColumns<ProcessRow>>(() => [
@@ -132,6 +177,16 @@ const columns = computed<DataTableColumns<ProcessRow>>(() => [
         : r.status === 'exiting' ? 'error' : 'default',
     }, { default: () => r.status }),
   },
+  ...(settings.readOnly ? [] : [{
+    key: 'actions', title: '', width: 48, align: 'center' as const, fixed: 'right' as const,
+    render: (r: ProcessRow) => h(NTooltip, null, {
+      trigger: () => h(NButton, {
+        quaternary: true, circle: true, size: 'tiny', type: 'error', class: 'kill-btn',
+        onClick: (e: MouseEvent) => { e.stopPropagation(); kill(r) },
+      }, { icon: () => h(NIcon, { component: CloseCircleOutline }) }),
+      default: () => '杀死进程',
+    }),
+  }]),
 ])
 
 const pagination = computed(() => ({
@@ -148,14 +203,12 @@ const pagination = computed(() => ({
 const rowProps = (r: ProcessRow) => ({
   style: 'cursor: pointer',
   onClick: () => { selected.value = r.pid },
+  onContextmenu: (e: MouseEvent) => {
+    e.preventDefault()
+    menu.value = { x: e.clientX, y: e.clientY, row: r }
+  },
 })
 
-const intervals = [
-  { label: '每 1 秒', value: 1000 },
-  { label: '每 2 秒', value: 2000 },
-  { label: '每 5 秒', value: 5000 },
-  { label: '每 10 秒', value: 10000 },
-]
 const procTable = useResizableTable(columns)
 </script>
 
@@ -166,12 +219,7 @@ const procTable = useResizableTable(columns)
               style="width: 300px">
         <template #prefix><NIcon :component="SearchOutline" /></template>
       </NInput>
-      <NSelect v-model:value="interval" :options="intervals" style="width: 110px" />
-      <NButton secondary @click="paused = !paused">
-        <template #icon><NIcon :component="paused ? PlayOutline : PauseOutline" /></template>
-        {{ paused ? '继续' : '暂停' }}
-      </NButton>
-      <NButton v-if="paused" quaternary @click="refreshOnce">刷新</NButton>
+      <RefreshControl v-model:paused="paused" v-model:interval="interval" @refresh="refreshOnce" />
     </NSpace>
   </PageHeader>
   <NodeGuard>
@@ -179,12 +227,22 @@ const procTable = useResizableTable(columns)
     <NDataTable remote v-bind="procTable" :data="data?.rows ?? []" :loading="!data && !error"
                 :pagination="pagination" :row-key="(r: ProcessRow) => r.pid" :row-props="rowProps"
                 size="small" @update:sorter="onSort" />
-    <p class="note">Reds 是距上次刷新以来的 reductions 增量，可以看出当前最忙的进程。点击一行查看详情。</p>
+    <p class="note">Reds 是距上次刷新以来的 reductions 增量，可以看出当前最忙的进程。点击一行查看详情，右键可复制 PID{{ settings.readOnly ? '' : '或杀死进程' }}。</p>
+    <NDropdown trigger="manual" placement="bottom-start" :show="!!menu" :x="menu?.x" :y="menu?.y"
+               :options="menuOptions" @select="onMenu" @clickoutside="menu = null" />
     <ProcessDrawer v-if="node" v-model:pid="selected" :node="node" @killed="refreshOnce" />
   </NodeGuard>
 </template>
 
 <style scoped>
+:deep(.kill-btn) {
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+:deep(tr:hover .kill-btn),
+:deep(.kill-btn:focus-visible) {
+  opacity: 1;
+}
 :deep(.muted) {
   opacity: 0.6;
 }

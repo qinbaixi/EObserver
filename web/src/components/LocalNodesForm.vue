@@ -5,6 +5,7 @@ import {
 } from 'naive-ui'
 import { RefreshOutline } from '@vicons/ionicons5'
 import { client } from '../api/ws'
+import { errorText } from '../api/errors'
 import type { Discovery } from '../api/types'
 import { useNodes } from '../stores/nodes'
 import { useCookies, type CookieChoice } from '../stores/cookies'
@@ -41,17 +42,19 @@ async function load() {
     const names = new Set(data.value.nodes.map((n) => n.node))
     picked.value = picked.value.filter((n) => names.has(n))
   } catch (e) {
-    message.error((e as Error).message)
+    message.error(errorText(e))
   } finally {
     loading.value = false
   }
 }
 onMounted(load)
 
-function changeHost(h: string) {
+// Clearing goes back to this machine's own host name.
+function changeHost(h: string | null) {
   host.value = h
   try {
-    localStorage.setItem(HOST_KEY, h)
+    if (h) localStorage.setItem(HOST_KEY, h)
+    else localStorage.removeItem(HOST_KEY)
   } catch {
     /* storage unavailable */
   }
@@ -91,7 +94,7 @@ async function connect() {
       emit('connected')
     }
   } catch (e) {
-    message.error((e as Error).message)
+    message.error(errorText(e))
   } finally {
     connecting.value = false
   }
@@ -102,7 +105,7 @@ async function connect() {
   <div>
     <NFormItem label="主机名" :show-feedback="false" style="margin-bottom: 12px">
       <div class="row">
-        <NSelect :value="host" :options="hostOptions" filterable tag
+        <NSelect :value="host" :options="hostOptions" filterable tag clearable
                  placeholder="节点名 @ 后面的部分" @update:value="changeHost" />
         <NButton quaternary circle :loading="loading" title="重新扫描" @click="load">
           <template #icon><NIcon :component="RefreshOutline" /></template>

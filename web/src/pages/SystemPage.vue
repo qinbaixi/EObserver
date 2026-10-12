@@ -6,6 +6,7 @@ import { useTopic } from '../composables/useTopic'
 import type { NodeSummary } from '../api/types'
 import { formatBytes, formatDuration, formatNumber } from '../api/format'
 import PageHeader from '../components/PageHeader.vue'
+import RefreshControl from '../components/RefreshControl.vue'
 import NodeGuard from '../components/NodeGuard.vue'
 import StatCard from '../components/StatCard.vue'
 import UsageBar from '../components/UsageBar.vue'
@@ -13,7 +14,7 @@ import UsageBar from '../components/UsageBar.vue'
 const nodes = useNodes()
 const connectedNode = computed(() =>
   nodes.currentInfo?.status === 'connected' ? nodes.currentInfo.node : null)
-const { data, error } = useTopic<NodeSummary>('node.summary', toRef(connectedNode), 2000)
+const { data, error, paused, interval, refresh } = useTopic<NodeSummary>('node.summary', toRef(connectedNode), 2000)
 const s = computed(() => data.value ?? nodes.currentInfo?.summary ?? null)
 
 const yesNo = (b: boolean) => (b ? '是' : '否')
@@ -62,9 +63,10 @@ const statRows = computed(() => s.value ? [
 
 <template>
   <PageHeader title="系统概览" :subtitle="nodes.current ?? undefined">
-    <NSpace v-if="s">
-      <NTag v-if="s.features.socket" size="small" round :bordered="false">socket</NTag>
-      <NTag v-if="s.features.mnesia" size="small" round :bordered="false">mnesia</NTag>
+    <NSpace align="center">
+      <NTag v-if="s?.features.socket" size="small" round :bordered="false">socket</NTag>
+      <NTag v-if="s?.features.mnesia" size="small" round :bordered="false">mnesia</NTag>
+      <RefreshControl v-model:paused="paused" v-model:interval="interval" @refresh="refresh" />
     </NSpace>
   </PageHeader>
   <NodeGuard>

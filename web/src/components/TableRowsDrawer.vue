@@ -4,10 +4,13 @@ import {
   NDrawer, NDrawerContent, NDataTable, NInput, NIcon, NButton, NAlert, NPagination,
   NSpace, NText, type DataTableColumns,
 } from 'naive-ui'
-import { SearchOutline, RefreshOutline } from '@vicons/ionicons5'
+import { SearchOutline, RefreshOutline, AddOutline } from '@vicons/ionicons5'
 import { client } from '../api/ws'
 import type { TableRows } from '../api/types'
+import { errorText } from '../api/errors'
 import { formatNumber } from '../api/format'
+import { useSettings } from '../stores/settings'
+import TableObjectModal from './TableObjectModal.vue'
 
 // Paged viewer for the objects of one ETS or Mnesia table. Paging and
 // searching run on the target node; only the current page is sent.
@@ -21,6 +24,30 @@ const applied = ref('')
 const data = ref<TableRows | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
+const settings = useSettings()
+// Key of the object shown in TableObjectModal; '' adds a new one.
+const openKey = ref<string | null>(null)
+
+type Row = { i: number; cells: string[] }
+const rows = computed<Row[]>(() => (data.value?.rows ?? []).map((cells, i) => ({ i, cells })))
+const rowProps = (r: Row) => ({
+  style: data.value?.keys?.[r.i] ? 'cursor: pointer' : '',
+  onClick: () => { const k = data.value?.keys?.[r.i]; if (k) openKey.value = k },
+})
+// A skeleton for a new Mnesia record: {record_name, attr1, attr2, ...}.
+const template = computed(() => {
+  const d = data.value
+  if (props.kind !== 'mnesia' || !d?.attributes || !d.rows.length) return ''
+  return `{${d.rows[0][0]}, ${d.attributes.map((a) => a.charAt(0).toUpperCase() + a.slice(1)).join(', ')}}`
+})
+
+// Sorts the current page: numbers numerically, everything else as text.
+function compare(a = '', b = '') {
+  const x = Number(a)
+  const y = Number(b)
+  if (a !== '' && b !== '' && !Number.isNaN(x) && !Number.isNaN(y)) return x - y
+  return a.localeCompare(b)
+}
 
 const show = computed({
   get: () => props.table !== null,
@@ -38,19 +65,15 @@ async function load() {
     }, 60000)
   } catch (e) {
     data.value = null
-    error.value = errorText((e as Error).message)
+    error.value = errorText(e)
   } finally {
     loading.value = false
   }
 }
 
-function errorText(msg: string) {
-  if (msg.includes('private')) return '这是 private 表，只有所属进程能读取。'
-  if (msg.includes('not_found')) return '表已不存在。'
-  return msg
-}
 
 watch(() => props.table, () => {
+  openKey.value = null
   page.value = 1
   search.value = ''
   applied.value = ''
@@ -69,7 +92,7 @@ watch(search, (q) => {
   }, 350)
 })
 
-const columns = computed<DataTableColumns<string[]>>(() => {
+const columns = computed<DataTableColumns<Row>>(() => {
   const d = data.value
   if (!d) return []
   const attrs = d.attributes
@@ -82,7 +105,8 @@ const columns = computed<DataTableColumns<string[]>>(() => {
       title: () => h('span', { class: isKey ? 'key-col' : '' }, isKey ? `${title} 🔑` : title),
       minWidth: i === 0 && attrs ? 100 : 160,
       ellipsis: { tooltip: { style: { maxWidth: '640px' }, contentStyle: { whiteSpace: 'pre-wrap', wordBreak: 'break-all' } } },
-      render: (r: string[]) => h('span', { class: ['mono', isKey ? 'key-cell' : ''] }, r[i] ?? ''),
+      sorter: (a: Row, b: Row) => compare(a.cells[i], b.cells[i]),
+      render: (r: Row) => h('span', { class: ['mono', isKey ? 'key-cell' : ''] }, r.cells[i] ?? ''),
     }
   })
 })
@@ -115,18 +139,28 @@ const summary = computed(() => {
           <NInput v-model:value="search" clearable placeholder="在格式化后的记录中搜索" style="width: 320px">
             <template #prefix><NIcon :component="SearchOutline" /></template>
           </NInput>
-          <NText depth="3">{{ summary }}</NText>
+          <NSpace align="center" :size="12">
+            <NText depth="3">{{ summary }}</NText>
+            <NButton v-if="!settings.readOnly && data" size="small" secondary @click="openKey = ''">
+              <template #icon><NIcon :component="AddOutline" /></template>
+              添加记录
+            </NButton>
+          </NSpace>
         </NSpace>
         <NAlert v-if="error" type="warning">{{ error }}</NAlert>
-        <NDataTable v-else :columns="columns" :data="data?.rows ?? []" :loading="loading" size="small"
+        <NDataTable v-else :columns="columns" :data="rows" :loading="loading" size="small"
+                    :row-key="(r: Row) => r.i" :row-props="rowProps"
                     :scroll-x="Math.max(800, columns.length * 170)" :max-height="'calc(100vh - 230px)'"
                     :single-line="false" />
-        <NSpace justify="end">
+        <NSpace justify="space-between" align="center">
+          <NText depth="3" style="font-size: 12px">点击一行查看完整记录{{ settings.readOnly ? '' : '，可编辑或删除' }}；点表头可在本页内排序。</NText>
           <NPagination v-model:page="page" :page-count="pageCount" :page-slot="7" />
         </NSpace>
       </NSpace>
     </NDrawerContent>
   </NDrawer>
+  <TableObjectModal v-if="table" v-model:obj-key="openKey" :node="node" :kind="kind" :table="table"
+                    :template="template" @changed="load" />
 </template>
 
 <style scoped>

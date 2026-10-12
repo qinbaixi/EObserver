@@ -218,6 +218,8 @@ export interface MnesiaTable {
 
 export interface TableRows {
   rows: string[][]
+  // Opaque key of each row, for table.object (older agents: absent).
+  keys?: (string | null)[]
   keypos: number
   columns: number
   total: number

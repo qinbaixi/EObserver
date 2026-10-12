@@ -20,6 +20,11 @@ export const useCookies = defineStore('cookies', () => {
     saved.value = await client.request<SavedCookie[]>('cookies.list')
   }
 
+  async function rename(id: string, label: string) {
+    await client.request('cookies.rename', { id, label: label.trim() })
+    await refresh()
+  }
+
   async function remove(id: string) {
     await client.request('cookies.delete', { id })
     await refresh()
@@ -60,5 +65,5 @@ export const useCookies = defineStore('cookies', () => {
     }
   }
 
-  return { saved, refresh, remove, params, lastChoice, rememberChoice }
+  return { saved, refresh, rename, remove, params, lastChoice, rememberChoice }
 })

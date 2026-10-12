@@ -6,13 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-10-12
+
 ### 新增
 
-- 左下角检查更新：启动时和之后每 6 小时检查 GitHub 上的最新版本，也可以手动点击检查。Windows 安装版和 Linux AppImage 可以直接下载更新并重启安装；macOS、zip / tar.gz 版和命令行版会打开下载页。
+- 左下角检查更新：启动时和之后每 6 小时检查 GitHub 上的最新版本，也可以手动点击检查。Windows 安装版和 Linux AppImage 可以直接下载更新并重启安装；macOS、zip / tar.gz 版和命令行版会打开下载页。从 0.0.3 及更早版本升级仍需手动下载一次，之后的版本就能在应用内更新。
 - 术语悬停提示：系统、负载、进程、端口、表、内存分配器等页面里的指标名（如 Reds、Reductions、运行队列、载体）悬停时显示解释，带虚线下划线的就是有提示的。
 
 ### 改进
 
+- 页头在窄窗口下自动换行，本机节点列表里的长节点名不再挤压端口号。
 - 顶栏的节点选择框按节点名长度自适应，窗口窄时才收缩并显示省略号；下拉列表显示完整节点名。
 - 调整两个主题的配色：亮色主题去掉大面积纯白，暗色主题把底色调亮一些，减少刺眼和过暗。
 
@@ -74,7 +77,8 @@ First public release.
   Windows x64.
 - Light and dark themes.
 
-[Unreleased]: https://github.com/qinbaixi/EObserver/compare/v0.0.3...HEAD
+[Unreleased]: https://github.com/qinbaixi/EObserver/compare/v0.0.4...HEAD
+[0.0.4]: https://github.com/qinbaixi/EObserver/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/qinbaixi/EObserver/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/qinbaixi/EObserver/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/qinbaixi/EObserver/releases/tag/v0.0.1

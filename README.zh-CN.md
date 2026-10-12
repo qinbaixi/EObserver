@@ -62,7 +62,7 @@ OTP 的 `observer` 很好用，但它基于 wxWidgets，有几个痛点：需要
 从 [Releases](https://github.com/qinbaixi/EObserver/releases) 下载最新版本：
 
 - **桌面版**（Linux AppImage、macOS dmg、Windows 安装包）：一个独立窗口，不需要安装其他东西。
-- **命令行版**（`eobserver-<版本>-<平台>.tar.gz` / `.zip`）：解压后运行 `bin/eobs`（Windows 上是 `bin\eobs.cmd`），会自动打开浏览器，适合在服务器上使用。
+- **命令行版**（`eobserver-cli-<版本>-<平台>.tar.gz` / `.zip`）：解压后运行 `bin/eobs`（Windows 上是 `bin\eobs.cmd`），会自动打开浏览器，适合在服务器上使用。
 
 两种都自带 Erlang 运行时。目前还没有代码签名，macOS 和 Windows 首次打开的步骤见发布说明。
 

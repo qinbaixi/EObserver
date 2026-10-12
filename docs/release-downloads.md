@@ -3,9 +3,9 @@
 
 | | Desktop app | Command line release |
 |---|---|---|
-| Linux x64 | `EObserver-*-linux-x86_64.AppImage`, `EObserver-*-linux-x64.tar.gz` | `eobserver-*-linux-x64.tar.gz` |
-| macOS (Apple silicon) | `EObserver-*-mac-arm64.dmg` | `eobserver-*-macos-arm64.tar.gz` |
-| Windows x64 | `EObserver-*-win-x64.exe` (installer), `EObserver-*-win-x64.zip` | `eobserver-*-windows-x64.zip` |
+| Linux x64 | `EObserver-*-linux-x86_64.AppImage`, `EObserver-*-linux-x64.tar.gz` | `eobserver-cli-*-linux-x64.tar.gz` |
+| macOS (Apple silicon) | `EObserver-*-mac-arm64.dmg` | `eobserver-cli-*-macos-arm64.tar.gz` |
+| Windows x64 | `EObserver-*-win-x64.exe` (installer), `EObserver-*-win-x64.zip` | `eobserver-cli-*-windows-x64.zip` |
 
 Both bundle the Erlang runtime; nothing else needs to be installed. The command line release starts with `bin/eobs` (`bin\eobs.cmd` on Windows) and opens your browser.
 

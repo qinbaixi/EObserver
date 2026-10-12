@@ -62,7 +62,7 @@ OTP's `observer` is indispensable but built on wxWidgets: it needs a desktop ses
 Download the latest build from [Releases](https://github.com/qinbaixi/EObserver/releases):
 
 - **Desktop app** (Linux AppImage, macOS dmg, Windows installer): a window with EObserver inside, nothing else to install.
-- **Command line release** (`eobserver-<version>-<platform>.tar.gz` / `.zip`): unpack and run `bin/eobs` (`bin\eobs.cmd` on Windows); it opens your browser. Useful on servers.
+- **Command line release** (`eobserver-cli-<version>-<platform>.tar.gz` / `.zip`): unpack and run `bin/eobs` (`bin\eobs.cmd` on Windows); it opens your browser. Useful on servers.
 
 Both bundle the Erlang runtime. The builds are not signed yet; see the release notes for the one-time steps on macOS and Windows.
 

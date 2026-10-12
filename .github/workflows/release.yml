@@ -173,13 +173,13 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           mkdir -p out
-          tar -C _build/default/rel -czf "out/eobserver-$VERSION-${{ matrix.name }}.tar.gz" eobserver
+          tar -C _build/default/rel -czf "out/eobserver-cli-$VERSION-${{ matrix.name }}.tar.gz" eobserver
       - name: Archive release (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force out | Out-Null
-          Compress-Archive -Path _build/default/rel/eobserver -DestinationPath "out/eobserver-$env:VERSION-${{ matrix.name }}.zip"
+          Compress-Archive -Path _build/default/rel/eobserver -DestinationPath "out/eobserver-cli-$env:VERSION-${{ matrix.name }}.zip"
 
       - name: Build desktop app
         working-directory: electron
@@ -237,7 +237,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         # On a manual run the tag does not exist yet; gh creates it on the
-        # commit this run built.
+        # commit this run built. Assets go up one by one into a draft, so a
+        # failed upload can be retried without gh deleting the whole release,
+        # and the release only becomes public once every file is there.
         run: |
-          gh release create "$TAG" dist/* --target "$GITHUB_SHA" \
-            --title "EObserver $TAG" --notes-file notes.md
+          # Asset names are case-insensitive on GitHub; refuse clashes early.
+          dupes=$(ls dist | tr '[:upper:]' '[:lower:]' | sort | uniq -d)
+          if [ -n "$dupes" ]; then echo "::error::duplicate asset names: $dupes"; exit 1; fi
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --draft --target "$GITHUB_SHA" \
+              --title "EObserver $TAG" --notes-file notes.md
+          fi
+          for f in dist/*; do
+            for i in 1 2 3 4 5; do
+              gh release upload "$TAG" "$f" --clobber && break
+              [ "$i" = 5 ] && exit 1
+              echo "upload of $f failed, retrying"; sleep $((i * 5))
+            done
+          done
+          gh release edit "$TAG" --draft=false --latest

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { NCard } from 'naive-ui'
+import Term from './Term.vue'
 defineProps<{ title: string; rows: { label: string; value: string | number }[] }>()
 </script>
 
@@ -7,7 +8,7 @@ defineProps<{ title: string; rows: { label: string; value: string | number }[] }
   <NCard :title="title" size="small" class="stat-card">
     <dl>
       <template v-for="r in rows" :key="r.label">
-        <dt>{{ r.label }}</dt>
+        <dt><Term :label="r.label" /></dt>
         <dd class="mono">{{ r.value }}</dd>
       </template>
     </dl>

@@ -17,12 +17,12 @@ export function useChartTheme() {
       muted: dark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.45)',
       grid: dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.07)',
       axis: dark ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.15)',
-      surface: dark ? '#18181c' : '#ffffff',
-      tooltipBg: dark ? '#26262a' : '#ffffff',
+      surface: dark ? '#26292F' : '#F7F8FA',  // matches the card color in App.vue
+      tooltipBg: dark ? '#2D3037' : '#FAFBFC',
       // Sequential blue, near-surface to dark (reversed on dark surfaces).
       ramp: dark
-        ? ['#1d2733', '#184f95', '#256abf', '#3987e5', '#6da7ec', '#b7d3f6']
-        : ['#f1f6fd', '#b7d3f6', '#86b6ef', '#3987e5', '#256abf', '#104281'],
+        ? ['#2a3442', '#184f95', '#256abf', '#3987e5', '#6da7ec', '#b7d3f6']
+        : ['#e6eef9', '#b7d3f6', '#86b6ef', '#3987e5', '#256abf', '#104281'],
     }
   })
 }

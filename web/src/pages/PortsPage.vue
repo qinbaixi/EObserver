@@ -11,6 +11,7 @@ import PageHeader from '../components/PageHeader.vue'
 import NodeGuard from '../components/NodeGuard.vue'
 import PortDrawer from '../components/PortDrawer.vue'
 import ProcessDrawer from '../components/ProcessDrawer.vue'
+import { term } from '../api/term'
 
 const nodes = useNodes()
 const node = computed(() =>
@@ -42,17 +43,17 @@ const columns: DataTableColumns<PortRow> = [
   { key: 'type', title: '类型', width: 90,
     render: (r) => h(NTag, { size: 'small', bordered: false, type: r.inet ? 'info' : r.os_pid ? 'warning' : 'default' },
       { default: () => (r.inet ? 'socket' : r.os_pid ? '外部程序' : '驱动') }) },
-  { key: 'connected', title: '所属进程', width: 130,
+  { key: 'connected', title: term('所属进程'), width: 130,
     render: (r) => r.connected
       ? h('a', { class: 'mono link', onClick: (e: Event) => { e.stopPropagation(); selectedPid.value = r.connected } }, r.connected)
       : '-' },
-  { key: 'os_pid', title: 'OS pid', width: 90, align: 'right',
+  { key: 'os_pid', title: term('OS pid'), width: 90, align: 'right',
     render: (r) => h('span', { class: 'mono muted' }, r.os_pid ?? '-') },
   { key: 'input', title: '输入', width: 110, align: 'right', sorter: (a, b) => num(a.input, b.input),
     render: (r) => h('span', { class: 'mono' }, formatBytes(r.input)) },
   { key: 'output', title: '输出', width: 110, align: 'right', sorter: (a, b) => num(a.output, b.output),
     render: (r) => h('span', { class: 'mono' }, formatBytes(r.output)) },
-  { key: 'queue_size', title: '队列', width: 100, align: 'right', sorter: (a, b) => num(a.queue_size, b.queue_size),
+  { key: 'queue_size', title: term('队列'), width: 100, align: 'right', sorter: (a, b) => num(a.queue_size, b.queue_size),
     render: (r) => h('span', { class: ['mono', r.queue_size > 0 ? 'q-warn' : 'muted'] }, formatBytes(r.queue_size)) },
 ]
 

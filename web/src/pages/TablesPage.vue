@@ -15,6 +15,7 @@ import PageHeader from '../components/PageHeader.vue'
 import NodeGuard from '../components/NodeGuard.vue'
 import ProcessDrawer from '../components/ProcessDrawer.vue'
 import TableRowsDrawer from '../components/TableRowsDrawer.vue'
+import { term } from '../api/term'
 
 const nodes = useNodes()
 const node = computed(() =>
@@ -73,20 +74,20 @@ const etsColumns: DataTableColumns<EtsTable> = [
     ]) },
   { key: 'type', title: '类型', width: 110,
     render: (r) => h(NTag, { size: 'small', bordered: false }, { default: () => r.type }) },
-  { key: 'size', title: '对象数', width: 110, align: 'right', sorter: (a, b) => num(a.size, b.size),
+  { key: 'size', title: term('对象数'), width: 110, align: 'right', sorter: (a, b) => num(a.size, b.size),
     render: (r) => mono(formatNumber(r.size)) },
-  { key: 'memory', title: '内存', width: 110, align: 'right', sorter: (a, b) => num(a.memory, b.memory),
+  { key: 'memory', title: term('内存', '表数据占用的内存。'), width: 110, align: 'right', sorter: (a, b) => num(a.memory, b.memory),
     defaultSortOrder: 'descend', render: (r) => mono(formatBytes(r.memory)) },
-  { key: 'owner', title: '所属进程', minWidth: 200, ellipsis: { tooltip: true },
+  { key: 'owner', title: term('所属进程'), minWidth: 200, ellipsis: { tooltip: true },
     render: (r) => r.owner
       ? h('a', { class: 'mono link', onClick: (e: Event) => { e.stopPropagation(); selectedPid.value = r.owner } },
           r.owner_name ?? r.owner)
       : '-' },
-  { key: 'protection', title: '访问', width: 100,
+  { key: 'protection', title: term('访问'), width: 100,
     render: (r) => h(NTag, { size: 'small', bordered: false, type: r.protection === 'private' ? 'warning' : r.protection === 'public' ? 'success' : 'default' },
       { default: () => r.protection }) },
-  { key: 'keypos', title: 'keypos', width: 80, align: 'right', render: (r) => mono(r.keypos) },
-  { key: 'opts', title: '选项', width: 200,
+  { key: 'keypos', title: term('keypos'), width: 80, align: 'right', render: (r) => mono(r.keypos) },
+  { key: 'opts', title: term('选项'), width: 200,
     render: (r) => h(NSpace, { size: 4 }, () => [
       r.read_concurrency ? h(NTag, { size: 'tiny', bordered: false }, { default: () => 'read_conc' }) : null,
       r.write_concurrency !== 'false' ? h(NTag, { size: 'tiny', bordered: false }, { default: () => `write_conc` }) : null,
@@ -97,18 +98,18 @@ const etsColumns: DataTableColumns<EtsTable> = [
 const mnesiaColumns: DataTableColumns<MnesiaTable> = [
   { key: 'name', title: '表', minWidth: 200, sorter: (a, b) => a.name.localeCompare(b.name),
     render: (r) => h('b', { class: 'mono' }, r.name) },
-  { key: 'storage', title: '存储', width: 140,
+  { key: 'storage', title: term('存储'), width: 140,
     render: (r) => h(NTag, { size: 'small', bordered: false, type: r.storage === 'ram_copies' ? 'info' : 'success' },
       { default: () => r.storage }) },
   { key: 'type', title: '类型', width: 100, render: (r) => r.type },
   { key: 'size', title: '记录数', width: 110, align: 'right', sorter: (a, b) => num(a.size, b.size),
     render: (r) => mono(formatNumber(r.size)) },
-  { key: 'memory', title: '内存', width: 110, align: 'right', sorter: (a, b) => num(a.memory, b.memory),
+  { key: 'memory', title: term('内存', '表数据占用的内存。'), width: 110, align: 'right', sorter: (a, b) => num(a.memory, b.memory),
     render: (r) => mono(formatBytes(r.memory)) },
   { key: 'record_name', title: '记录', width: 140, render: (r) => mono(r.record_name) },
   { key: 'attributes', title: '字段', minWidth: 240, ellipsis: { tooltip: true },
     render: (r) => h('span', { class: 'mono muted' }, r.attributes.join(', ')) },
-  { key: 'where_to_read', title: '读取节点', width: 160, ellipsis: { tooltip: true },
+  { key: 'where_to_read', title: term('读取节点'), width: 160, ellipsis: { tooltip: true },
     render: (r) => h('span', { class: 'mono muted' }, r.where_to_read) },
 ]
 

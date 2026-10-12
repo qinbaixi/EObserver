@@ -166,12 +166,17 @@ async function connect() {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 6px 12px;
+}
+.item .mono {
+  overflow-wrap: anywhere;
 }
 .item + .item {
   border-top: 1px solid rgba(128, 128, 128, 0.15);
 }
 .port {
   font-size: 12px;
+  flex: none;
 }
 </style>

@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { NCard } from 'naive-ui'
+import Term from './Term.vue'
 defineProps<{ label: string; value: string; hint?: string }>()
 </script>
 
 <template>
   <NCard size="small" class="kpi">
-    <div class="label">{{ label }}</div>
+    <div class="label"><Term :label="label" /></div>
     <div class="value mono">{{ value }}</div>
     <div v-if="hint" class="hint">{{ hint }}</div>
   </NCard>

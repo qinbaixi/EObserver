@@ -9,6 +9,7 @@ import { client } from '../api/ws'
 import type { PortDetail } from '../api/types'
 import { formatBytes, formatNumber } from '../api/format'
 import { useSettings } from '../stores/settings'
+import Term from './Term.vue'
 
 const props = defineProps<{ node: string; port: string | null }>()
 const emit = defineEmits<{ 'update:port': [string | null]; openPid: [string] }>()
@@ -82,16 +83,16 @@ function pid(ref: string) {
         <NDescriptions :column="1" label-placement="left" size="small" bordered>
           <NDescriptionsItem label="名称"><span class="mono">{{ detail.name }}</span></NDescriptionsItem>
           <NDescriptionsItem v-if="detail.registered_name" label="注册名">{{ detail.registered_name }}</NDescriptionsItem>
-          <NDescriptionsItem label="所属进程">
+          <NDescriptionsItem><template #label><Term label="所属进程" /></template>
             <a v-if="detail.connected" class="mono link" @click="pid(detail.connected)">{{ detail.connected }}</a>
           </NDescriptionsItem>
-          <NDescriptionsItem v-if="detail.os_pid" label="OS pid">{{ detail.os_pid }}</NDescriptionsItem>
+          <NDescriptionsItem v-if="detail.os_pid"><template #label><Term label="OS pid" /></template>{{ detail.os_pid }}</NDescriptionsItem>
           <NDescriptionsItem v-if="detail.protocol" label="协议">{{ detail.protocol }}</NDescriptionsItem>
           <NDescriptionsItem v-if="detail.local !== undefined" label="本地地址"><span class="mono">{{ detail.local ?? '-' }}</span></NDescriptionsItem>
           <NDescriptionsItem v-if="detail.remote !== undefined" label="远端地址"><span class="mono">{{ detail.remote ?? '-' }}</span></NDescriptionsItem>
           <NDescriptionsItem label="输入 / 输出">{{ formatBytes(detail.input) }} / {{ formatBytes(detail.output) }}</NDescriptionsItem>
-          <NDescriptionsItem label="队列">{{ formatBytes(detail.queue_size) }}</NDescriptionsItem>
-          <NDescriptionsItem label="内存">{{ formatBytes(detail.memory) }}</NDescriptionsItem>
+          <NDescriptionsItem><template #label><Term label="队列" /></template>{{ formatBytes(detail.queue_size) }}</NDescriptionsItem>
+          <NDescriptionsItem><template #label><Term label="内存" /></template>{{ formatBytes(detail.memory) }}</NDescriptionsItem>
           <NDescriptionsItem label="锁">{{ detail.locking ?? '-' }}</NDescriptionsItem>
           <NDescriptionsItem label="并行">{{ detail.parallelism ? '是' : '否' }}</NDescriptionsItem>
         </NDescriptions>
@@ -105,7 +106,7 @@ function pid(ref: string) {
         </div>
         <div v-for="g in [{ title: 'Links', items: detail.links }, { title: 'Monitors', items: detail.monitors }]"
              :key="g.title" class="group">
-          <div class="group-title">{{ g.title }} <span class="count">{{ g.items.length }}</span></div>
+          <div class="group-title"><Term :label="g.title" /> <span class="count">{{ g.items.length }}</span></div>
           <NSpace v-if="g.items.length" :size="6">
             <NTag v-for="r in g.items" :key="r" size="small" class="mono clickable" @click="pid(r)">{{ r }}</NTag>
           </NSpace>

@@ -10,4 +10,6 @@
 
 应用暂未签名。macOS 上如果提示「已损坏」，把应用拷到「应用程序」后执行 `xattr -cr /Applications/EObserver.app`。Windows 上如果 SmartScreen 拦截，点「更多信息」再点「仍要运行」。Linux 版需要 OpenSSL 3（`libssl3`），目前主流发行版都自带。
 
+Windows 安装包和 Linux AppImage 可以在应用左下角一键更新，其余版本会打开下载页。`latest*.yml` 和 `*.blockmap` 是给自动更新用的，不需要下载。
+
 `SHA256SUMS.txt` 里是所有文件的校验和。

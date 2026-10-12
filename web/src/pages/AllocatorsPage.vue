@@ -9,6 +9,7 @@ import PageHeader from '../components/PageHeader.vue'
 import NodeGuard from '../components/NodeGuard.vue'
 import KpiTile from '../components/KpiTile.vue'
 import TimeSeriesChart, { type Series } from '../charts/TimeSeriesChart.vue'
+import { term } from '../api/term'
 
 const nodes = useNodes()
 const node = computed(() =>
@@ -58,25 +59,25 @@ const pct = (v: number) => `${(v * 100).toFixed(0)}%`
 const mono = (t: string) => h('span', { class: 'mono' }, t)
 
 const columns: DataTableColumns<AllocatorRow> = [
-  { key: 'type', title: '分配器', width: 150, sorter: (a, b) => a.type.localeCompare(b.type),
+  { key: 'type', title: term('分配器'), width: 150, sorter: (a, b) => a.type.localeCompare(b.type),
     render: (r) => h('b', { class: 'mono' }, r.type) },
-  { key: 'instances', title: '实例', width: 70, align: 'right', render: (r) => mono(String(r.instances)) },
-  { key: 'blocks', title: '已用块', width: 120, align: 'right', sorter: (a, b) => a.blocks - b.blocks,
+  { key: 'instances', title: term('实例'), width: 70, align: 'right', render: (r) => mono(String(r.instances)) },
+  { key: 'blocks', title: term('已用块'), width: 120, align: 'right', sorter: (a, b) => a.blocks - b.blocks,
     render: (r) => mono(formatBytes(r.blocks)) },
-  { key: 'carriers', title: '已分配载体', width: 130, align: 'right', defaultSortOrder: 'descend',
+  { key: 'carriers', title: term('已分配载体'), width: 130, align: 'right', defaultSortOrder: 'descend',
     sorter: (a, b) => a.carriers - b.carriers, render: (r) => mono(formatBytes(r.carriers)) },
-  { key: 'util', title: '利用率', minWidth: 180,
+  { key: 'util', title: term('利用率'), minWidth: 180,
     sorter: (a, b) => ratio(a) - ratio(b),
     render: (r) => h('div', { class: 'util' }, [
       h(NProgress, { type: 'line', percentage: Math.round(ratio(r) * 100), showIndicator: false, height: 8,
         status: r.carriers > 4 * 1024 * 1024 && ratio(r) < 0.5 ? 'warning' : 'default' }),
       h('span', { class: 'mono util-pct' }, r.carriers ? pct(ratio(r)) : '-'),
     ]) },
-  { key: 'mbcs', title: '多块载体', width: 170, align: 'right',
+  { key: 'mbcs', title: term('多块载体'), width: 170, align: 'right',
     render: (r) => h('span', { class: 'mono muted' }, `${formatBytes(r.mbcs_blocks)} / ${formatBytes(r.mbcs_carriers)}`) },
-  { key: 'sbcs', title: '单块载体', width: 170, align: 'right',
+  { key: 'sbcs', title: term('单块载体'), width: 170, align: 'right',
     render: (r) => h('span', { class: 'mono muted' }, `${formatBytes(r.sbcs_blocks)} / ${formatBytes(r.sbcs_carriers)}`) },
-  { key: 'carriers_max', title: '历史峰值', width: 110, align: 'right',
+  { key: 'carriers_max', title: term('历史峰值'), width: 110, align: 'right',
     sorter: (a, b) => a.carriers_max - b.carriers_max, render: (r) => h('span', { class: 'mono muted' }, formatBytes(r.carriers_max)) },
 ]
 
@@ -95,12 +96,12 @@ function ratio(r: AllocatorRow) {
       <NGi span="4 m:1"><KpiTile label="整体利用率" :value="data ? pct(totals.util) : '-'" hint="利用率低说明存在碎片" /></NGi>
       <NGi span="4 m:1"><KpiTile label="erlang:memory(total)" :value="data ? formatBytes(data.memory_total) : '-'" /></NGi>
       <NGi span="4 l:2">
-        <NCard title="载体大小" size="small">
+        <NCard :title="term('载体大小')" size="small">
           <TimeSeriesChart :series="carrierSeries" :format="formatBytes" stacked :window-ms="WINDOW_MS" :height="260" />
         </NCard>
       </NGi>
       <NGi span="4 l:2">
-        <NCard title="载体利用率" size="small">
+        <NCard :title="term('载体利用率')" size="small">
           <TimeSeriesChart :series="utilSeries" :format="pct" :y-max="1" :y-interval="0.25" :window-ms="WINDOW_MS" :height="260" />
         </NCard>
       </NGi>

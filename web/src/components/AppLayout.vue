@@ -14,6 +14,7 @@ import { client } from '../api/ws'
 import NodeSwitcher from './NodeSwitcher.vue'
 import WelcomePanel from './WelcomePanel.vue'
 import ConnectDialog from './ConnectDialog.vue'
+import UpdateChecker from './UpdateChecker.vue'
 import { useUrlSync } from '../composables/useUrlSync'
 
 const route = useRoute()
@@ -63,8 +64,9 @@ const socketText = computed(() => ({
       </div>
       <NMenu :value="String(route.name)" :options="menuOptions" :collapsed="collapsed"
              :collapsed-width="64" :collapsed-icon-size="20"
+             style="padding-bottom: 96px"
              @update:value="(k: string) => router.push({ name: k })" />
-      <div v-if="!collapsed && settings.version" class="version">v{{ settings.version }}</div>
+      <UpdateChecker v-if="settings.version" :collapsed="collapsed" />
     </NLayoutSider>
     <NLayout>
       <NLayoutHeader bordered class="header">
@@ -136,7 +138,15 @@ const socketText = computed(() => ({
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
   padding: 0 20px;
+}
+.header-left {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.header > :last-child {
+  flex: none;
 }
 .content {
   height: calc(100% - 60px);
@@ -152,13 +162,6 @@ const socketText = computed(() => ({
   border-radius: 10px;
   border: 1px solid currentColor;
   opacity: 0.7;
-}
-.version {
-  position: absolute;
-  bottom: 16px;
-  left: 24px;
-  font-size: 12px;
-  opacity: 0.4;
 }
 .socket-dot {
   display: inline-block;

@@ -74,9 +74,9 @@ const statRows = computed(() => s.value ? [
       <NGi><StatCard title="CPU 与线程" :rows="cpuRows" /></NGi>
       <NGi>
         <NCard title="资源使用" size="small">
-          <UsageBar label="进程" :used="s.process_count" :limit="s.process_limit" />
-          <UsageBar label="端口" :used="s.port_count" :limit="s.port_limit" />
-          <UsageBar label="原子" :used="s.atom_count" :limit="s.atom_limit" />
+          <UsageBar label="进程" tip="当前进程数 / 进程数上限（+P 参数）。达到上限后无法再创建进程。" :used="s.process_count" :limit="s.process_limit" />
+          <UsageBar label="端口" tip="当前端口数 / 端口数上限（+Q 参数）。socket、文件、外部程序都占用端口。" :used="s.port_count" :limit="s.port_limit" />
+          <UsageBar label="原子" tip="当前原子数 / 原子表上限（+t 参数）。原子不会被回收，达到上限节点会崩溃。" :used="s.atom_count" :limit="s.atom_limit" />
           <UsageBar v-if="s.ets_limit" label="ETS 表" :used="s.ets_count" :limit="s.ets_limit" />
           <div v-else class="ets">ETS 表 <span class="mono">{{ s.ets_count }}</span></div>
         </NCard>

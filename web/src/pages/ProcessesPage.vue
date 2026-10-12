@@ -13,6 +13,7 @@ import { formatBytes, formatNumber } from '../api/format'
 import PageHeader from '../components/PageHeader.vue'
 import NodeGuard from '../components/NodeGuard.vue'
 import ProcessDrawer from '../components/ProcessDrawer.vue'
+import { term } from '../api/term'
 
 type SortKey = 'reds' | 'reductions' | 'memory' | 'message_queue_len' | 'name' | 'pid'
 
@@ -97,33 +98,33 @@ const columns = computed<DataTableColumns<ProcessRow>>(() => [
     render: (r) => h('span', { class: 'mono pid' }, r.pid),
   },
   {
-    key: 'name', title: '名称 / 初始调用', minWidth: 220, ellipsis: { tooltip: true }, ...sorter('name'),
+    key: 'name', title: term('名称 / 初始调用'), minWidth: 220, ellipsis: { tooltip: true }, ...sorter('name'),
     render: (r) => r.name
       ? h('span', { class: 'name' }, r.name)
       : h('span', { class: 'mono muted' }, r.initial_call),
   },
   {
-    key: 'reds', title: 'Reds', width: 110, align: 'right', ...sorter('reds'),
+    key: 'reds', title: term('Reds'), width: 110, align: 'right', ...sorter('reds'),
     render: (r) => h('span', { class: 'mono' }, r.reds == null ? '-' : formatNumber(r.reds)),
   },
   {
-    key: 'reductions', title: 'Reductions', width: 140, align: 'right', ...sorter('reductions'),
+    key: 'reductions', title: term('Reductions'), width: 140, align: 'right', ...sorter('reductions'),
     render: (r) => h('span', { class: 'mono muted' }, formatNumber(r.reductions)),
   },
   {
-    key: 'memory', title: '内存', width: 110, align: 'right', ...sorter('memory'),
+    key: 'memory', title: term('内存', '进程占用的总内存，包括堆、栈、消息队列和内部结构。'), width: 110, align: 'right', ...sorter('memory'),
     render: (r) => h('span', { class: 'mono' }, formatBytes(r.memory)),
   },
   {
-    key: 'message_queue_len', title: '消息队列', width: 110, align: 'right', ...sorter('message_queue_len'),
+    key: 'message_queue_len', title: term('消息队列'), width: 110, align: 'right', ...sorter('message_queue_len'),
     render: (r) => h('span', { class: ['mono', queueClass(r.message_queue_len)] }, formatNumber(r.message_queue_len)),
   },
   {
-    key: 'current_function', title: '当前函数', minWidth: 220, ellipsis: { tooltip: true },
+    key: 'current_function', title: term('当前函数'), minWidth: 220, ellipsis: { tooltip: true },
     render: (r) => h('span', { class: 'mono muted' }, r.current_function),
   },
   {
-    key: 'status', title: '状态', width: 100,
+    key: 'status', title: term('状态'), width: 100,
     render: (r) => h(NTag, {
       size: 'small', bordered: false,
       type: r.status === 'running' ? 'success' : r.status === 'runnable' ? 'warning'

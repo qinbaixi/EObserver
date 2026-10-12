@@ -56,6 +56,9 @@ OTP 的 `observer` 很好用，但它基于 wxWidgets，有几个痛点：需要
     <td><img src="docs/images/table-rows.png" alt="Mnesia 表记录" /></td>
     <td><img src="docs/images/allocators-dark.png" alt="内存分配器" /></td>
   </tr>
+  <tr>
+    <td colspan="2" align="center"><img src="docs/images/connect-local.png" alt="本机节点" width="60%" /></td>
+  </tr>
 </table>
 
 ## 安装

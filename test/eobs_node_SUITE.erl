@@ -59,7 +59,10 @@ disconnect_unloads_agent(Config) ->
     ?assertEqual(false, peer:call(Peer, code, is_loaded, [eobs_agent])).
 
 unreachable_node_retries(_Config) ->
-    Node = list_to_atom("nobody_here@" ++ net_adm:localhost()),
+    %% Short host name: the suite's peers already put the tool in shortnames
+    %% mode (net_adm:localhost/0 may return an FQDN, e.g. on CI runners).
+    {ok, Host} = inet:gethostname(),
+    Node = list_to_atom("nobody_here@" ++ Host),
     {ok, _} = eobs_nodes:connect(Node, eobs_ct),
     Info = wait_for(Node, fun(#{status := S}) -> S =:= disconnected end),
     ?assertNotEqual(null, maps:get(error, Info)).

@@ -252,6 +252,17 @@ jobs:
           # The installer as a user runs it, into Program Files.
           $inst = 'C:\Program Files\EObserver Smoke'
           Start-Process -Wait -FilePath (Resolve-Path "out/EObserver-$env:VERSION-win-x64.exe") -ArgumentList '/S', "/D=$inst"
+          # The installer may hand off to a second process; wait until it
+          # has written the uninstaller, its last file.
+          $instExe = "$inst\EObserver.exe"
+          $done = "$inst\Uninstall EObserver.exe"
+          for ($i = 0; $i -lt 90 -and -not (Test-Path $done); $i++) { Start-Sleep 2 }
+          if (-not (Test-Path $instExe)) {
+            Get-ChildItem $inst -ErrorAction SilentlyContinue | Format-Table Name, Length
+            Get-ChildItem "$env:LOCALAPPDATA\Programs" -ErrorAction SilentlyContinue | Format-Table FullName
+            throw "installer did not put EObserver.exe in $inst"
+          }
+          Start-Sleep 3
           foreach ($d in @($T, $inst)) {
             # Deny writes for Everyone, as for a normal user in Program Files.
             # Not the W shorthand: it includes SYNCHRONIZE and READ_CONTROL,
@@ -265,7 +276,7 @@ jobs:
           $zipExe = (Get-ChildItem "$T/zip" -Recurse -Filter EObserver.exe | Select-Object -First 1).FullName
           node scripts/desktop-smoke.mjs $zipExe
           if ($LASTEXITCODE) { exit 1 }
-          node scripts/desktop-smoke.mjs "$inst\EObserver.exe"
+          node scripts/desktop-smoke.mjs $instExe
           if ($LASTEXITCODE) { exit 1 }
 
       - uses: actions/upload-artifact@v4

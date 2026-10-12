@@ -165,6 +165,14 @@ jobs:
 
       - name: Build release
         run: rebar3 release
+      # relx writes erl.ini files with this runner's absolute paths. erl.exe
+      # finds its installation by itself when there is none, so drop them;
+      # otherwise the release only starts where it was built.
+      - name: Remove erl.ini (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          find _build/default/rel/eobserver -name erl.ini -print -delete
 
       - name: Release smoke test
         run: node scripts/release-smoke.mjs _build/default/rel/eobserver
@@ -195,6 +203,65 @@ jobs:
           shopt -s nullglob
           for f in electron/dist/*.{AppImage,tar.gz,dmg,zip,exe}; do cp "$f" out/; done
           ls -la out
+
+      # Every package is tested the way a user runs it: unpacked or installed
+      # somewhere other than the build directory, under a path with a space,
+      # with the files made read-only.
+      - name: Test packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq xvfb >/dev/null
+          T="$RUNNER_TEMP/smoke dir"
+          mkdir -p "$T/cli" "$T/tar" "$T/appimage"
+          tar -C "$T/cli" -xzf "out/eobserver-cli-$VERSION-linux-x64.tar.gz"
+          tar -C "$T/tar" -xzf "out/EObserver-$VERSION-linux-x64.tar.gz"
+          cp "out/EObserver-$VERSION-linux-x86_64.AppImage" "$T/appimage/"
+          chmod +x "$T"/appimage/*.AppImage
+          chmod -R a-w "$T"
+          node scripts/release-smoke.mjs "$T/cli/eobserver"
+          xvfb-run -a node scripts/desktop-smoke.mjs "$(find "$T/tar" -name eobserver-desktop -type f)" --no-sandbox
+          # The runner has no FUSE; the AppImage runtime then unpacks itself to /tmp.
+          APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a node scripts/desktop-smoke.mjs \
+            "$(echo "$T"/appimage/*.AppImage)" --no-sandbox > "$RUNNER_TEMP/appimage.log" 2>&1 \
+            || { cat "$RUNNER_TEMP/appimage.log"; exit 1; }
+          grep -v '^/tmp/appimage_extracted' "$RUNNER_TEMP/appimage.log"
+      - name: Test packages (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          T="$RUNNER_TEMP/smoke dir"
+          mkdir -p "$T/cli" "$T/dmg" "$T/zip"
+          tar -C "$T/cli" -xzf "out/eobserver-cli-$VERSION-macos-arm64.tar.gz"
+          hdiutil attach -nobrowse -mountpoint "$T/mnt" "out/EObserver-$VERSION-mac-arm64.dmg"
+          cp -R "$T/mnt/EObserver.app" "$T/dmg/"
+          hdiutil detach "$T/mnt"
+          ditto -x -k "out/EObserver-$VERSION-mac-arm64.zip" "$T/zip"
+          chmod -R a-w "$T"
+          node scripts/release-smoke.mjs "$T/cli/eobserver"
+          node scripts/desktop-smoke.mjs "$T/dmg/EObserver.app/Contents/MacOS/EObserver"
+          node scripts/desktop-smoke.mjs "$T/zip/EObserver.app/Contents/MacOS/EObserver"
+      - name: Test packages (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Hide the build output, so nothing can quietly start from there.
+          Rename-Item _build/default/rel/eobserver eobserver.hidden
+          $T = Join-Path $env:RUNNER_TEMP 'smoke dir'
+          Expand-Archive "out/eobserver-cli-$env:VERSION-windows-x64.zip" "$T/cli"
+          Expand-Archive "out/EObserver-$env:VERSION-win-x64.zip" "$T/zip"
+          # The zip holds the same files the installer puts in place; the
+          # installer itself does not install silently on the CI runner.
+          # Deny writes for Everyone, as for a normal user in Program Files.
+          # Not the W shorthand: it includes SYNCHRONIZE and READ_CONTROL,
+          # which would stop programs from starting at all. Inheritance
+          # carries the entry to everything below.
+          icacls $T /deny '*S-1-1-0:(OI)(CI)(WD,AD,WEA,WA)' /Q
+          if ($LASTEXITCODE) { exit 1 }
+          node scripts/release-smoke.mjs "$T/cli/eobserver"
+          if ($LASTEXITCODE) { exit 1 }
+          $zipExe = (Get-ChildItem "$T/zip" -Recurse -Filter EObserver.exe | Select-Object -First 1).FullName
+          node scripts/desktop-smoke.mjs $zipExe
+          if ($LASTEXITCODE) { exit 1 }
 
       - uses: actions/upload-artifact@v4
         with:

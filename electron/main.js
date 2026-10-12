@@ -11,6 +11,10 @@ let child = null
 let win = null
 let quitting = false
 const log = []
+// EOBS_SMOKE_RESULT=<file>: start, check that the UI rendered, write the
+// outcome to <file> as JSON and quit. Used by the release workflow to test
+// the packaged app on every platform before publishing.
+const smokeFile = process.env.EOBS_SMOKE_RESULT
 
 function releaseDir() {
   return app.isPackaged
@@ -100,6 +104,7 @@ async function createWindow() {
     minWidth: 960,
     minHeight: 600,
     title: 'EObserver',
+    show: !smokeFile,
     backgroundColor: '#101014',
     autoHideMenuBar: true,
     webPreferences: { contextIsolation: true, sandbox: true },
@@ -121,9 +126,29 @@ async function createWindow() {
     const url = await startBackend()
     origin = new URL(url).origin
     await win.loadURL(url)
+    if (smokeFile) await smokeCheck(url)
   } catch (err) {
+    if (smokeFile) smokeDone({ ok: false, error: err.message })
     showError(err)
   }
+}
+
+async function smokeCheck(url) {
+  // The Vue app mounts into #app; give it a moment to render.
+  for (let i = 0; i < 40; i++) {
+    const n = await win.webContents.executeJavaScript(
+      "document.querySelector('#app')?.childElementCount ?? 0")
+    if (n > 0) return smokeDone({ ok: true, url })
+    await new Promise((r) => setTimeout(r, 250))
+  }
+  smokeDone({ ok: false, url, error: 'UI did not render' })
+}
+
+function smokeDone(result) {
+  fs.writeFileSync(smokeFile, JSON.stringify({ ...result, log: log.join('') }, null, 2))
+  // app.exit skips before-quit, so stop the backend here.
+  stopBackend()
+  setTimeout(() => app.exit(result.ok ? 0 : 1), 1000)
 }
 
 if (!app.requestSingleInstanceLock()) {

@@ -39,8 +39,11 @@ Sending `sub` again with the same `id` replaces the subscription.
 - Arbitrary Erlang terms (messages, state, dictionary values) are pre-formatted
   strings with depth and length limits.
 - Node names in `params` must belong to a node the tool already observes.
-- When the tool runs with `--read-only`, `process.kill`, `process.send` and
-  `port.close` fail with `read_only`.
+- When the tool runs with `--read-only`, `process.kill`, `process.send`,
+  `port.close`, `table.write` and `table.delete` fail with `read_only`.
+- Nodes connected with a saved cookie (`cookie_id`) or the default cookie are
+  remembered in `nodes.eterm` next to `cookies.eterm` and reconnected on the
+  next start; `nodes.disconnect` forgets them.
 
 ## Security
 
@@ -56,13 +59,16 @@ Sending `sub` again with the same `id` replaces the subscription.
 | `settings.get` | | `read_only`, `version` |
 | `nodes.list` / `nodes.connect` / `nodes.disconnect` | `node`, `cookie` or `cookie_id` | node status |
 | `nodes.discover` | `host` (optional) | nodes in the local epmd as `name@host`, host candidates |
-| `cookies.list` / `cookies.save` / `cookies.delete` | `cookie`, `label` / `id` | saved cookies as `id`, `label`, `hint` (never the cookie) / `id` |
+| `cookies.list` / `cookies.save` / `cookies.rename` / `cookies.delete` | `cookie`, `label` / `id`, `label` / `id` | saved cookies as `id`, `label`, `hint` (never the cookie) / `id` |
 | `node.summary` | `node` | system overview |
 | `process.info` / `process.state` | `node`, `pid` | details / `sys:get_state` |
 | `process.kill` / `process.send` | `node`, `pid`, `message` | `ok` |
 | `apps.list` / `apps.tree` | `node`, `app` | applications / supervision tree |
 | `port.info` / `port.close` | `node`, `port` | port details / `ok` |
-| `ets.rows` / `mnesia.rows` | `node`, `table`, `offset`, `limit`, `search` | one page of objects |
+| `ets.rows` / `mnesia.rows` | `node`, `table`, `offset`, `limit`, `search` | one page of objects, with an opaque `keys` entry per row |
+| `table.object` | `node`, `kind` (`ets` / `mnesia`), `table`, `key` | every object under the key, each with full `text`, opaque `ref` and `editable` |
+| `table.write` | `node`, `kind`, `table`, `object` (Erlang term text), `ref` (object to replace, optional) | `ok` |
+| `table.delete` | `node`, `kind`, `table`, `ref` | `ok` |
 
 ## Topics
 

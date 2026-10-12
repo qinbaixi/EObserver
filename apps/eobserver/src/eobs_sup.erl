@@ -11,7 +11,8 @@ init([]) ->
         #{id => pg, start => {pg, start_link, [eobs]}},
         #{id => eobs_node_sup, start => {eobs_node_sup, start_link, []},
           type => supervisor},
-        #{id => eobs_nodes, start => {eobs_nodes, start_link, []}},
-        #{id => eobs_cookies, start => {eobs_cookies, start_link, []}}
+        %% Before eobs_nodes: restoring saved nodes looks up their cookies.
+        #{id => eobs_cookies, start => {eobs_cookies, start_link, []}},
+        #{id => eobs_nodes, start => {eobs_nodes, start_link, []}}
     ],
     {ok, {#{strategy => rest_for_one, intensity => 5, period => 10}, Children}}.

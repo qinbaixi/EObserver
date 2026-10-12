@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
-type Mode = 'light' | 'dark' | 'system'
+export type Mode = 'light' | 'dark' | 'system'
 const KEY = 'eobs.theme'
 
 export const useTheme = defineStore('theme', () => {
@@ -18,8 +18,8 @@ export const useTheme = defineStore('theme', () => {
 
   const isDark = computed(() => (mode.value === 'system' ? systemDark.value : mode.value === 'dark'))
 
-  function toggle() {
-    mode.value = isDark.value ? 'light' : 'dark'
+  function setMode(m: Mode) {
+    mode.value = m
     try {
       localStorage.setItem(KEY, mode.value)
     } catch {
@@ -27,5 +27,5 @@ export const useTheme = defineStore('theme', () => {
     }
   }
 
-  return { mode, isDark, toggle }
+  return { mode, isDark, setMode }
 })

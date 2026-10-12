@@ -1,15 +1,26 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import {
-  NSelect, NInput, NCheckbox, NButton, NIcon, NSpace, NPopconfirm, type SelectOption,
+  NSelect, NInput, NCheckbox, NButton, NIcon, NSpace, NPopconfirm, useMessage, type SelectOption,
 } from 'naive-ui'
-import { TrashOutline } from '@vicons/ionicons5'
+import { TrashOutline, SettingsOutline } from '@vicons/ionicons5'
 import { useCookies, type CookieChoice } from '../stores/cookies'
+import { errorText } from '../api/errors'
+import CookieManager from './CookieManager.vue'
 
 // Picks the cookie to connect with from the saved ones, the default
 // ~/.erlang.cookie, or a new one (saved unless "remember" is unticked).
 const choice = defineModel<CookieChoice>({ required: true })
 const cookies = useCookies()
+const message = useMessage()
+const managing = ref(false)
+
+// A saved cookie deleted elsewhere (e.g. in the manager) can't stay selected.
+watch(() => cookies.saved, (list) => {
+  if (choice.value.kind === 'saved' && !list.some((c) => c.id === (choice.value as { id: string }).id)) {
+    choice.value = cookies.lastChoice()
+  }
+})
 
 onMounted(async () => {
   await cookies.refresh().catch(() => {})
@@ -40,8 +51,12 @@ const fresh = computed(() => (choice.value.kind === 'new' ? choice.value : null)
 
 async function removeSelected() {
   if (choice.value.kind !== 'saved') return
-  await cookies.remove(choice.value.id)
-  choice.value = cookies.lastChoice()
+  try {
+    await cookies.remove(choice.value.id)
+    choice.value = cookies.lastChoice()
+  } catch (e) {
+    message.error(errorText(e))
+  }
 }
 </script>
 
@@ -57,7 +72,11 @@ async function removeSelected() {
         </template>
         从历史中删除这个 cookie？
       </NPopconfirm>
+      <NButton quaternary circle title="管理已保存的 cookie" @click="managing = true">
+        <template #icon><NIcon :component="SettingsOutline" /></template>
+      </NButton>
     </div>
+    <CookieManager v-model:show="managing" />
     <template v-if="fresh">
       <NInput v-model:value="fresh.cookie" type="password" show-password-on="click"
               placeholder="Cookie" class="mono" />

@@ -2,6 +2,7 @@
 import { ref, watch } from 'vue'
 import { NForm, NFormItem, NInput, NButton, NTabs, NTabPane, useMessage } from 'naive-ui'
 import { useNodes } from '../stores/nodes'
+import { errorText } from '../api/errors'
 import { useUi } from '../stores/ui'
 import { useCookies, type CookieChoice } from '../stores/cookies'
 import CookiePicker from './CookiePicker.vue'
@@ -53,7 +54,7 @@ async function submit() {
     if (choice.value.kind === 'new') choice.value = cookies.lastChoice()
     emit('connected')
   } catch (e) {
-    message.error((e as Error).message)
+    message.error(errorText(e))
   } finally {
     loading.value = false
   }

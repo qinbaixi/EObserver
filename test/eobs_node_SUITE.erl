@@ -10,14 +10,14 @@
          process_list/1, process_detail_and_actions/1, applications/1,
          ports_and_sockets/1, ets_tables/1, mnesia_tables/1, allocators/1,
          read_only_mode/1, cluster_topology/1, http_password_and_origin/1,
-         local_discovery/1, saved_cookies/1]).
+         local_discovery/1, saved_cookies/1, saved_nodes/1]).
 
 all() ->
     [connect_loads_agent, tool_is_hidden, disconnect_unloads_agent,
      unreachable_node_retries, api_requests, load_sampling, process_list,
      process_detail_and_actions, applications, ports_and_sockets, ets_tables,
      mnesia_tables, allocators, read_only_mode, cluster_topology,
-     http_password_and_origin, local_discovery, saved_cookies].
+     http_password_and_origin, local_discovery, saved_cookies, saved_nodes].
 
 init_per_suite(Config) ->
     application:load(eobserver),
@@ -240,7 +240,37 @@ ets_tables(Config) ->
                  eobs_api:request(<<"ets.rows">>, Req#{<<"table">> => maps:get(id, Private)})),
     ?assertEqual({error, not_found},
                  eobs_api:request(<<"ets.rows">>, Req#{<<"table">> => <<"no_such_table">>})),
-    ?assert(is_binary(eobs_json:encode(Tabs))).
+    ?assert(is_binary(eobs_json:encode(Tabs))),
+    %% View, change, add and delete single objects by their opaque key.
+    #{keys := [Key117]} = Found,
+    Obj = Rows#{<<"kind">> => <<"ets">>},
+    {ok, [#{text := <<"{117,<<\"value117\">>}">>, ref := Ref117, editable := true}]} =
+        eobs_api:request(<<"table.object">>, Obj#{<<"key">> => Key117}),
+    ok = eobs_api:request(<<"table.write">>, Obj#{<<"object">> => <<"{117, changed}">>,
+                                                  <<"ref">> => Ref117}),
+    ?assertEqual([{117, changed}], peer:call(Peer, ets, lookup, [eobs_ct_tab, 117])),
+    %% Changing the key moves the object.
+    {ok, [#{ref := Ref117b}]} = eobs_api:request(<<"table.object">>, Obj#{<<"key">> => Key117}),
+    ok = eobs_api:request(<<"table.write">>, Obj#{<<"object">> => <<"{1170, moved}">>,
+                                                  <<"ref">> => Ref117b}),
+    ?assertEqual([], peer:call(Peer, ets, lookup, [eobs_ct_tab, 117])),
+    ok = eobs_api:request(<<"table.write">>, Obj#{<<"object">> => <<"{999, new}">>}),
+    ?assertMatch({error, <<"invalid_term", _/binary>>},
+                 eobs_api:request(<<"table.write">>, Obj#{<<"object">> => <<"{1,">>})),
+    ?assertEqual({error, bad_object}, eobs_api:request(<<"table.write">>, Obj#{<<"object">> => <<"x">>})),
+    {ok, Moved} = eobs_api:request(<<"ets.rows">>, Rows#{<<"search">> => <<"moved">>}),
+    #{keys := [Key1170]} = Moved,
+    {ok, [#{ref := Ref1170}]} = eobs_api:request(<<"table.object">>, Obj#{<<"key">> => Key1170}),
+    ok = eobs_api:request(<<"table.delete">>, Obj#{<<"ref">> => Ref1170}),
+    ?assertEqual(121 - 1, peer:call(Peer, ets, info, [eobs_ct_tab, size])),
+    %% Objects holding pids cannot be edited as text.
+    true = peer:call(Peer, ets, insert, [eobs_ct_tab, {pid, self()}]),
+    {ok, WithPid} = eobs_api:request(<<"ets.rows">>, Rows#{<<"search">> => <<"{pid,">>}),
+    #{keys := [PidKey]} = WithPid,
+    {ok, [#{editable := false}]} = eobs_api:request(<<"table.object">>, Obj#{<<"key">> => PidKey}),
+    ?assertEqual({error, private},
+                 eobs_api:request(<<"table.object">>, Obj#{<<"table">> => maps:get(id, Private),
+                                                            <<"key">> => Key117})).
 
 mnesia_tables(Config) ->
     Node = ?config(target, Config),
@@ -261,6 +291,18 @@ mnesia_tables(Config) ->
     ?assertEqual(5, length(maps:get(rows, Page))),
     {ok, Found} = eobs_api:request(<<"mnesia.rows">>, Rows#{<<"search">> => <<"\"user7\"">>}),
     ?assertMatch(#{total := 1, rows := [[<<"eobs_user">>, <<"7">>, _]]}, Found),
+    #{keys := [Key7]} = Found,
+    Obj = Rows#{<<"kind">> => <<"mnesia">>},
+    {ok, [#{text := <<"{eobs_user,7,\"user7\"}">>, ref := Ref7}]} =
+        eobs_api:request(<<"table.object">>, Obj#{<<"key">> => Key7}),
+    ok = eobs_api:request(<<"table.write">>, Obj#{<<"object">> => <<"{eobs_user, 7, \"seven\"}">>,
+                                                  <<"ref">> => Ref7}),
+    ?assertEqual([{eobs_user, 7, "seven"}], peer:call(Peer, mnesia, dirty_read, [eobs_user, 7])),
+    ?assertMatch({error, {bad_record, eobs_user, 3}},
+                 eobs_api:request(<<"table.write">>, Obj#{<<"object">> => <<"{eobs_user, 8}">>})),
+    {ok, [#{ref := Ref7b}]} = eobs_api:request(<<"table.object">>, Obj#{<<"key">> => Key7}),
+    ok = eobs_api:request(<<"table.delete">>, Obj#{<<"ref">> => Ref7b}),
+    ?assertEqual([], peer:call(Peer, mnesia, dirty_read, [eobs_user, 7])),
     stopped = peer:call(Peer, mnesia, stop, []).
 
 allocators(Config) ->
@@ -285,6 +327,8 @@ read_only_mode(Config) ->
     ?assertEqual({error, read_only},
                  eobs_api:request(<<"process.send">>, Req#{<<"message">> => <<"hi">>})),
     ?assertEqual({error, read_only}, eobs_api:request(<<"port.close">>, Req#{<<"port">> => <<"#Port<0.1>">>})),
+    ?assertEqual({error, read_only}, eobs_api:request(<<"table.delete">>, Req#{<<"table">> => <<"t">>, <<"ref">> => <<>>})),
+    ?assertEqual({error, read_only}, eobs_api:request(<<"table.write">>, Req#{<<"table">> => <<"t">>, <<"object">> => <<"{a}">>})),
     ?assert(peer:call(Peer, erlang, is_process_alive, [Target])),
     %% Reading still works.
     ?assertMatch({ok, _}, eobs_api:request(<<"process.info">>, Req)).
@@ -360,11 +404,51 @@ saved_cookies(Config) ->
     ok = supervisor:terminate_child(eobs_sup, eobs_cookies),
     {ok, _} = supervisor:restart_child(eobs_sup, eobs_cookies),
     {ok, [#{id := Id}]} = eobs_api:request(<<"cookies.list">>, #{}),
+    ok = eobs_api:request(<<"cookies.rename">>, #{<<"id">> => Id, <<"label">> => <<"本地"/utf8>>}),
+    {ok, [#{label := <<"本地"/utf8>>}]} = eobs_api:request(<<"cookies.list">>, #{}),
+    ?assertEqual({error, not_found},
+                 eobs_api:request(<<"cookies.rename">>, #{<<"id">> => <<"nope">>, <<"label">> => <<"x">>})),
     ok = eobs_api:request(<<"cookies.delete">>, #{<<"id">> => Id}),
     {ok, []} = eobs_api:request(<<"cookies.list">>, #{}),
     ?assertEqual({error, cookie_not_found},
                  eobs_api:request(<<"nodes.connect">>, #{<<"node">> => atom_to_binary(Node),
                                                          <<"cookie_id">> => Id})).
+
+saved_nodes(Config) ->
+    Node = ?config(target, Config),
+    Peer = ?config(peer, Config),
+    {ok, #{id := Id}} = eobs_api:request(<<"cookies.save">>, #{<<"cookie">> => <<"eobs_ct">>}),
+    ok = eobs_api:request(<<"nodes.connect">>, #{<<"node">> => atom_to_binary(Node),
+                                                 <<"cookie_id">> => Id}),
+    wait_for(Node, fun(#{status := S}) -> S =:= connected end),
+    %% A retry without a cookie keeps the saved entry.
+    ok = eobs_api:request(<<"nodes.connect">>, #{<<"node">> => atom_to_binary(Node)}),
+    {ok, Saved} = file:consult(eobs_nodes:file()),
+    ?assertEqual([{Node, {cookie_id, Id}}], Saved),
+    %% Restarting the registry reconnects the node with the saved cookie.
+    restart_nodes(),
+    wait_for(Node, fun(#{status := S}) -> S =:= connected end),
+    %% Removing it unloads the agent, drops the connection and forgets it.
+    ok = eobs_nodes:disconnect(Node),
+    ?assertNot(lists:member(Node, nodes(hidden))),
+    ?assertEqual(false, peer:call(Peer, code, is_loaded, [eobs_agent])),
+    {ok, []} = file:consult(eobs_nodes:file()),
+    restart_nodes(),
+    timer:sleep(300),
+    ?assertEqual([], eobs_nodes:list()),
+    %% A cookie that was not saved is not remembered.
+    ok = eobs_api:request(<<"nodes.connect">>, #{<<"node">> => atom_to_binary(Node),
+                                                 <<"cookie">> => <<"eobs_ct">>}),
+    wait_for(Node, fun(#{status := S}) -> S =:= connected end),
+    {ok, []} = file:consult(eobs_nodes:file()),
+    ok = eobs_api:request(<<"cookies.delete">>, #{<<"id">> => Id}).
+
+restart_nodes() ->
+    ok = supervisor:terminate_child(eobs_sup, eobs_nodes),
+    %% The node processes outlive the registry; stop them like a real
+    %% shutdown of the tool would.
+    [supervisor:terminate_child(eobs_node_sup, P) || {_, P, _, _} <- supervisor:which_children(eobs_node_sup)],
+    {ok, _} = supervisor:restart_child(eobs_sup, eobs_nodes).
 
 connect(Node) ->
     {ok, _} = eobs_nodes:connect(Node, eobs_ct),

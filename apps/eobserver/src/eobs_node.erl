@@ -45,7 +45,8 @@ init({Node, Cookie}) ->
            summary => undefined,
            agent => undefined,
            retry => ?MIN_RETRY,
-           timer => undefined}}.
+           timer => undefined,
+           ours => false}}.
 
 handle_call(info, _From, State) ->
     {reply, public(State), State}.
@@ -66,9 +67,15 @@ handle_info({nodedown, Node}, #{node := Node} = State) ->
 handle_info(_Msg, State) ->
     {noreply, State}.
 
-terminate(_Reason, #{node := Node, status := connected, agent := #{loaded := true}}) ->
-    eobs_inject:unload(Node);
-terminate(_Reason, _State) ->
+terminate(_Reason, #{node := Node} = State) ->
+    case State of
+        #{status := connected, agent := #{loaded := true}} -> eobs_inject:unload(Node);
+        _ -> ok
+    end,
+    %% Drop the hidden connection too, so the node really is no longer
+    %% observed (and stops showing EObserver in its connections).
+    erlang:monitor_node(Node, false),
+    _ = erlang:disconnect_node(Node),
     ok.
 
 %% internal
@@ -91,13 +98,20 @@ do_connect(#{node := Node, cookie := Cookie} = State) ->
 
 after_connect(#{node := Node} = State) ->
     case eobs_inject:ensure_loaded(Node) of
-        {ok, Agent} ->
+        {ok, Agent0} ->
+            %% Reconnecting finds the agent we loaded earlier still there;
+            %% it is still ours to unload when observation stops.
+            Agent = case {Agent0, State} of
+                        {#{method := already_loaded}, #{ours := true}} -> Agent0#{loaded := true};
+                        _ -> Agent0
+                    end,
             Summary = case call(Node, node_summary, [], ?CALL_TIMEOUT) of
                           {ok, S} -> S;
                           {error, _} -> undefined
                       end,
             set_status(connected, undefined,
-                       State#{agent := Agent, summary := Summary, retry := ?MIN_RETRY});
+                       State#{agent := Agent, summary := Summary, retry := ?MIN_RETRY,
+                              ours := maps:get(loaded, Agent)});
         {error, Reason} ->
             set_status(failed, {agent_load_failed, Reason}, State)
     end.

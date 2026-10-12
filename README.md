@@ -92,7 +92,7 @@ Your browser opens at <http://localhost:8090/>. You can also start without `--no
 | `--port 8090` | HTTP port |
 | `--listen 127.0.0.1` | Listen address. Localhost by default because the UI can kill processes on the target |
 | `--password PASS` | Ask for this password (HTTP Basic auth, any user name). Also read from `EOBS_PASSWORD`. Use it with `--listen` |
-| `--read-only` | Disable killing processes, sending messages and closing ports |
+| `--read-only` | Disable killing processes, sending messages, closing ports and editing table rows |
 | `--no-browser` | Do not open a browser |
 
 Short names (`app@host`) and long names (`app@host.example.com`) are detected automatically, but one EObserver instance uses one kind at a time.

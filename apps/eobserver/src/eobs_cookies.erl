@@ -6,7 +6,7 @@
 -module(eobs_cookies).
 -behaviour(gen_server).
 
--export([start_link/0, list/0, save/2, delete/1, lookup/1, hint/1, file/0]).
+-export([start_link/0, list/0, save/2, rename/2, delete/1, lookup/1, hint/1, file/0]).
 -export([init/1, handle_call/3, handle_cast/2]).
 
 -define(MAX_ENTRIES, 50).
@@ -25,6 +25,11 @@ save(Cookie, Label) when is_binary(Cookie), Cookie =/= <<>> ->
     gen_server:call(?MODULE, {save, Cookie, Label});
 save(_, _) ->
     {error, empty_cookie}.
+
+%% Changes the label shown for a stored cookie.
+-spec rename(binary(), binary()) -> ok | {error, term()}.
+rename(Id, Label) when is_binary(Label) ->
+    gen_server:call(?MODULE, {rename, Id, Label}).
 
 delete(Id) ->
     gen_server:call(?MODULE, {delete, Id}).
@@ -66,6 +71,17 @@ handle_call({save, Cookie, Label}, _From, Entries) ->
                                  _ -> Label
                              end},
     store([Entry1 | Rest], Entry1, Entries);
+handle_call({rename, Id, Label}, _From, Entries) ->
+    case lists:partition(fun(#{id := I}) -> I =:= Id end, Entries) of
+        {[E], _} ->
+            New = [case I of Id -> E#{label => Label}; _ -> X end || #{id := I} = X <- Entries],
+            case write(New) of
+                ok -> {reply, ok, New};
+                Error -> {reply, Error, Entries}
+            end;
+        {[], _} ->
+            {reply, {error, not_found}, Entries}
+    end;
 handle_call({delete, Id}, _From, Entries) ->
     New = [E || #{id := I} = E <- Entries, I =/= Id],
     case write(New) of

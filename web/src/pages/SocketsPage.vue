@@ -7,6 +7,7 @@ import { useTopic } from '../composables/useTopic'
 import type { InetRow, SocketRow } from '../api/types'
 import { formatBytes } from '../api/format'
 import PageHeader from '../components/PageHeader.vue'
+import RefreshControl from '../components/RefreshControl.vue'
 import NodeGuard from '../components/NodeGuard.vue'
 import PortDrawer from '../components/PortDrawer.vue'
 import ProcessDrawer from '../components/ProcessDrawer.vue'
@@ -24,6 +25,7 @@ const inetNode = computed(() => (tab.value === 'inet' ? node.value : null))
 const sockNode = computed(() => (tab.value === 'socket' ? socketNode.value : null))
 const inet = useTopic<InetRow[]>('node.inet', toRef(inetNode), 3000)
 const sockets = useTopic<SocketRow[]>('node.sockets', toRef(sockNode), 3000)
+const active = computed(() => (tab.value === 'inet' ? inet : sockets))
 
 const search = ref('')
 const selectedPort = ref<string | null>(null)
@@ -83,6 +85,8 @@ const socketTable = useResizableTable(socketColumns)
     <NInput v-model:value="search" clearable placeholder="按地址或进程过滤" style="width: 260px">
       <template #prefix><NIcon :component="SearchOutline" /></template>
     </NInput>
+    <RefreshControl v-model:paused="active.paused.value" v-model:interval="active.interval.value"
+                    @refresh="active.refresh" />
   </PageHeader>
   <NodeGuard>
     <NTabs v-model:value="tab" type="line">

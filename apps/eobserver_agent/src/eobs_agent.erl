@@ -12,11 +12,12 @@
 -export([app_list/0, app_tree/1]).
 -export([port_list/0, port_detail/1, port_close/1, inet_list/0, socket_list/0]).
 -export([ets_list/0, ets_rows/2, mnesia_list/0, mnesia_rows/2]).
+-export([table_object/3, table_delete/3, table_write/4]).
 -export([alloc_info/0, dist_info/0]).
 
 %% Bump whenever the exported API or return shapes change, so the tool
 %% replaces an older copy that is still loaded on the target.
--define(VERSION, 7).
+-define(VERSION, 8).
 
 %% Long-lived helper process on the observed node. It keeps
 %% scheduler_wall_time enabled, builds process lists while holding the
@@ -37,6 +38,8 @@
 %% Table viewer: chars per cell, and how many objects a search may scan.
 -define(CELL_CHARS, 300).
 -define(SEARCH_SCAN, 200000).
+%% Full text of one object in the row viewer.
+-define(OBJECT_CHARS, 1000000).
 
 version() ->
     ?VERSION.
@@ -769,6 +772,7 @@ read_rows(Select, Size, KeyPos, Opts) ->
         end,
     Rows = [row_cells(O) || O <- Objects],
     #{rows => Rows,
+      keys => [key_ref(O, KeyPos) || O <- Objects],
       keypos => KeyPos,
       columns => lists:max([0 | [length(R) || R <- Rows]]),
       total => Matched,
@@ -820,6 +824,130 @@ next({mnesia_cont, Cont}) ->
     end;
 next(Cont) ->
     ets:select(Cont).
+
+%% Opaque, exact reference to an object's key, handed back by the viewer
+%% to read, change or delete that object.
+key_ref(Obj, KeyPos) when is_tuple(Obj), tuple_size(Obj) >= KeyPos ->
+    ref(element(KeyPos, Obj));
+key_ref(_, _) ->
+    null.
+
+ref(Term) -> base64:encode(term_to_binary(Term)).
+
+unref(Bin) -> binary_to_term(base64:decode(Bin), [safe]).
+
+%% Kind: ets | mnesia. Returns every object stored under the key (several
+%% for bag tables) in full, each with a ref for table_delete/table_write
+%% and whether its text reads back as the same term (pids, refs and funs
+%% do not), i.e. whether it can be edited as text.
+table_object(Kind, IdBin, KeyRef) ->
+    with_table(Kind, IdBin, read, fun(Tab, _KeyPos) ->
+        Key = unref(KeyRef),
+        Objs = case Kind of
+                   ets -> ets:lookup(Tab, Key);
+                   mnesia -> mnesia:activity(async_dirty, fun() -> mnesia:read(Tab, Key) end)
+               end,
+        {ok, [object_view(O) || O <- Objs]}
+    end).
+
+object_view(Obj) ->
+    Chars = lists:flatten(io_lib:format("~tp", [Obj])),
+    {Text, Complete} = case length(Chars) > ?OBJECT_CHARS of
+                           true -> {lists:sublist(Chars, ?OBJECT_CHARS) ++ " ...", false};
+                           false -> {Chars, true}
+                       end,
+    #{text => unicode:characters_to_binary(Text),
+      ref => ref(Obj),
+      editable => Complete andalso reads_back(Chars, Obj)}.
+
+reads_back(Chars, Obj) ->
+    try
+        {ok, Tokens, _} = erl_scan:string(Chars ++ " ."),
+        {ok, Obj} =:= erl_parse:parse_term(Tokens)
+    catch _:_ -> false
+    end.
+
+%% Deletes exactly the object ObjRef refers to (one of a bag's objects).
+table_delete(Kind, IdBin, ObjRef) ->
+    with_table(Kind, IdBin, write, fun(Tab, _KeyPos) ->
+        Obj = unref(ObjRef),
+        case Kind of
+            ets -> true = ets:delete_object(Tab, Obj), ok;
+            mnesia -> transaction(fun() -> mnesia:delete_object(Tab, Obj, write) end)
+        end
+    end).
+
+%% Writes New, replacing the object OldRef refers to (null to add one).
+table_write(Kind, IdBin, New, OldRef) ->
+    with_table(Kind, IdBin, write, fun(Tab, KeyPos) ->
+        Old = case OldRef of
+                  null -> undefined;
+                  _ -> unref(OldRef)
+              end,
+        case check_object(Kind, Tab, KeyPos, New) of
+            ok when Old =:= New ->
+                ok;
+            ok when Kind =:= ets ->
+                Old =/= undefined andalso ets:delete_object(Tab, Old),
+                true = ets:insert(Tab, New),
+                ok;
+            ok ->
+                transaction(fun() ->
+                                    Old =/= undefined andalso mnesia:delete_object(Tab, Old, write),
+                                    mnesia:write(Tab, New, write)
+                            end);
+            {error, _} = Error ->
+                Error
+        end
+    end).
+
+check_object(ets, _Tab, KeyPos, New) when is_tuple(New), tuple_size(New) >= KeyPos -> ok;
+check_object(ets, _Tab, _KeyPos, _New) -> {error, bad_object};
+check_object(mnesia, Tab, _KeyPos, New) ->
+    Name = mnesia:table_info(Tab, record_name),
+    Arity = length(mnesia:table_info(Tab, attributes)) + 1,
+    case New of
+        _ when is_tuple(New), tuple_size(New) =:= Arity, element(1, New) =:= Name -> ok;
+        _ -> {error, {bad_record, Name, Arity}}
+    end.
+
+transaction(Fun) ->
+    case mnesia:transaction(Fun) of
+        {atomic, _} -> ok;
+        {aborted, Reason} -> {error, {aborted, Reason}}
+    end.
+
+%% Runs Fun(Tab, KeyPos) on the table with the given id, after checking
+%% that the agent may Access (read | write) it.
+with_table(ets, IdBin, Access, Fun) ->
+    case find_ets(IdBin) of
+        undefined ->
+            {error, not_found};
+        Tab ->
+            Owner = ets:info(Tab, owner),
+            case {ets:info(Tab, protection), Access} of
+                {private, _} -> {error, private};
+                {protected, write} when Owner =/= self() -> {error, protected};
+                _ -> guarded(fun() -> Fun(Tab, ets:info(Tab, keypos)) end)
+            end
+    end;
+with_table(mnesia, IdBin, _Access, Fun) ->
+    case mnesia_running() of
+        false ->
+            {error, not_running};
+        true ->
+            case [T || T <- mnesia:system_info(tables), atom_to_binary(T, utf8) =:= IdBin] of
+                [Tab] -> guarded(fun() -> Fun(Tab, 2) end);
+                _ -> {error, not_found}
+            end
+    end.
+
+guarded(Fun) ->
+    try Fun()
+    catch
+        error:badarg -> {error, badarg};
+        _:Reason -> {error, fmt(Reason)}
+    end.
 
 row_cells(Obj) when is_tuple(Obj) ->
     [cell(E) || E <- tuple_to_list(Obj)];

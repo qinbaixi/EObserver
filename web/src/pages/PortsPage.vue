@@ -8,6 +8,7 @@ import { useTopic } from '../composables/useTopic'
 import type { PortRow } from '../api/types'
 import { formatBytes, formatNumber } from '../api/format'
 import PageHeader from '../components/PageHeader.vue'
+import RefreshControl from '../components/RefreshControl.vue'
 import NodeGuard from '../components/NodeGuard.vue'
 import PortDrawer from '../components/PortDrawer.vue'
 import ProcessDrawer from '../components/ProcessDrawer.vue'
@@ -17,7 +18,7 @@ import { useResizableTable } from '../api/table'
 const nodes = useNodes()
 const node = computed(() =>
   nodes.currentInfo?.status === 'connected' ? nodes.currentInfo.node : null)
-const { data, error } = useTopic<PortRow[]>('node.ports', toRef(node), 3000)
+const { data, error, paused, interval, refresh } = useTopic<PortRow[]>('node.ports', toRef(node), 3000)
 
 const search = ref('')
 const selectedPort = useQueryRef('port')
@@ -72,6 +73,7 @@ const portTable = useResizableTable(columns)
     <NInput v-model:value="search" clearable placeholder="按端口、名称或进程过滤" style="width: 280px">
       <template #prefix><NIcon :component="SearchOutline" /></template>
     </NInput>
+    <RefreshControl v-model:paused="paused" v-model:interval="interval" @refresh="refresh" />
   </PageHeader>
   <NodeGuard>
     <NAlert v-if="error" type="error" style="margin-bottom: 12px">{{ error }}</NAlert>

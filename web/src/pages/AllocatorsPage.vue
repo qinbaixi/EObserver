@@ -6,6 +6,7 @@ import { useTopic } from '../composables/useTopic'
 import type { AllocInfo, AllocatorRow } from '../api/types'
 import { formatBytes } from '../api/format'
 import PageHeader from '../components/PageHeader.vue'
+import RefreshControl from '../components/RefreshControl.vue'
 import NodeGuard from '../components/NodeGuard.vue'
 import KpiTile from '../components/KpiTile.vue'
 import TimeSeriesChart, { type Series } from '../charts/TimeSeriesChart.vue'
@@ -15,7 +16,7 @@ import { useResizableTable } from '../api/table'
 const nodes = useNodes()
 const node = computed(() =>
   nodes.currentInfo?.status === 'connected' ? nodes.currentInfo.node : null)
-const { data, error } = useTopic<AllocInfo>('node.allocators', toRef(node), 2000)
+const { data, error, paused, interval, refresh } = useTopic<AllocInfo>('node.allocators', toRef(node), 2000)
 
 // Allocators drawn as their own series, in a fixed order so each keeps
 // its color; the rest are folded into "其他".
@@ -89,7 +90,9 @@ const allocTable = useResizableTable(columns)
 </script>
 
 <template>
-  <PageHeader title="内存分配器" subtitle="erts_alloc 的载体（向操作系统申请）与块（实际使用）" />
+  <PageHeader title="内存分配器" subtitle="erts_alloc 的载体（向操作系统申请）与块（实际使用）">
+    <RefreshControl v-model:paused="paused" v-model:interval="interval" @refresh="refresh" />
+  </PageHeader>
   <NodeGuard>
     <NAlert v-if="error" type="error" style="margin-bottom: 12px">{{ error }}</NAlert>
     <NGrid :cols="4" :x-gap="12" :y-gap="12" responsive="screen" item-responsive>

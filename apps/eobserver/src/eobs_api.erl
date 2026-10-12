@@ -11,7 +11,8 @@
 -define(TIMEOUT, 10000).
 
 %% Requests that change the observed node; refused in read-only mode.
--define(MUTATING, [<<"process.kill">>, <<"process.send">>, <<"port.close">>]).
+-define(MUTATING, [<<"process.kill">>, <<"process.send">>, <<"port.close">>,
+                   <<"table.delete">>, <<"table.write">>]).
 
 request(Method, Params) ->
     case lists:member(Method, ?MUTATING) andalso read_only() of
@@ -27,7 +28,7 @@ handle(<<"nodes.list">>, _Params) ->
 handle(<<"nodes.connect">>, #{<<"node">> := Node} = Params) ->
     case connect_cookie(Params) of
         {ok, Cookie} ->
-            case eobs_nodes:connect(binary_to_atom(Node, utf8), Cookie) of
+            case eobs_nodes:connect(binary_to_atom(Node, utf8), Cookie, remember(Params)) of
                 {ok, _Pid} -> ok;
                 Error -> Error
             end;
@@ -48,6 +49,8 @@ handle(<<"cookies.save">>, #{<<"cookie">> := Cookie} = Params) ->
         {ok, Id} -> {ok, #{id => Id}};
         Error -> Error
     end;
+handle(<<"cookies.rename">>, #{<<"id">> := Id} = Params) ->
+    eobs_cookies:rename(Id, label(Params));
 handle(<<"cookies.delete">>, #{<<"id">> := Id}) ->
     eobs_cookies:delete(Id);
 handle(<<"nodes.disconnect">>, #{<<"node">> := Node}) ->
@@ -85,8 +88,24 @@ handle(<<"ets.rows">>, #{<<"node">> := Node, <<"table">> := Id} = Params) ->
     agent(Node, ets_rows, [Id, table_opts(Params)]);
 handle(<<"mnesia.rows">>, #{<<"node">> := Node, <<"table">> := Id} = Params) ->
     agent(Node, mnesia_rows, [Id, table_opts(Params)]);
+%% Kind is ets or mnesia; key and ref are opaque values from ets.rows /
+%% table.object.
+handle(<<"table.object">>, #{<<"node">> := Node, <<"table">> := Id, <<"key">> := Key} = Params) ->
+    agent(Node, table_object, [table_kind(Params), Id, Key]);
+handle(<<"table.delete">>, #{<<"node">> := Node, <<"table">> := Id, <<"ref">> := Ref} = Params) ->
+    agent(Node, table_delete, [table_kind(Params), Id, Ref]);
+handle(<<"table.write">>, #{<<"node">> := Node, <<"table">> := Id, <<"object">> := Text} = Params) ->
+    case parse_term(Text) of
+        {ok, Term} ->
+            agent(Node, table_write, [table_kind(Params), Id, Term,
+                                      maps:get(<<"ref">>, Params, null)]);
+        {error, Reason} ->
+            {error, <<"invalid_term: ", Reason/binary>>}
+    end;
 handle(Method, _Params) ->
     {error, {unknown_method, Method}}.
+
+table_kind(Params) -> enum(maps:get(<<"kind">>, Params, <<"ets">>), [ets, mnesia], ets).
 
 %% A cookie given inline, a saved one by id, or none (~/.erlang.cookie).
 connect_cookie(#{<<"cookie_id">> := Id}) when is_binary(Id) ->
@@ -98,6 +117,15 @@ connect_cookie(Params) ->
     case maps:get(<<"cookie">>, Params, <<>>) of
         C when is_binary(C), C =/= <<>> -> {ok, binary_to_atom(C, utf8)};
         _ -> {ok, undefined}
+    end.
+
+%% How a node can be reconnected after a restart: with its saved cookie,
+%% with the default cookie, or not at all (a typed cookie was not saved).
+remember(#{<<"cookie_id">> := Id}) when is_binary(Id) -> {cookie_id, Id};
+remember(Params) ->
+    case maps:get(<<"cookie">>, Params, <<>>) of
+        C when is_binary(C), C =/= <<>> -> forget;
+        _ -> default
     end.
 
 label(Params) ->

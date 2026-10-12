@@ -12,6 +12,7 @@ import { useTopic } from '../composables/useTopic'
 import type { EtsTable, MnesiaTable } from '../api/types'
 import { formatBytes, formatNumber } from '../api/format'
 import PageHeader from '../components/PageHeader.vue'
+import RefreshControl from '../components/RefreshControl.vue'
 import NodeGuard from '../components/NodeGuard.vue'
 import ProcessDrawer from '../components/ProcessDrawer.vue'
 import TableRowsDrawer from '../components/TableRowsDrawer.vue'
@@ -36,6 +37,7 @@ const etsNode = computed(() => (tab.value === 'ets' ? node.value : null))
 const mnesiaNode = computed(() => (tab.value === 'mnesia' ? node.value : null))
 const ets = useTopic<EtsTable[]>('node.ets', etsNode, 5000)
 const mnesia = useTopic<MnesiaTable[]>('node.mnesia', mnesiaNode, 5000)
+const active = computed(() => (tab.value === 'ets' ? ets : mnesia))
 
 const search = ref('')
 const showSystem = ref(false)
@@ -142,6 +144,8 @@ const mnesiaTable = useResizableTable(mnesiaColumns)
       <NInput v-model:value="search" clearable placeholder="按表名或所属进程过滤" style="width: 260px">
         <template #prefix><NIcon :component="SearchOutline" /></template>
       </NInput>
+      <RefreshControl v-model:paused="active.paused.value" v-model:interval="active.interval.value"
+                      @refresh="active.refresh" />
     </NSpace>
   </PageHeader>
   <NodeGuard>

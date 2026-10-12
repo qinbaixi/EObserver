@@ -6,6 +6,7 @@ import {
 } from 'naive-ui'
 import { RefreshOutline, CloseCircleOutline } from '@vicons/ionicons5'
 import { client } from '../api/ws'
+import { errorText } from '../api/errors'
 import type { PortDetail } from '../api/types'
 import { formatBytes, formatNumber } from '../api/format'
 import { useSettings } from '../stores/settings'
@@ -33,7 +34,7 @@ async function load() {
     detail.value = await client.request<PortDetail>('port.info', { node: props.node, port: props.port })
   } catch (e) {
     detail.value = null
-    error.value = (e as Error).message
+    error.value = errorText(e)
   } finally {
     loading.value = false
   }
@@ -53,7 +54,7 @@ function close() {
         message.success(`已关闭 ${port}`)
         await load()
       } catch (e) {
-        message.error((e as Error).message)
+        message.error(errorText(e))
       }
     },
   })

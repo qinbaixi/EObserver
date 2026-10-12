@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import {
   NDrawer, NDrawerContent, NTabs, NTabPane, NDescriptions, NDescriptionsItem, NTag,
   NButton, NSpace, NEmpty, NSpin, NInput, NCode, NAlert, NIcon, useDialog, useMessage,
 } from 'naive-ui'
 import { RefreshOutline, SkullOutline, SendOutline } from '@vicons/ionicons5'
 import { client } from '../api/ws'
+import { errorText } from '../api/errors'
 import type { ProcessDetail } from '../api/types'
 import { formatBytes, formatNumber } from '../api/format'
 import { useSettings } from '../stores/settings'
@@ -15,6 +17,8 @@ const props = defineProps<{ node: string; pid: string | null }>()
 const emit = defineEmits<{ 'update:pid': [string | null]; killed: [] }>()
 
 const settings = useSettings()
+const route = useRoute()
+const router = useRouter()
 const dialog = useDialog()
 const message = useMessage()
 const detail = ref<ProcessDetail | null>(null)
@@ -38,7 +42,7 @@ async function load() {
     detail.value = await client.request<ProcessDetail>('process.info', { node: props.node, pid: props.pid })
   } catch (e) {
     detail.value = null
-    error.value = (e as Error).message
+    error.value = errorText(e)
   } finally {
     loading.value = false
   }
@@ -51,6 +55,10 @@ watch(() => props.pid, () => {
 }, { immediate: true })
 
 function open(ref: string) {
+  if (ref.startsWith('#Port')) {
+    void router.push({ path: '/ports', query: { node: route.query.node, port: ref } })
+    return
+  }
   if (!ref.startsWith('<') || ref === props.pid) return
   if (props.pid) history.value.push(props.pid)
   emit('update:pid', ref)
@@ -66,7 +74,7 @@ async function readState() {
   try {
     state.value = await client.request<string>('process.state', { node: props.node, pid: props.pid })
   } catch (e) {
-    message.error(`读取状态失败：${(e as Error).message}`)
+    message.error(`读取状态失败：${errorText(e)}`)
   } finally {
     stateLoading.value = false
   }
@@ -86,7 +94,7 @@ function kill() {
         emit('killed')
         await load()
       } catch (e) {
-        message.error((e as Error).message)
+        message.error(errorText(e))
       }
     },
   })
@@ -107,7 +115,7 @@ function send() {
         sendText.value = ''
         await load()
       } catch (e) {
-        message.error(`发送失败：${(e as Error).message}`)
+        message.error(`发送失败：${errorText(e)}`)
       }
     },
   })
@@ -158,7 +166,7 @@ const bytes = (words: number) => formatBytes(words * (detail.value?.word_size ??
             <div class="group-title"><Term :label="g.title" /> <span class="count">{{ g.items.length }}</span></div>
             <NSpace v-if="g.items.length" :size="6">
               <NTag v-for="r in g.items" :key="r" size="small" class="mono"
-                    :class="{ clickable: r.startsWith('<') }" @click="open(r)">{{ r }}</NTag>
+                    :class="{ clickable: r.startsWith('<') || r.startsWith('#Port') }" @click="open(r)">{{ r }}</NTag>
             </NSpace>
             <div v-else class="none">无</div>
           </div>

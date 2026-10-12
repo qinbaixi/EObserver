@@ -1,0 +1,7 @@
+_build/
+rebar3.crashdump
+erl_crash.dump
+*.beam
+web/node_modules/
+web/dist/
+apps/eobserver/priv/www/

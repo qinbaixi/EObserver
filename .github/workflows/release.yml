@@ -250,7 +250,11 @@ jobs:
           Start-Process -Wait -FilePath (Resolve-Path "out/EObserver-$env:VERSION-win-x64.exe") -ArgumentList '/S', "/D=$inst"
           foreach ($d in @($T, $inst)) {
             # Deny writes for Everyone, as for a normal user in Program Files.
-            icacls $d /deny '*S-1-1-0:(OI)(CI)(W)' /T /Q | Out-Null
+            # Not the W shorthand: it includes SYNCHRONIZE and READ_CONTROL,
+            # which would stop programs from starting at all. Inheritance
+            # carries the entry to everything below.
+            icacls $d /deny '*S-1-1-0:(OI)(CI)(WD,AD,WEA,WA)' /Q
+            if ($LASTEXITCODE) { exit 1 }
           }
           node scripts/release-smoke.mjs "$T/cli/eobserver"
           if ($LASTEXITCODE) { exit 1 }

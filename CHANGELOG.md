@@ -6,18 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-### Added
+## [0.0.3] - 2026-10-12
 
-- "Local nodes" tab in the connect dialog: lists the nodes registered with
-  this machine's epmd and connects the selected ones with one cookie.
-- Cookie history: cookies used to connect are saved in the user config
-  directory (`cookies.eterm`, owner-only permissions) and offered in a
-  list; the page only ever sees an id and a short hint, never the cookie.
+### 新增
 
-### Fixed
+- 「添加节点」对话框新增「本机节点」页签：列出本机 epmd 上注册的所有节点，勾选后用同一个 cookie 一次连接。epmd 不记录节点名 @ 后面的主机名，可以在本机短名、完整域名、`localhost`、`127.0.0.1` 中选择或手动输入，选择会被记住。
+- Cookie 历史：连接时用过的 cookie 保存在用户配置目录的 `cookies.eterm` 中（仅本人可读），之后从下拉列表里选择即可，默认选中上次使用的。页面只能看到 id 和「ga…56」这样的提示，拿不到 cookie 明文。
 
-- Retrying a disconnected node from its page no longer drops the cookie it
-  was added with.
+### 修复
+
+- 在节点页面点「重试」时，不再丢掉添加节点时使用的 cookie。
 
 ## [0.0.2] - 2026-10-12
 
@@ -66,6 +64,7 @@ First public release.
   Windows x64.
 - Light and dark themes.
 
-[Unreleased]: https://github.com/qinbaixi/EObserver/compare/v0.0.2...HEAD
+[Unreleased]: https://github.com/qinbaixi/EObserver/compare/v0.0.3...HEAD
+[0.0.3]: https://github.com/qinbaixi/EObserver/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/qinbaixi/EObserver/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/qinbaixi/EObserver/releases/tag/v0.0.1

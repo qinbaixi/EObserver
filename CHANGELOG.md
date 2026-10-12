@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-10-12
+
+### Fixed
+
+- Windows: the desktop app and the command line release failed to start
+  ("Could not load module ...erlexec.dll") anywhere except the build
+  machine's path, because the release carried an `erl.ini` with build paths
+  and could not rewrite it in a read-only install directory such as
+  Program Files. The release now ships without `erl.ini`.
+
+### Changed
+
+- The release workflow installs or unpacks every package outside the build
+  directory, read-only and under a path with a space, and starts it before
+  publishing.
+
 ## [0.0.1] - 2026-10-12
 
 First public release.
@@ -37,5 +53,6 @@ First public release.
   Windows x64.
 - Light and dark themes.
 
-[Unreleased]: https://github.com/qinbaixi/EObserver/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/qinbaixi/EObserver/compare/v0.0.2...HEAD
+[0.0.2]: https://github.com/qinbaixi/EObserver/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/qinbaixi/EObserver/releases/tag/v0.0.1

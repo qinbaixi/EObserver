@@ -11,16 +11,12 @@ for /f "usebackq tokens=1,2" %%A in ("%ROOT%\releases\start_erl.data") do (
 set "REL_DIR=%ROOT%\releases\%REL_VSN%"
 set "ERTS_BIN=%ROOT%\erts-%ERTS_VSN%\bin"
 
-rem erl.exe finds its installation through erl.ini next to it; the release
-rem may have been moved since it was built, so rewrite it on every start.
-set "INI_BIN=%ERTS_BIN:\=\\%"
-set "INI_ROOT=%ROOT:\=\\%"
-(
-  echo [erlang]
-  echo Bindir=%INI_BIN%
-  echo Progname=erl
-  echo Rootdir=%INI_ROOT%
-) > "%ERTS_BIN%\erl.ini" 2>nul
+rem Without an erl.ini next to it, erl.exe takes its own directory as the
+rem bin dir and two levels up as the root, which is right wherever the
+rem release was unpacked or installed. A stale erl.ini (written for the
+rem build machine) would point elsewhere, so the release ships without one;
+rem remove any left over from an older copy.
+if exist "%ERTS_BIN%\erl.ini" del /f /q "%ERTS_BIN%\erl.ini" >nul 2>&1
 
 "%ERTS_BIN%\erl.exe" -boot "%REL_DIR%\start" -boot_var SYSTEM_LIB_DIR "%ROOT%\lib" ^
   -config "%REL_DIR%\sys.config" -args_file "%REL_DIR%\vm.args" -noshell -eobs_cli -extra %*

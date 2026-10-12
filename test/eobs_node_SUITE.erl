@@ -8,18 +8,20 @@
          unreachable_node_retries/1, api_requests/1, load_sampling/1,
          process_list/1, process_detail_and_actions/1, applications/1,
          ports_and_sockets/1, ets_tables/1, mnesia_tables/1, allocators/1,
-         read_only_mode/1, cluster_topology/1, http_password_and_origin/1]).
+         read_only_mode/1, cluster_topology/1, http_password_and_origin/1,
+         local_discovery/1, saved_cookies/1]).
 
 all() ->
     [connect_loads_agent, tool_is_hidden, disconnect_unloads_agent,
      unreachable_node_retries, api_requests, load_sampling, process_list,
      process_detail_and_actions, applications, ports_and_sockets, ets_tables,
      mnesia_tables, allocators, read_only_mode, cluster_topology,
-     http_password_and_origin].
+     http_password_and_origin, local_discovery, saved_cookies].
 
 init_per_suite(Config) ->
     application:load(eobserver),
     application:set_env(eobserver, http_port, 0),
+    application:set_env(eobserver, config_dir, ?config(priv_dir, Config)),
     {ok, _} = application:ensure_all_started(eobserver),
     Config.
 
@@ -323,6 +325,42 @@ tree_names(#{name := Name, children := Children}) ->
 %% Pids are exchanged as the target formats them (<0.X.Y>).
 target_pid(Peer, Pid) ->
     list_to_binary(peer:call(Peer, erlang, pid_to_list, [Pid])).
+
+local_discovery(Config) ->
+    Node = ?config(target, Config),
+    connect(Node),
+    {ok, R} = eobs_api:request(<<"nodes.discover">>, #{}),
+    #{epmd := true, nodes := Found, host := Host, hosts := Hosts} = R,
+    ?assertEqual(Host, hd(Hosts)),
+    %% The tool runs in the peer's name domain, so its host is the default
+    %% and the discovered name is the peer's node name.
+    ?assert(lists:member(atom_to_binary(Node), [N || #{node := N} <- Found])),
+    ?assertNot(lists:member(atom_to_binary(node()), [N || #{node := N} <- Found])),
+    {ok, #{nodes := Other}} = eobs_api:request(<<"nodes.discover">>, #{<<"host">> => <<"127.0.0.1">>}),
+    ?assert(lists:all(fun(#{node := N}) -> binary:match(N, <<"@127.0.0.1">>) =/= nomatch end, Other)).
+
+saved_cookies(Config) ->
+    Node = ?config(target, Config),
+    {ok, #{id := Id}} = eobs_api:request(<<"cookies.save">>,
+                                         #{<<"cookie">> => <<"eobs_ct">>, <<"label">> => <<"dev">>}),
+    %% Saving the same cookie again keeps one entry.
+    {ok, #{id := Id}} = eobs_api:request(<<"cookies.save">>, #{<<"cookie">> => <<"eobs_ct">>}),
+    {ok, [Entry]} = eobs_api:request(<<"cookies.list">>, #{}),
+    ?assertMatch(#{id := Id, label := <<"dev">>, hint := <<"••••"/utf8>>}, Entry),
+    ?assertNot(maps:is_key(cookie, Entry)),
+    ok = eobs_api:request(<<"nodes.connect">>, #{<<"node">> => atom_to_binary(Node),
+                                                 <<"cookie_id">> => Id}),
+    wait_for(Node, fun(#{status := S}) -> S =:= connected end),
+    %% The file survives a restart of the cookie store.
+    ?assert(filelib:is_regular(eobs_cookies:file())),
+    ok = supervisor:terminate_child(eobs_sup, eobs_cookies),
+    {ok, _} = supervisor:restart_child(eobs_sup, eobs_cookies),
+    {ok, [#{id := Id}]} = eobs_api:request(<<"cookies.list">>, #{}),
+    ok = eobs_api:request(<<"cookies.delete">>, #{<<"id">> => Id}),
+    {ok, []} = eobs_api:request(<<"cookies.list">>, #{}),
+    ?assertEqual({error, cookie_not_found},
+                 eobs_api:request(<<"nodes.connect">>, #{<<"node">> => atom_to_binary(Node),
+                                                         <<"cookie_id">> => Id})).
 
 connect(Node) ->
     {ok, _} = eobs_nodes:connect(Node, eobs_ct),

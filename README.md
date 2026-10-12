@@ -32,6 +32,7 @@ OTP's `observer` is indispensable but built on wxWidgets: it needs a desktop ses
 
 ## Features
 
+- **Local nodes**: lists every node registered with this machine's epmd; tick the ones you want and connect them in one go. Cookies you have used are remembered (in your user config directory, readable only by you), so you pick one from a list instead of pasting it again.
 - **System**: OTP/ERTS versions, schedulers and threads, memory breakdown, usage of process, port, atom and ETS limits, runtime statistics.
 - **Load charts**: scheduler utilisation (average plus a per-scheduler heatmap that stays readable with 64+ cores), stacked memory, IO throughput, run queue and reductions. History survives page switches.
 - **Processes**: sortable, searchable, paged process table with *Reds* (reductions since the last refresh) to spot busy processes. The detail drawer shows links and monitors (click to follow), messages, process dictionary, stack trace and `sys:get_state`, and can send a message or kill the process.
@@ -54,6 +55,9 @@ OTP's `observer` is indispensable but built on wxWidgets: it needs a desktop ses
   <tr>
     <td><img src="docs/images/table-rows.png" alt="Mnesia table rows" /></td>
     <td><img src="docs/images/allocators-dark.png" alt="Memory allocators" /></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><img src="docs/images/connect-local.png" alt="Local nodes" width="60%" /></td>
   </tr>
 </table>
 

@@ -25,15 +25,31 @@ handle(<<"settings.get">>, _Params) ->
 handle(<<"nodes.list">>, _Params) ->
     {ok, eobs_nodes:list()};
 handle(<<"nodes.connect">>, #{<<"node">> := Node} = Params) ->
-    Cookie = case maps:get(<<"cookie">>, Params, <<>>) of
-                 <<>> -> undefined;
-                 null -> undefined;
-                 C -> binary_to_atom(C, utf8)
-             end,
-    case eobs_nodes:connect(binary_to_atom(Node, utf8), Cookie) of
-        {ok, _Pid} -> ok;
+    case connect_cookie(Params) of
+        {ok, Cookie} ->
+            case eobs_nodes:connect(binary_to_atom(Node, utf8), Cookie) of
+                {ok, _Pid} -> ok;
+                Error -> Error
+            end;
+        Error ->
+            Error
+    end;
+handle(<<"nodes.discover">>, Params) ->
+    Host = case maps:get(<<"host">>, Params, null) of
+               H when is_binary(H), H =/= <<>> -> binary_to_list(H);
+               _ -> undefined
+           end,
+    {ok, eobs_dist:discover(Host)};
+%% saved cookies
+handle(<<"cookies.list">>, _Params) ->
+    {ok, eobs_cookies:list()};
+handle(<<"cookies.save">>, #{<<"cookie">> := Cookie} = Params) ->
+    case eobs_cookies:save(Cookie, label(Params)) of
+        {ok, Id} -> {ok, #{id => Id}};
         Error -> Error
     end;
+handle(<<"cookies.delete">>, #{<<"id">> := Id}) ->
+    eobs_cookies:delete(Id);
 handle(<<"nodes.disconnect">>, #{<<"node">> := Node}) ->
     eobs_nodes:disconnect(to_node(Node));
 handle(<<"node.summary">>, Params) ->
@@ -71,6 +87,24 @@ handle(<<"mnesia.rows">>, #{<<"node">> := Node, <<"table">> := Id} = Params) ->
     agent(Node, mnesia_rows, [Id, table_opts(Params)]);
 handle(Method, _Params) ->
     {error, {unknown_method, Method}}.
+
+%% A cookie given inline, a saved one by id, or none (~/.erlang.cookie).
+connect_cookie(#{<<"cookie_id">> := Id}) when is_binary(Id) ->
+    case eobs_cookies:lookup(Id) of
+        {ok, C} -> {ok, binary_to_atom(C, utf8)};
+        {error, not_found} -> {error, cookie_not_found}
+    end;
+connect_cookie(Params) ->
+    case maps:get(<<"cookie">>, Params, <<>>) of
+        C when is_binary(C), C =/= <<>> -> {ok, binary_to_atom(C, utf8)};
+        _ -> {ok, undefined}
+    end.
+
+label(Params) ->
+    case maps:get(<<"label">>, Params, <<>>) of
+        L when is_binary(L) -> string:trim(L);
+        _ -> <<>>
+    end.
 
 table_opts(Params) ->
     #{offset => int(maps:get(<<"offset">>, Params, 0), 0),

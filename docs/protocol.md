@@ -54,7 +54,9 @@ Sending `sub` again with the same `id` replaces the subscription.
 | Method | Params | Result |
 |---|---|---|
 | `settings.get` | | `read_only`, `version` |
-| `nodes.list` / `nodes.connect` / `nodes.disconnect` | `node`, `cookie` | node status |
+| `nodes.list` / `nodes.connect` / `nodes.disconnect` | `node`, `cookie` or `cookie_id` | node status |
+| `nodes.discover` | `host` (optional) | nodes in the local epmd as `name@host`, host candidates |
+| `cookies.list` / `cookies.save` / `cookies.delete` | `cookie`, `label` / `id` | saved cookies as `id`, `label`, `hint` (never the cookie) / `id` |
 | `node.summary` | `node` | system overview |
 | `process.info` / `process.state` | `node`, `pid` | details / `sys:get_state` |
 | `process.kill` / `process.send` | `node`, `pid`, `message` | `ok` |

@@ -10,6 +10,7 @@ import type { ClusterInfo } from '../api/types'
 import { formatBytes } from '../api/format'
 import PageHeader from '../components/PageHeader.vue'
 import ClusterGraph from '../charts/ClusterGraph.vue'
+import { useResizableTable } from '../api/table'
 
 const nodes = useNodes()
 const ui = useUi()
@@ -52,6 +53,7 @@ const columns: DataTableColumns<Row> = [
   { key: 'output', title: '发送', width: 110, align: 'right', sorter: (a, b) => (a.output ?? 0) - (b.output ?? 0),
     render: (r) => mono(r.output == null ? '-' : formatBytes(r.output)) },
 ]
+const connTable = useResizableTable(columns)
 </script>
 
 <template>
@@ -75,7 +77,7 @@ const columns: DataTableColumns<Row> = [
     </NGi>
     <NGi>
       <NCard size="small" title="连接列表">
-        <NDataTable :columns="columns" :data="rows" size="small" :pagination="{ pageSize: 50 }"
+        <NDataTable v-bind="connTable" :data="rows" size="small" :pagination="{ pageSize: 50 }"
                     :row-key="(r: Row) => `${r.from}|${r.to}`" />
       </NCard>
     </NGi>

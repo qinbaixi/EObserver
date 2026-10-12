@@ -14,6 +14,7 @@ import PageHeader from '../components/PageHeader.vue'
 import NodeGuard from '../components/NodeGuard.vue'
 import ProcessDrawer from '../components/ProcessDrawer.vue'
 import { term } from '../api/term'
+import { useResizableTable } from '../api/table'
 
 type SortKey = 'reds' | 'reductions' | 'memory' | 'message_queue_len' | 'name' | 'pid'
 
@@ -155,6 +156,7 @@ const intervals = [
   { label: '每 5 秒', value: 5000 },
   { label: '每 10 秒', value: 10000 },
 ]
+const procTable = useResizableTable(columns)
 </script>
 
 <template>
@@ -174,9 +176,9 @@ const intervals = [
   </PageHeader>
   <NodeGuard>
     <NAlert v-if="error" type="error" style="margin-bottom: 12px">{{ error }}</NAlert>
-    <NDataTable remote :columns="columns" :data="data?.rows ?? []" :loading="!data && !error"
+    <NDataTable remote v-bind="procTable" :data="data?.rows ?? []" :loading="!data && !error"
                 :pagination="pagination" :row-key="(r: ProcessRow) => r.pid" :row-props="rowProps"
-                size="small" :scroll-x="1100" @update:sorter="onSort" />
+                size="small" @update:sorter="onSort" />
     <p class="note">Reds 是距上次刷新以来的 reductions 增量，可以看出当前最忙的进程。点击一行查看详情。</p>
     <ProcessDrawer v-if="node" v-model:pid="selected" :node="node" @killed="refreshOnce" />
   </NodeGuard>

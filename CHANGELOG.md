@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### 改进
+
+- 集群拓扑图改为固定的环形布局：节点按名字排在圆上，EObserver 在中间，标签朝外。每次刷新不再重新计算布局，节点不会再来回跳动，拖动和缩放也会保留，只有节点或连接变化时才重排。
+- 表格的列可以拖动表头边缘调宽或调窄，包括进程、端口、Sockets、ETS / Mnesia 表、内存分配器、集群连接列表。表格内容超出窗口时，横向滚动条固定显示在屏幕底部，不用翻到表格最下面。
+- Mnesia 表的「读取节点」列默认加宽。
+
 ## [0.0.4] - 2026-10-12
 
 ### 新增

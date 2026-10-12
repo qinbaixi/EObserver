@@ -251,15 +251,21 @@ jobs:
           Expand-Archive "out/EObserver-$env:VERSION-win-x64.zip" "$T/zip"
           # The installer as a user runs it, into Program Files.
           $inst = 'C:\Program Files\EObserver Smoke'
-          Start-Process -Wait -FilePath (Resolve-Path "out/EObserver-$env:VERSION-win-x64.exe") -ArgumentList '/S', "/D=$inst"
+          # /allusers: an elevated per-user install hands off to an unelevated
+          # copy of itself, which has no desktop session to run in on CI.
+          $p = Start-Process -Wait -PassThru -FilePath (Resolve-Path "out/EObserver-$env:VERSION-win-x64.exe") -ArgumentList '/S', '/allusers', "/D=$inst"
+          "installer exit code: $($p.ExitCode)"
           # The installer may hand off to a second process; wait until it
           # has written the uninstaller, its last file.
           $instExe = "$inst\EObserver.exe"
           $done = "$inst\Uninstall EObserver.exe"
           for ($i = 0; $i -lt 90 -and -not (Test-Path $done); $i++) { Start-Sleep 2 }
           if (-not (Test-Path $instExe)) {
-            Get-ChildItem $inst -ErrorAction SilentlyContinue | Format-Table Name, Length
-            Get-ChildItem "$env:LOCALAPPDATA\Programs" -ErrorAction SilentlyContinue | Format-Table FullName
+            foreach ($d in @($inst, "$env:LOCALAPPDATA\Programs", $env:ProgramFiles)) {
+              "--- $d"; Get-ChildItem $d -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }
+            }
+            Get-ChildItem 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue |
+              Get-ItemProperty | Where-Object DisplayName -like 'EObserver*' | Format-List DisplayName, InstallLocation
             throw "installer did not put EObserver.exe in $inst"
           }
           Start-Sleep 3

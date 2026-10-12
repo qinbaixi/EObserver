@@ -2,10 +2,18 @@ name: Release
 
 # Pushing a tag such as v0.0.1 builds the release archives and desktop
 # apps for Linux, macOS and Windows and publishes them as a GitHub
-# Release. Run it manually to build everything without publishing.
+# Release. Pull requests that touch packaging, and manual runs, build
+# everything without publishing.
 on:
   push:
     tags: ['v*']
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - electron/**
+      - scripts/**
+      - rebar.config
+      - config/**
   workflow_dispatch:
 
 permissions:

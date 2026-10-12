@@ -62,3 +62,14 @@ same_origin_test() ->
     ?assertNot(eobs_ws:same_origin(<<"http://evil.example">>, <<"localhost:8090">>)),
     ?assertNot(eobs_ws:same_origin(<<"http://localhost:5173">>, <<"localhost:8090">>)),
     ?assertNot(eobs_ws:same_origin(<<"null">>, <<"localhost:8090">>)).
+
+cookie_hint_test() ->
+    ?assertEqual(<<"••••"/utf8>>, eobs_cookies:hint(<<"short">>)),
+    ?assertEqual(<<"AB…YZ"/utf8>>, eobs_cookies:hint(<<"ABCDEFGHIJXYZ">>)).
+
+host_candidates_test() ->
+    {ok, Host} = inet:gethostname(),
+    #{default := Default, hosts := Hosts} = eobs_dist:host_candidates(),
+    ?assertEqual(Default, hd(Hosts)),
+    ?assert(lists:member(list_to_binary(Host), Hosts)),
+    ?assert(lists:member(<<"127.0.0.1">>, Hosts)).

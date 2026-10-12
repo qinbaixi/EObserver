@@ -50,6 +50,9 @@ init({Node, Cookie}) ->
 handle_call(info, _From, State) ->
     {reply, public(State), State}.
 
+%% No cookie given (the UI's retry button): keep the one it was added with.
+handle_cast({reconnect, undefined}, #{cookie := Cookie} = State) when Cookie =/= undefined ->
+    handle_cast({reconnect, Cookie}, State);
 handle_cast({reconnect, Cookie}, State) ->
     State1 = cancel_timer(State#{cookie := Cookie, retry := ?MIN_RETRY}),
     self() ! connect,

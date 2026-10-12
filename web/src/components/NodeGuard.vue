@@ -8,7 +8,7 @@ const nodes = useNodes()
 
 async function retry() {
   const n = nodes.currentInfo
-  if (n) await nodes.connect(n.node, '')
+  if (n) await nodes.connect(n.node, {})
 }
 </script>
 

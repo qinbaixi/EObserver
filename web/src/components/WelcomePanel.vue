@@ -8,7 +8,7 @@ import ConnectForm from './ConnectForm.vue'
     <img src="/favicon.svg" alt="" class="logo" />
     <h1>EObserver</h1>
     <p class="lead">连接一个 Erlang 节点开始观察。EObserver 以隐藏节点身份连接，不会出现在目标节点的 <code>nodes()</code> 中。</p>
-    <NCard style="width: 400px">
+    <NCard style="width: 520px; max-width: 94vw; text-align: left">
       <ConnectForm />
     </NCard>
   </div>

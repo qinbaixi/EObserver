@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- "Local nodes" tab in the connect dialog: lists the nodes registered with
+  this machine's epmd and connects the selected ones with one cookie.
+- Cookie history: cookies used to connect are saved in the user config
+  directory (`cookies.eterm`, owner-only permissions) and offered in a
+  list; the page only ever sees an id and a short hint, never the cookie.
+
+### Fixed
+
+- Retrying a disconnected node from its page no longer drops the cookie it
+  was added with.
+
 ## [0.0.2] - 2026-10-12
 
 ### Fixed

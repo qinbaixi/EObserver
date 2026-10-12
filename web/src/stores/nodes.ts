@@ -38,8 +38,9 @@ export const useNodes = defineStore('nodes', () => {
     if (!current.value || !nodes.value[current.value]) select(list.value[0]?.node ?? null)
   }
 
-  async function connect(node: string, cookie: string) {
-    await client.request('nodes.connect', { node, cookie })
+  // cookie: nodes.connect parameters from useCookies().params()
+  async function connect(node: string, cookie: Record<string, string>) {
+    await client.request('nodes.connect', { node, ...cookie })
     await refresh()
     select(node)
   }

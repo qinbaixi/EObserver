@@ -254,3 +254,24 @@ export interface ClusterInfo {
   tool: string
   nodes: { node: string; connections: DistConnection[]; error: string | null }[]
 }
+
+export interface SavedCookie {
+  id: string
+  label: string
+  hint: string
+  last_used: number
+}
+
+export interface DiscoveredNode {
+  name: string
+  port: number
+  node: string
+}
+
+export interface Discovery {
+  host: string
+  default: string
+  hosts: string[]
+  epmd: boolean
+  nodes: DiscoveredNode[]
+}

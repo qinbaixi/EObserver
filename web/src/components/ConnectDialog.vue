@@ -8,7 +8,7 @@ const ui = useUi()
 
 <template>
   <NModal v-model:show="ui.connectOpen">
-    <NCard title="添加节点" style="width: 420px" :bordered="false" closable
+    <NCard title="添加节点" style="width: 520px; max-width: 94vw" :bordered="false" closable
            @close="ui.connectOpen = false">
       <ConnectForm @connected="ui.connectOpen = false" />
     </NCard>

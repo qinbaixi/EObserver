@@ -53,7 +53,7 @@ web/                   Vue 3 + TypeScript + Naive UI + ECharts 前端
 |---|---|---|
 | M0 | 骨架、连接、采集模块注入、界面框架、系统概览 | ✅ |
 | M1 | System 完整信息 + Load Charts | ✅ |
-| M2 | Processes | ⏳ |
+| M2 | Processes | ✅ |
 | M3 | Applications / supervisor 树 | ⏳ |
 | M4 | Ports + Sockets | ⏳ |
 | M5 | ETS / Mnesia 表浏览 | ⏳ |

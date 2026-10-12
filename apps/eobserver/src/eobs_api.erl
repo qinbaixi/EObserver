@@ -26,6 +26,17 @@ request(<<"nodes.disconnect">>, #{<<"node">> := Node}) ->
     eobs_nodes:disconnect(to_node(Node));
 request(<<"node.summary">>, Params) ->
     collect(<<"node.summary">>, Params);
+request(<<"process.info">>, #{<<"node">> := Node, <<"pid">> := Pid}) ->
+    unwrap(eobs_node:call(to_node(Node), process_detail, [Pid], ?TIMEOUT));
+request(<<"process.state">>, #{<<"node">> := Node, <<"pid">> := Pid}) ->
+    unwrap(eobs_node:call(to_node(Node), process_state, [Pid, 5000], ?TIMEOUT));
+request(<<"process.kill">>, #{<<"node">> := Node, <<"pid">> := Pid}) ->
+    unwrap(eobs_node:call(to_node(Node), process_kill, [Pid], ?TIMEOUT));
+request(<<"process.send">>, #{<<"node">> := Node, <<"pid">> := Pid, <<"message">> := Text}) ->
+    case parse_term(Text) of
+        {ok, Term} -> unwrap(eobs_node:call(to_node(Node), process_send, [Pid, Term], ?TIMEOUT));
+        {error, _} = Error -> Error
+    end;
 request(Method, _Params) ->
     {error, {unknown_method, Method}}.
 
@@ -33,6 +44,21 @@ request(Method, _Params) ->
 collect(<<"node.load">>, #{<<"node">> := Node}, Prev) ->
     case eobs_node:call(to_node(Node), load_sample, [node()], ?TIMEOUT) of
         {ok, Sample} -> {ok, eobs_load:rates(Prev, Sample), Sample};
+        Error -> Error
+    end;
+collect(<<"node.processes">>, #{<<"node">> := Node} = Params, Session0) ->
+    Session = case Session0 of
+                  undefined -> {node(), self(), erlang:unique_integer()};
+                  _ -> Session0
+              end,
+    Opts = #{sort => enum(maps:get(<<"sort">>, Params, <<"reds">>),
+                          [reds, reductions, memory, message_queue_len, name, pid], reds),
+             order => enum(maps:get(<<"order">>, Params, <<"desc">>), [asc, desc], desc),
+             filter => maps:get(<<"filter">>, Params, <<>>),
+             offset => int(maps:get(<<"offset">>, Params, 0), 0),
+             limit => int(maps:get(<<"limit">>, Params, 50), 50)},
+    case eobs_node:call(to_node(Node), process_list, [node(), Session, Opts], ?TIMEOUT) of
+        {ok, Page} -> {ok, Page, Session};
         Error -> Error
     end;
 collect(Topic, Params, State) ->
@@ -46,6 +72,34 @@ collect(<<"node.summary">>, #{<<"node">> := Node}) ->
     eobs_node:call(to_node(Node), node_summary, [], ?TIMEOUT);
 collect(Topic, _Params) ->
     {error, {unknown_topic, Topic}}.
+
+unwrap({ok, ok}) -> ok;
+unwrap({ok, {ok, _} = Ok}) -> Ok;
+unwrap({ok, {error, _} = Error}) -> Error;
+unwrap({error, _} = Error) -> Error.
+
+%% Maps a browser-supplied binary onto one of a fixed set of atoms.
+enum(Bin, Allowed, Default) when is_binary(Bin) ->
+    case [A || A <- Allowed, atom_to_binary(A, utf8) =:= Bin] of
+        [A] -> A;
+        [] -> Default
+    end;
+enum(_, _, Default) ->
+    Default.
+
+int(N, _Default) when is_integer(N), N >= 0 -> N;
+int(_, Default) -> Default.
+
+parse_term(Text) ->
+    case erl_scan:string(unicode:characters_to_list(Text) ++ " .") of
+        {ok, Tokens, _} ->
+            case erl_parse:parse_term(Tokens) of
+                {ok, Term} -> {ok, Term};
+                {error, {_, Mod, Reason}} -> {error, iolist_to_binary(Mod:format_error(Reason))}
+            end;
+        {error, {_, Mod, Reason}, _} ->
+            {error, iolist_to_binary(Mod:format_error(Reason))}
+    end.
 
 %% Only names of nodes we already observe are accepted, so the browser
 %% cannot make the tool create arbitrary atoms.

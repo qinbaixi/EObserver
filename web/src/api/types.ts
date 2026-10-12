@@ -72,3 +72,47 @@ export interface LoadPoint {
   io_output: number | null
   reductions: number | null
 }
+
+export interface ProcessRow {
+  pid: string
+  name: string | null
+  initial_call: string
+  current_function: string
+  status: string
+  reductions: number
+  reds: number | null
+  memory: number
+  message_queue_len: number
+}
+
+export interface ProcessPage {
+  total: number
+  process_count: number
+  has_delta: boolean
+  rows: ProcessRow[]
+}
+
+export interface ProcessDetail {
+  pid: string
+  name: string | null
+  status: string
+  initial_call: string
+  current_function: string
+  stacktrace: { mfa: string; location: string | null }[]
+  message_queue_len: number
+  messages: string[] | 'truncated'
+  links: string[]
+  monitors: string[]
+  monitored_by: string[]
+  trap_exit: boolean
+  priority: string
+  group_leader: string
+  reductions: number
+  memory: number
+  total_heap_size: number
+  heap_size: number
+  stack_size: number
+  garbage_collection: { key: string; value: string }[]
+  dictionary: { key: string; value: string }[]
+  word_size: number
+}

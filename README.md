@@ -36,7 +36,11 @@ OTP's `observer` is indispensable but built on wxWidgets: it needs a desktop ses
 - **Load charts**: scheduler utilisation (average plus a per-scheduler heatmap that stays readable with 64+ cores), stacked memory, IO throughput, run queue and reductions. History survives page switches.
 - **Processes**: sortable, searchable, paged process table with *Reds* (reductions since the last refresh) to spot busy processes. The detail drawer shows links and monitors (click to follow), messages, process dictionary, stack trace and `sys:get_state`, and can send a message or kill the process.
 - **Applications**: every running application with its supervision tree; click any node to inspect the process.
-- Coming next: Ports & Sockets, ETS/Mnesia table viewer, memory allocators. See the [roadmap](#roadmap).
+- **Ports and sockets**: all ports with owner, IO and queue size; `gen_tcp`/`gen_udp` sockets with addresses and statistics; sockets of the `socket` module.
+- **Tables**: ETS and Mnesia tables, and a row viewer that pages and searches on the observed node, so huge tables stay cheap to browse.
+- **Memory allocators**: blocks versus carriers per allocator, utilisation and history, to spot fragmentation.
+- **Cluster topology**: how every observed node is connected; click a neighbour to observe it too.
+- **Shareable links**: the node and the open process, port, table or application are part of the URL.
 
 <table>
   <tr>
@@ -47,11 +51,24 @@ OTP's `observer` is indispensable but built on wxWidgets: it needs a desktop ses
     <td><img src="docs/images/system.png" alt="System overview" /></td>
     <td><img src="docs/images/applications-dark.png" alt="Supervision tree" /></td>
   </tr>
+  <tr>
+    <td><img src="docs/images/table-rows.png" alt="Mnesia table rows" /></td>
+    <td><img src="docs/images/allocators-dark.png" alt="Memory allocators" /></td>
+  </tr>
 </table>
 
-## Quick start
+## Install
 
-EObserver itself needs **Erlang/OTP 26**, **rebar3** and **Node.js 22** to build.
+Download the latest build from [Releases](https://github.com/qinbaixi/EObserver/releases):
+
+- **Desktop app** (Linux AppImage, macOS dmg, Windows installer): a window with EObserver inside, nothing else to install.
+- **Command line release** (`eobserver-<version>-<platform>.tar.gz` / `.zip`): unpack and run `bin/eobs` (`bin\eobs.cmd` on Windows); it opens your browser. Useful on servers.
+
+Both bundle the Erlang runtime. The builds are not signed yet; see the release notes for the one-time steps on macOS and Windows.
+
+## Build from source
+
+Building needs **Erlang/OTP 26**, **rebar3** and **Node.js 22**.
 
 ```sh
 git clone https://github.com/qinbaixi/EObserver.git
@@ -70,6 +87,8 @@ Your browser opens at <http://localhost:8090/>. You can also start without `--no
 | `--cookie COOKIE` | Cookie for that node (defaults to `~/.erlang.cookie`) |
 | `--port 8090` | HTTP port |
 | `--listen 127.0.0.1` | Listen address. Localhost by default because the UI can kill processes on the target |
+| `--password PASS` | Ask for this password (HTTP Basic auth, any user name). Also read from `EOBS_PASSWORD`. Use it with `--listen` |
+| `--read-only` | Disable killing processes, sending messages and closing ports |
 | `--no-browser` | Do not open a browser |
 
 Short names (`app@host`) and long names (`app@host.example.com`) are detected automatically, but one EObserver instance uses one kind at a time.
@@ -100,6 +119,14 @@ Measured on a node with 200,000 processes: a process-table refresh takes about 0
 | EObserver build | OTP 26 |
 | Browsers | Current Chrome, Edge, Firefox, Safari |
 
+### Desktop app from source
+
+```sh
+make release
+cd electron && npm ci && npm start          # run
+npx electron-builder --publish never        # package for this platform
+```
+
 ## Development
 
 ```sh
@@ -113,6 +140,7 @@ cd web && npm run dev    # frontend with hot reload, proxies /ws to :8090
 apps/eobserver/        tool node: connections, HTTP/WebSocket, API
 apps/eobserver_agent/  collector loaded into observed nodes (OTP 22 compatible)
 web/                   Vue 3 + TypeScript + Naive UI + ECharts frontend
+electron/              desktop app that wraps the release
 test/                  eunit and Common Test suites
 ```
 
@@ -124,11 +152,13 @@ The WebSocket protocol is described in [docs/protocol.md](docs/protocol.md).
 - [x] System overview and load charts
 - [x] Processes with server-side sorting, filtering and paging
 - [x] Applications and supervision trees
-- [ ] Ports and sockets
-- [ ] ETS and Mnesia table viewer
-- [ ] Memory allocators
-- [ ] Cluster topology, shareable URLs, access control, prebuilt agents per OTP release, release packages
-- Tracing is out of scope for now.
+- [x] Ports and sockets
+- [x] ETS and Mnesia table viewer
+- [x] Memory allocators
+- [x] Cluster topology, shareable URLs, access control, prebuilt agents per OTP release
+- [x] Release archives and desktop apps for Linux, macOS and Windows
+- [ ] Signed desktop builds, macOS Intel and Linux arm64 builds
+- [ ] Tracing (out of scope for now)
 
 ## Contributing
 

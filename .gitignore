@@ -5,3 +5,4 @@ erl_crash.dump
 web/node_modules/
 web/dist/
 apps/eobserver/priv/www/
+apps/eobserver/priv/agent/

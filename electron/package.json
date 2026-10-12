@@ -1,0 +1,38 @@
+{
+  "name": "eobserver-desktop",
+  "productName": "EObserver",
+  "version": "0.0.1",
+  "description": "Desktop app for EObserver, a modern observer for Erlang/OTP nodes",
+  "license": "Apache-2.0",
+  "author": "EObserver authors",
+  "homepage": "https://github.com/qinbaixi/EObserver",
+  "repository": "github:qinbaixi/EObserver",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --publish never"
+  },
+  "devDependencies": {
+    "electron": "33.4.11",
+    "electron-builder": "25.1.8"
+  },
+  "build": {
+    "appId": "io.github.qinbaixi.eobserver",
+    "productName": "EObserver",
+    "artifactName": "EObserver-${version}-${os}-${arch}.${ext}",
+    "directories": { "output": "dist", "buildResources": "build" },
+    "files": ["main.js", "pages/**", "package.json"],
+    "extraResources": [
+      { "from": "../_build/default/rel/eobserver", "to": "eobserver", "filter": ["**/*"] }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": ["dmg", "zip"],
+      "identity": "-"
+    },
+    "win": { "target": ["nsis", "zip"] },
+    "nsis": { "oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true },
+    "linux": { "target": ["AppImage", "tar.gz"], "category": "Development" }
+  }
+}

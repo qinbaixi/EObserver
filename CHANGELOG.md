@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.0.1] - 2026-10-12
+
+First public release.
+
 ### Added
 
 - Connection management: hidden-node connections with per-node cookies,
@@ -19,4 +23,19 @@ All notable changes to this project are documented here. The format follows
   detail drawer with messages, dictionary, stack trace, `sys:get_state`,
   send message and kill.
 - Applications: application list and supervision trees.
+- Ports and sockets: port list with details and close, `gen_tcp`/`gen_udp`
+  sockets with addresses and statistics, `socket` module sockets.
+- Tables: ETS and Mnesia table lists and a row viewer that pages and searches
+  on the observed node.
+- Memory allocators: block and carrier sizes per allocator with history charts.
+- Cluster topology: distribution links of every observed node.
+- Shareable links: the selected node and open details are kept in the URL.
+- `--read-only` mode, `--password` (or `EOBS_PASSWORD`) for HTTP Basic auth,
+  and a refusal of cross-origin WebSocket connections.
+- Agents precompiled for OTP 22 to 25 are bundled with the release.
+- Release archives and desktop apps (Electron) for Linux x64, macOS arm64 and
+  Windows x64.
 - Light and dark themes.
+
+[Unreleased]: https://github.com/qinbaixi/EObserver/compare/v0.0.1...HEAD
+[0.0.1]: https://github.com/qinbaixi/EObserver/releases/tag/v0.0.1

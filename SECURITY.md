@@ -6,9 +6,15 @@ EObserver instance like access to a remote shell on the observed node.
 
 ## Recommendations
 
-- Keep the default `--listen 127.0.0.1`. If you need remote access, put
-  EObserver behind an authenticated reverse proxy or an SSH tunnel.
-- Use `--read-only` when you only need to look, which disables kill and send.
+- Keep the default `--listen 127.0.0.1`. If you need remote access, prefer an
+  SSH tunnel. When you do listen on another address, set `--password` (or
+  `EOBS_PASSWORD`) and put EObserver behind TLS, since HTTP Basic auth sends
+  the password in clear text. EObserver prints a warning when it listens
+  beyond localhost without a password.
+- Use `--read-only` when you only need to look, which disables kill, send and
+  port close.
+- The WebSocket refuses connections whose `Origin` differs from the page's
+  host, so other websites you visit cannot drive a local EObserver.
 - Never expose Erlang distribution ports to untrusted networks.
 
 ## Reporting a vulnerability

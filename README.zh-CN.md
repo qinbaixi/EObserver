@@ -36,7 +36,11 @@ OTP 的 `observer` 很好用，但它基于 wxWidgets，有几个痛点：需要
 - **负载图表**：调度器利用率（平均值，加上各调度器热力图，64 核以上也看得清）、内存堆叠图、IO 吞吐、运行队列、reductions。切换页面后历史数据仍然保留。
 - **进程**：可排序、可搜索、可分页的进程表。*Reds* 列是距上次刷新的 reductions 增量，方便找出当前最忙的进程。详情抽屉里可以查看 links/monitors（点击跳转）、消息、进程字典、调用栈、`sys:get_state`，也可以发送消息或 kill 进程。
 - **应用**：列出所有运行中的应用及其监督树，点击任意节点查看进程详情。
-- 即将推出：端口与 Socket、ETS/Mnesia 表浏览、内存分配器。详见[路线图](#路线图)。
+- **端口与 Socket**：所有端口及其所属进程、IO 与队列；`gen_tcp`/`gen_udp` 的地址与统计；`socket` 模块创建的 socket。
+- **表**：ETS 与 Mnesia 表列表，以及在目标节点上分页、搜索的记录查看器，大表也不会拖垮节点。
+- **内存分配器**：各分配器的块与载体大小、利用率和历史曲线，用来发现内存碎片。
+- **集群拓扑**：已观察节点之间的分布式连接，点击相邻节点即可连接它。
+- **可分享链接**：节点以及打开的进程、端口、表、应用都会写进 URL。
 
 <table>
   <tr>
@@ -47,9 +51,22 @@ OTP 的 `observer` 很好用，但它基于 wxWidgets，有几个痛点：需要
     <td><img src="docs/images/system.png" alt="系统概览" /></td>
     <td><img src="docs/images/applications-dark.png" alt="监督树" /></td>
   </tr>
+  <tr>
+    <td><img src="docs/images/table-rows.png" alt="Mnesia 表记录" /></td>
+    <td><img src="docs/images/allocators-dark.png" alt="内存分配器" /></td>
+  </tr>
 </table>
 
-## 快速开始
+## 安装
+
+从 [Releases](https://github.com/qinbaixi/EObserver/releases) 下载最新版本：
+
+- **桌面版**（Linux AppImage、macOS dmg、Windows 安装包）：一个独立窗口，不需要安装其他东西。
+- **命令行版**（`eobserver-<版本>-<平台>.tar.gz` / `.zip`）：解压后运行 `bin/eobs`（Windows 上是 `bin\eobs.cmd`），会自动打开浏览器，适合在服务器上使用。
+
+两种都自带 Erlang 运行时。目前还没有代码签名，macOS 和 Windows 首次打开的步骤见发布说明。
+
+## 从源码构建
 
 构建 EObserver 需要 **Erlang/OTP 26**、**rebar3** 和 **Node.js 22**。
 
@@ -70,6 +87,8 @@ _build/default/rel/eobserver/bin/eobs --node myapp@myhost --cookie secret
 | `--cookie COOKIE` | 该节点的 cookie，不填则使用 `~/.erlang.cookie` |
 | `--port 8090` | 网页端口 |
 | `--listen 127.0.0.1` | 监听地址。默认只监听本机，因为页面可以 kill 目标节点上的进程 |
+| `--password PASS` | 访问密码（HTTP Basic 认证，用户名任意），也可以用环境变量 `EOBS_PASSWORD`。配合 `--listen` 使用 |
+| `--read-only` | 只读模式：禁止 kill 进程、发送消息和关闭端口 |
 | `--no-browser` | 不自动打开浏览器 |
 
 短节点名（`app@host`）和长节点名（`app@host.example.com`）会自动识别，但同一个 EObserver 实例只能使用其中一种。
@@ -100,6 +119,14 @@ _build/default/rel/eobserver/bin/eobs --node myapp@myhost --cookie secret
 | 构建 EObserver | OTP 26 |
 | 浏览器 | 最新版 Chrome、Edge、Firefox、Safari |
 
+### 从源码运行桌面版
+
+```sh
+make release
+cd electron && npm ci && npm start          # 运行
+npx electron-builder --publish never        # 打包当前平台
+```
+
 ## 开发
 
 ```sh
@@ -113,6 +140,7 @@ cd web && npm run dev    # 前端热更新，/ws 代理到 8090
 apps/eobserver/        工具节点：连接管理、HTTP/WebSocket、API
 apps/eobserver_agent/  加载到目标节点的采集模块（兼容 OTP 22）
 web/                   Vue 3 + TypeScript + Naive UI + ECharts 前端
+electron/              包装 release 的桌面应用
 test/                  eunit 和 Common Test 测试
 ```
 
@@ -124,11 +152,13 @@ WebSocket 协议见 [docs/protocol.md](docs/protocol.md)。
 - [x] 系统概览与负载图表
 - [x] 进程页（目标端排序、过滤、分页）
 - [x] 应用与监督树
-- [ ] 端口与 Socket
-- [ ] ETS 与 Mnesia 表浏览
-- [ ] 内存分配器
-- [ ] 集群拓扑、可分享链接、访问控制、按 OTP 版本预编译的采集模块、发布包
-- Trace 相关功能暂不在计划内。
+- [x] 端口与 Socket
+- [x] ETS 与 Mnesia 表浏览
+- [x] 内存分配器
+- [x] 集群拓扑、可分享链接、访问控制、按 OTP 版本预编译的采集模块
+- [x] Linux、macOS、Windows 的命令行版与桌面版发布包
+- [ ] 代码签名、macOS Intel 与 Linux arm64 构建
+- [ ] Trace（暂不在计划内）
 
 ## 参与贡献
 

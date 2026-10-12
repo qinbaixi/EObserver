@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.0.6] - 2026-10-12
+
 ### 新增
 
 - 节点可以移除了：节点下拉框里每一行悬停时有移除按钮，底部可以一次移除所有未连接的节点或全部节点。移除会卸载 agent 并真正断开与该节点的分布式连接。
@@ -106,7 +108,8 @@ First public release.
   Windows x64.
 - Light and dark themes.
 
-[Unreleased]: https://github.com/qinbaixi/EObserver/compare/v0.0.5...HEAD
+[Unreleased]: https://github.com/qinbaixi/EObserver/compare/v0.0.6...HEAD
+[0.0.6]: https://github.com/qinbaixi/EObserver/compare/v0.0.5...v0.0.6
 [0.0.5]: https://github.com/qinbaixi/EObserver/compare/v0.0.4...v0.0.5
 [0.0.4]: https://github.com/qinbaixi/EObserver/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/qinbaixi/EObserver/compare/v0.0.2...v0.0.3

@@ -1,0 +1,51 @@
+name: Bug report
+description: Something does not work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start EObserver with ...
+        2. Connect to a node running ...
+        3. Open the ... page
+  - type: input
+    id: version
+    attributes:
+      label: EObserver version
+      placeholder: v0.0.1, or a commit hash
+    validations:
+      required: true
+  - type: input
+    id: otp
+    attributes:
+      label: OTP release of the observed node
+      placeholder: "26"
+    validations:
+      required: true
+  - type: dropdown
+    id: flavor
+    attributes:
+      label: How do you run EObserver?
+      options:
+        - Release (bin/eobs)
+        - Desktop app (Electron)
+        - From source (rebar3 shell)
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and OS
+      placeholder: Chrome 128 on macOS 14
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      render: text

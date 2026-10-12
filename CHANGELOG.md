@@ -18,9 +18,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
-- The release workflow installs or unpacks every package outside the build
-  directory, read-only and under a path with a space, and starts it before
-  publishing.
+- The release workflow unpacks every archive, dmg and AppImage outside the
+  build directory, read-only and under a path with a space, and starts it
+  before publishing.
 
 ## [0.0.1] - 2026-10-12
 

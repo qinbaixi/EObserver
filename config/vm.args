@@ -1,0 +1,4 @@
+## The tool node is started without a name; distribution is enabled at
+## runtime as a hidden node once we know which target to connect to.
++sbwt none
++K true

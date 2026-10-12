@@ -6,12 +6,12 @@
          init_per_testcase/2, end_per_testcase/2]).
 -export([connect_loads_agent/1, tool_is_hidden/1, disconnect_unloads_agent/1,
          unreachable_node_retries/1, api_requests/1, load_sampling/1,
-         process_list/1, process_detail_and_actions/1]).
+         process_list/1, process_detail_and_actions/1, applications/1]).
 
 all() ->
     [connect_loads_agent, tool_is_hidden, disconnect_unloads_agent,
      unreachable_node_retries, api_requests, load_sampling, process_list,
-     process_detail_and_actions].
+     process_detail_and_actions, applications].
 
 init_per_suite(Config) ->
     application:load(eobserver),
@@ -146,6 +146,25 @@ process_detail_and_actions(Config) ->
     ok = eobs_api:request(<<"process.kill">>, Req),
     timer:sleep(100),
     ?assertEqual({error, not_found}, eobs_api:request(<<"process.info">>, Req)).
+
+applications(Config) ->
+    Node = ?config(target, Config),
+    connect(Node),
+    Req = #{<<"node">> => atom_to_binary(Node, utf8)},
+    {ok, Apps} = eobs_api:request(<<"apps.list">>, Req),
+    ?assertMatch([#{running := true} | _], [A || A = #{name := kernel} <- Apps]),
+    {ok, #{root := Root}} = eobs_api:request(<<"apps.tree">>, Req#{<<"app">> => <<"kernel">>}),
+    ?assertMatch(#{name := kernel_sup, type := supervisor}, Root),
+    Names = tree_names(Root),
+    ?assert(lists:member(code_server, Names)),
+    ?assert(lists:member(net_kernel, Names)),
+    %% Library applications have no supervision tree.
+    ?assertMatch({ok, #{root := null}},
+                 eobs_api:request(<<"apps.tree">>, Req#{<<"app">> => <<"stdlib">>})),
+    ?assert(is_binary(eobs_json:encode(Root))).
+
+tree_names(#{name := Name, children := Children}) ->
+    [Name | lists:append([tree_names(C) || C <- Children])].
 
 %% helpers
 

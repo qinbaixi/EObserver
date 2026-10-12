@@ -116,3 +116,27 @@ export interface ProcessDetail {
   dictionary: { key: string; value: string }[]
   word_size: number
 }
+
+export interface AppInfo {
+  name: string
+  description: string
+  vsn: string
+  running: boolean
+}
+
+export interface SupNode {
+  pid: string | null
+  id: string
+  name: string | null
+  type: 'supervisor' | 'worker'
+  module: string | null
+  status?: string
+  error?: string
+  hidden: number
+  children: SupNode[]
+}
+
+export interface AppTree {
+  master: string | null
+  root: SupNode | null
+}

@@ -37,6 +37,14 @@ request(<<"process.send">>, #{<<"node">> := Node, <<"pid">> := Pid, <<"message">
         {ok, Term} -> unwrap(eobs_node:call(to_node(Node), process_send, [Pid, Term], ?TIMEOUT));
         {error, _} = Error -> Error
     end;
+request(<<"apps.list">>, #{<<"node">> := Node}) ->
+    eobs_node:call(to_node(Node), app_list, [], ?TIMEOUT);
+request(<<"apps.tree">>, #{<<"node">> := Node, <<"app">> := App}) ->
+    %% Application names come from apps.list, so they already exist as atoms.
+    case catch binary_to_existing_atom(App, utf8) of
+        A when is_atom(A) -> unwrap(eobs_node:call(to_node(Node), app_tree, [A], 30000));
+        _ -> {error, not_running}
+    end;
 request(Method, _Params) ->
     {error, {unknown_method, Method}}.
 

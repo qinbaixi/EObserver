@@ -9,10 +9,11 @@
 -export([version/0, node_summary/0, load_sample/1]).
 -export([process_list/3, process_detail/1, process_state/2, process_kill/1,
          process_send/2]).
+-export([app_list/0, app_tree/1]).
 
 %% Bump whenever the exported API or return shapes change, so the tool
 %% replaces an older copy that is still loaded on the target.
--define(VERSION, 3).
+-define(VERSION, 4).
 
 %% Long-lived helper process on the observed node. It keeps
 %% scheduler_wall_time enabled, builds process lists while holding the
@@ -25,6 +26,11 @@
 -define(TERM_DEPTH, 30).
 -define(TERM_CHARS, 8000).
 -define(MAX_MESSAGES, 100).
+%% Supervision tree limits: children listed per supervisor, total nodes,
+%% and how long a busy supervisor may take to answer.
+-define(TREE_MAX_CHILDREN, 200).
+-define(TREE_MAX_NODES, 3000).
+-define(SUP_TIMEOUT, 3000).
 
 version() ->
     ?VERSION.
@@ -404,6 +410,91 @@ process_kill(PidBin) ->
 process_send(PidBin, Msg) ->
     to_pid(PidBin) ! Msg,
     ok.
+
+%%--------------------------------------------------------------------
+%% Applications
+%%--------------------------------------------------------------------
+
+app_list() ->
+    Running = application:which_applications(),
+    RunningNames = [A || {A, _, _} <- Running],
+    Loaded = [{A, D, V} || {A, D, V} <- application:loaded_applications(),
+                           not lists:member(A, RunningNames)],
+    [#{name => A, description => bin(D), vsn => bin(V), running => true}
+     || {A, D, V} <- lists:keysort(1, Running)]
+        ++ [#{name => A, description => bin(D), vsn => bin(V), running => false}
+            || {A, D, V} <- lists:keysort(1, Loaded)].
+
+%% The supervision tree of a running application, from its top
+%% supervisor down. Large supervisors are truncated, see TREE_MAX_*.
+app_tree(App) ->
+    case application_controller:get_master(App) of
+        Master when is_pid(Master) ->
+            case catch application_master:get_child(Master) of
+                {Root, Mod} when is_pid(Root) ->
+                    {Tree, _} = sup_node(Root, App, supervisor, Mod, ?TREE_MAX_NODES),
+                    {ok, #{master => ref_bin(Master), root => Tree}};
+                _ ->
+                    {ok, #{master => ref_bin(Master), root => null}}
+            end;
+        _ ->
+            %% Library applications (no mod) have no master process.
+            case lists:keymember(App, 1, application:which_applications()) of
+                true -> {ok, #{master => null, root => null}};
+                false -> {error, not_running}
+            end
+    end.
+
+sup_node(Pid, Id, Type, Mod, Budget) ->
+    Base = #{pid => ref_bin(Pid),
+             id => fmt(Id),
+             name => registered_name(Pid),
+             type => Type,
+             module => Mod},
+    case Type of
+        supervisor when Budget > 0 ->
+            case sup_call(Pid, which_children) of
+                {ok, Children} ->
+                    Total = length(Children),
+                    Shown = lists:sublist(Children, ?TREE_MAX_CHILDREN),
+                    {Nodes, Left} = lists:foldl(
+                                      fun(Child, {Acc, B}) -> child_node(Child, Acc, B) end,
+                                      {[], Budget - 1}, Shown),
+                    {Base#{children => lists:reverse(Nodes),
+                           hidden => Total - length(Nodes)}, Left};
+                {error, Reason} ->
+                    {Base#{children => [], hidden => 0, error => fmt(Reason)}, Budget - 1}
+            end;
+        _ ->
+            {Base#{children => [], hidden => 0}, Budget - 1}
+    end.
+
+child_node({_Id, _Child, _Type, _Mods}, Acc, Budget) when Budget =< 0 ->
+    {Acc, Budget};
+child_node({Id, Child, Type, Mods}, Acc, Budget) when is_pid(Child) ->
+    Mod = case Mods of [M | _] -> M; _ -> Mods end,
+    {Node, Left} = sup_node(Child, Id, Type, Mod, Budget),
+    {[Node | Acc], Left};
+child_node({Id, Child, Type, _Mods}, Acc, Budget) ->
+    %% restarting or undefined (not running) children
+    {[#{pid => null, id => fmt(Id), name => null, type => Type, module => null,
+        status => Child, children => [], hidden => 0} | Acc], Budget - 1}.
+
+%% supervisor:which_children/1 waits forever; a stuck supervisor must not
+%% hang the page.
+sup_call(Pid, Request) ->
+    try gen:call(Pid, '$gen_call', Request, ?SUP_TIMEOUT) of
+        {ok, Reply} -> {ok, Reply}
+    catch
+        exit:{timeout, _} -> {error, timeout};
+        exit:Reason -> {error, Reason}
+    end.
+
+registered_name(Pid) ->
+    case erlang:process_info(Pid, registered_name) of
+        {registered_name, Name} when is_atom(Name), Name =/= [] -> Name;
+        _ -> null
+    end.
 
 to_pid(Bin) when is_binary(Bin) ->
     list_to_pid(binary_to_list(Bin)).

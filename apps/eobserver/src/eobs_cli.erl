@@ -20,6 +20,10 @@ parse(["--port", Port | Rest], Acc) ->
 parse(["--listen", Ip | Rest], Acc) ->
     {ok, Addr} = inet:parse_address(Ip),
     parse(Rest, Acc#{http_ip => Addr});
+parse(["--password", Password | Rest], Acc) ->
+    parse(Rest, Acc#{password => unicode:characters_to_binary(Password)});
+parse(["--read-only" | Rest], Acc) ->
+    parse(Rest, Acc#{read_only => true});
 parse(["--no-browser" | Rest], Acc) ->
     parse(Rest, Acc#{browser => false});
 parse([Unknown | Rest], Acc) ->
@@ -28,7 +32,8 @@ parse([Unknown | Rest], Acc) ->
 
 usage() ->
     "usage: eobs [--node NAME@HOST] [--cookie COOKIE] [--port 8090]\n"
-    "            [--listen 127.0.0.1] [--no-browser]\n".
+    "            [--listen 127.0.0.1] [--password PASS] [--read-only] [--no-browser]\n"
+    "The password can also be given in the EOBS_PASSWORD environment variable.\n".
 
 open_browser(Url) ->
     Cmd = case os:type() of

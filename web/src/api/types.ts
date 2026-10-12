@@ -116,3 +116,141 @@ export interface ProcessDetail {
   dictionary: { key: string; value: string }[]
   word_size: number
 }
+
+export interface AppInfo {
+  name: string
+  description: string
+  vsn: string
+  running: boolean
+}
+
+export interface SupNode {
+  pid: string | null
+  id: string
+  name: string | null
+  type: 'supervisor' | 'worker'
+  module: string | null
+  status?: string
+  error?: string
+  hidden: number
+  children: SupNode[]
+}
+
+export interface AppTree {
+  master: string | null
+  root: SupNode | null
+}
+
+export interface PortRow {
+  id: string
+  name: string
+  registered_name: string | null
+  connected: string | null
+  os_pid: number | null
+  input: number
+  output: number
+  queue_size: number
+  memory: number
+  inet: boolean
+}
+
+export interface InetRow extends PortRow {
+  local: string | null
+  remote: string | null
+  protocol: string
+  stats: { recv_oct?: number; send_oct?: number; recv_cnt?: number; send_cnt?: number }
+}
+
+export interface PortDetail extends PortRow {
+  links: string[]
+  monitors: string[]
+  parallelism: boolean
+  locking: string | null
+  local?: string | null
+  remote?: string | null
+  protocol?: string
+  stats?: Record<string, number>
+}
+
+export interface SocketRow {
+  id: string
+  domain: string | null
+  type: string | null
+  protocol: string | null
+  owner: string | null
+  rstates: string[]
+  wstates: string[]
+  local: string | null
+  remote: string | null
+  read_bytes: number
+  write_bytes: number
+  counters: Record<string, number>
+}
+
+export interface EtsTable {
+  id: string
+  name: string
+  named: boolean
+  type: string
+  size: number
+  memory: number
+  owner: string | null
+  owner_name: string | null
+  protection: string
+  keypos: number
+  compressed: boolean
+  read_concurrency: boolean
+  write_concurrency: string
+  system: boolean
+}
+
+export interface MnesiaTable {
+  id: string
+  name: string
+  storage: string
+  type: string
+  size: number
+  memory: number
+  record_name: string
+  attributes: string[]
+  where_to_read: string
+}
+
+export interface TableRows {
+  rows: string[][]
+  keypos: number
+  columns: number
+  total: number
+  scanned: number
+  complete: boolean
+  attributes?: string[]
+}
+
+export interface AllocatorRow {
+  type: string
+  instances: number
+  blocks: number
+  carriers: number
+  carriers_max: number
+  mbcs_blocks: number
+  mbcs_carriers: number
+  sbcs_blocks: number
+  sbcs_carriers: number
+}
+
+export interface AllocInfo {
+  allocators: AllocatorRow[]
+  memory_total: number
+}
+
+export interface DistConnection {
+  node: string
+  hidden: boolean
+  input: number | null
+  output: number | null
+}
+
+export interface ClusterInfo {
+  tool: string
+  nodes: { node: string; connections: DistConnection[]; error: string | null }[]
+}

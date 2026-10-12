@@ -21,13 +21,39 @@ ensure_started(Target) ->
     end.
 
 start(Domain) ->
-    _ = os:cmd("epmd -daemon"),
+    start_epmd(),
     Name = list_to_atom("eobs_" ++ integer_to_list(erlang:unique_integer([positive]))
                         ++ "_" ++ os:getpid()),
     case net_kernel:start(Name, #{name_domain => Domain, hidden => true}) of
         {ok, _} -> ok;
         {error, {already_started, _}} -> ok;
         {error, Reason} -> {error, {dist_start_failed, Reason}}
+    end.
+
+%% Distribution needs a local epmd. A release does not put the bundled
+%% ERTS on PATH, so prefer the epmd next to the running emulator.
+start_epmd() ->
+    BinDir = filename:join([code:root_dir(), "erts-" ++ erlang:system_info(version), "bin"]),
+    Epmd = case os:find_executable("epmd", BinDir) of
+               false -> os:find_executable("epmd");
+               Path -> Path
+           end,
+    case Epmd of
+        false ->
+            ok;
+        _ ->
+            Port = open_port({spawn_executable, Epmd},
+                             [{args, ["-daemon"]}, exit_status, hide, stderr_to_stdout]),
+            wait_exit(Port)
+    end.
+
+wait_exit(Port) ->
+    receive
+        {Port, {exit_status, _}} -> ok;
+        {Port, {data, _}} -> wait_exit(Port)
+    after 5000 ->
+        catch port_close(Port),
+        ok
     end.
 
 %% A host part containing a dot means the target uses long names.

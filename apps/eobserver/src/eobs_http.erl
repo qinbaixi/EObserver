@@ -18,7 +18,8 @@ start() ->
     ],
     Dispatch = cowboy_router:compile([{'_', Routes}]),
     cowboy:start_clear(?LISTENER, [{ip, Ip}, {port, Port}],
-                       #{env => #{dispatch => Dispatch}}).
+                       #{env => #{dispatch => Dispatch},
+                         middlewares => [eobs_auth, cowboy_router, cowboy_handler]}).
 
 stop() ->
     cowboy:stop_listener(?LISTENER).

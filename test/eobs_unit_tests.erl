@@ -40,3 +40,25 @@ load_rates_test() ->
     ?assertEqual(2000.0, maps:get(io_input, R)),
     ?assertEqual(1000.0, maps:get(io_output, R)),
     ?assertEqual(5.0, maps:get(reductions, R)).
+
+cli_password_test() ->
+    ?assertEqual(#{browser => true, password => <<"s3cret">>, read_only => true},
+                 eobs_cli:parse(["--password", "s3cret", "--read-only"])).
+
+auth_check_test() ->
+    Header = fun(UserPass) -> <<"Basic ", (base64:encode(UserPass))/binary>> end,
+    ?assert(eobs_auth:check(Header(<<"any:pw">>), <<"pw">>)),
+    ?assert(eobs_auth:check(Header(<<":pw:with:colons">>), <<"pw:with:colons">>)),
+    ?assertNot(eobs_auth:check(Header(<<"any:nope">>), <<"pw">>)),
+    ?assertNot(eobs_auth:check(<<"Basic !!!">>, <<"pw">>)),
+    ?assertNot(eobs_auth:check(undefined, <<"pw">>)).
+
+same_origin_test() ->
+    ?assert(eobs_ws:same_origin(undefined, <<"localhost:8090">>)),
+    ?assert(eobs_ws:same_origin(<<"http://localhost:8090">>, <<"localhost:8090">>)),
+    ?assert(eobs_ws:same_origin(<<"http://LocalHost:8090">>, <<"localhost:8090">>)),
+    ?assert(eobs_ws:same_origin(<<"http://[::1]:8090">>, <<"[::1]:8090">>)),
+    ?assert(eobs_ws:same_origin(<<"http://example.com">>, <<"example.com">>)),
+    ?assertNot(eobs_ws:same_origin(<<"http://evil.example">>, <<"localhost:8090">>)),
+    ?assertNot(eobs_ws:same_origin(<<"http://localhost:5173">>, <<"localhost:8090">>)),
+    ?assertNot(eobs_ws:same_origin(<<"null">>, <<"localhost:8090">>)).

@@ -1,16 +1,16 @@
 <script setup lang="ts">
-import { computed, h, ref } from 'vue'
+import { computed, h } from 'vue'
 import { NSelect, NButton, NIcon, NSpace, NTooltip, useDialog, useMessage, type SelectOption } from 'naive-ui'
 import { AddOutline, CloseOutline } from '@vicons/ionicons5'
 import { useNodes } from '../stores/nodes'
 import StatusDot from './StatusDot.vue'
-import ConnectDialog from './ConnectDialog.vue'
+import { useUi } from '../stores/ui'
 import type { NodeStatus } from '../api/types'
 
 const nodes = useNodes()
 const dialog = useDialog()
 const message = useMessage()
-const showConnect = ref(false)
+const ui = useUi()
 
 const options = computed<SelectOption[]>(() =>
   nodes.list.map((n) => ({ label: n.node, value: n.node, status: n.status })),
@@ -49,7 +49,7 @@ function confirmDisconnect() {
              placeholder="选择节点" @update:value="nodes.select" />
     <NTooltip>
       <template #trigger>
-        <NButton secondary @click="showConnect = true">
+        <NButton secondary @click="ui.openConnect()">
           <template #icon><NIcon :component="AddOutline" /></template>
           添加节点
         </NButton>
@@ -59,6 +59,5 @@ function confirmDisconnect() {
     <NButton v-if="nodes.current" quaternary circle @click="confirmDisconnect">
       <template #icon><NIcon :component="CloseOutline" /></template>
     </NButton>
-    <ConnectDialog v-model:show="showConnect" />
   </NSpace>
 </template>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useQueryRef } from '../composables/useQueryRef'
 import { computed, h, onBeforeUnmount, ref, watch } from 'vue'
 import {
   NDataTable, NInput, NSpace, NSelect, NTag, NIcon, NButton, NAlert,
@@ -29,7 +30,7 @@ const interval = ref(2000)
 const paused = ref(false)
 const data = ref<ProcessPage | null>(null)
 const error = ref<string | null>(null)
-const selected = ref<string | null>(null)
+const selected = useQueryRef('pid')
 
 let debounce: number | undefined
 watch(filterInput, (v) => {
@@ -61,7 +62,7 @@ function subscribe(once = false) {
 
 watch([params, interval], () => { if (!paused.value) subscribe() }, { immediate: true })
 watch(paused, (p) => (p ? (stop?.(), (stop = null)) : subscribe()))
-watch(() => nodes.current, () => { data.value = null; selected.value = null; page.value = 1 })
+watch(() => nodes.current, () => { data.value = null; page.value = 1 })
 onBeforeUnmount(() => stop?.())
 
 function refreshOnce() {

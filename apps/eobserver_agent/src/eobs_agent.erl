@@ -9,10 +9,14 @@
 -export([version/0, node_summary/0, load_sample/1]).
 -export([process_list/3, process_detail/1, process_state/2, process_kill/1,
          process_send/2]).
+-export([app_list/0, app_tree/1]).
+-export([port_list/0, port_detail/1, port_close/1, inet_list/0, socket_list/0]).
+-export([ets_list/0, ets_rows/2, mnesia_list/0, mnesia_rows/2]).
+-export([alloc_info/0, dist_info/0]).
 
 %% Bump whenever the exported API or return shapes change, so the tool
 %% replaces an older copy that is still loaded on the target.
--define(VERSION, 3).
+-define(VERSION, 7).
 
 %% Long-lived helper process on the observed node. It keeps
 %% scheduler_wall_time enabled, builds process lists while holding the
@@ -25,6 +29,14 @@
 -define(TERM_DEPTH, 30).
 -define(TERM_CHARS, 8000).
 -define(MAX_MESSAGES, 100).
+%% Supervision tree limits: children listed per supervisor, total nodes,
+%% and how long a busy supervisor may take to answer.
+-define(TREE_MAX_CHILDREN, 200).
+-define(TREE_MAX_NODES, 3000).
+-define(SUP_TIMEOUT, 3000).
+%% Table viewer: chars per cell, and how many objects a search may scan.
+-define(CELL_CHARS, 300).
+-define(SEARCH_SCAN, 200000).
 
 version() ->
     ?VERSION.
@@ -405,6 +417,425 @@ process_send(PidBin, Msg) ->
     to_pid(PidBin) ! Msg,
     ok.
 
+%%--------------------------------------------------------------------
+%% Applications
+%%--------------------------------------------------------------------
+
+app_list() ->
+    Running = application:which_applications(),
+    RunningNames = [A || {A, _, _} <- Running],
+    Loaded = [{A, D, V} || {A, D, V} <- application:loaded_applications(),
+                           not lists:member(A, RunningNames)],
+    [#{name => A, description => bin(D), vsn => bin(V), running => true}
+     || {A, D, V} <- lists:keysort(1, Running)]
+        ++ [#{name => A, description => bin(D), vsn => bin(V), running => false}
+            || {A, D, V} <- lists:keysort(1, Loaded)].
+
+%% The supervision tree of a running application, from its top
+%% supervisor down. Large supervisors are truncated, see TREE_MAX_*.
+app_tree(App) ->
+    case application_controller:get_master(App) of
+        Master when is_pid(Master) ->
+            case catch application_master:get_child(Master) of
+                {Root, Mod} when is_pid(Root) ->
+                    {Tree, _} = sup_node(Root, App, supervisor, Mod, ?TREE_MAX_NODES),
+                    {ok, #{master => ref_bin(Master), root => Tree}};
+                _ ->
+                    {ok, #{master => ref_bin(Master), root => null}}
+            end;
+        _ ->
+            %% Library applications (no mod) have no master process.
+            case lists:keymember(App, 1, application:which_applications()) of
+                true -> {ok, #{master => null, root => null}};
+                false -> {error, not_running}
+            end
+    end.
+
+sup_node(Pid, Id, Type, Mod, Budget) ->
+    Base = #{pid => ref_bin(Pid),
+             id => fmt(Id),
+             name => registered_name(Pid),
+             type => Type,
+             module => Mod},
+    case Type of
+        supervisor when Budget > 0 ->
+            case sup_call(Pid, which_children) of
+                {ok, Children} ->
+                    Total = length(Children),
+                    Shown = lists:sublist(Children, ?TREE_MAX_CHILDREN),
+                    {Nodes, Left} = lists:foldl(
+                                      fun(Child, {Acc, B}) -> child_node(Child, Acc, B) end,
+                                      {[], Budget - 1}, Shown),
+                    {Base#{children => lists:reverse(Nodes),
+                           hidden => Total - length(Nodes)}, Left};
+                {error, Reason} ->
+                    {Base#{children => [], hidden => 0, error => fmt(Reason)}, Budget - 1}
+            end;
+        _ ->
+            {Base#{children => [], hidden => 0}, Budget - 1}
+    end.
+
+child_node({_Id, _Child, _Type, _Mods}, Acc, Budget) when Budget =< 0 ->
+    {Acc, Budget};
+child_node({Id, Child, Type, Mods}, Acc, Budget) when is_pid(Child) ->
+    Mod = case Mods of [M | _] -> M; _ -> Mods end,
+    {Node, Left} = sup_node(Child, Id, Type, Mod, Budget),
+    {[Node | Acc], Left};
+child_node({Id, Child, Type, _Mods}, Acc, Budget) ->
+    %% restarting or undefined (not running) children
+    {[#{pid => null, id => fmt(Id), name => null, type => Type, module => null,
+        status => Child, children => [], hidden => 0} | Acc], Budget - 1}.
+
+%% supervisor:which_children/1 waits forever; a stuck supervisor must not
+%% hang the page.
+sup_call(Pid, Request) ->
+    try gen:call(Pid, '$gen_call', Request, ?SUP_TIMEOUT) of
+        {ok, Reply} -> {ok, Reply}
+    catch
+        exit:{timeout, _} -> {error, timeout};
+        exit:Reason -> {error, Reason}
+    end.
+
+registered_name(Pid) ->
+    case erlang:process_info(Pid, registered_name) of
+        {registered_name, Name} when is_atom(Name), Name =/= [] -> Name;
+        _ -> null
+    end.
+
+%%--------------------------------------------------------------------
+%% Ports and sockets
+%%--------------------------------------------------------------------
+
+port_list() ->
+    [P || P <- [port_row(Port) || Port <- erlang:ports()], P =/= undefined].
+
+port_row(Port) ->
+    case erlang:port_info(Port) of
+        undefined ->
+            undefined;
+        Info ->
+            Name = proplists:get_value(name, Info),
+            #{id => ref_bin(Port),
+              name => bin(Name),
+              registered_name => port_item(Port, registered_name, null),
+              connected => ref_bin(proplists:get_value(connected, Info)),
+              os_pid => case proplists:get_value(os_pid, Info) of
+                            undefined -> null;
+                            OsPid -> OsPid
+                        end,
+              input => proplists:get_value(input, Info, 0),
+              output => proplists:get_value(output, Info, 0),
+              queue_size => port_item(Port, queue_size, 0),
+              memory => port_item(Port, memory, 0),
+              inet => inet_port_name(Name)}
+    end.
+
+port_item(Port, Item, Default) ->
+    case catch erlang:port_info(Port, Item) of
+        {Item, []} -> Default;
+        {Item, V} -> V;
+        _ -> Default
+    end.
+
+inet_port_name("tcp_inet") -> true;
+inet_port_name("udp_inet") -> true;
+inet_port_name("sctp_inet") -> true;
+inet_port_name(_) -> false.
+
+port_detail(PortBin) ->
+    Port = to_port(PortBin),
+    case port_row(Port) of
+        undefined ->
+            {error, not_found};
+        Row ->
+            Links = [ref_bin(L) || L <- port_item(Port, links, [])],
+            Monitors = [monitor_bin(M) || M <- port_item(Port, monitors, [])],
+            Extra = case maps:get(inet, Row) of
+                        true -> inet_info(Port);
+                        false -> #{}
+                    end,
+            {ok, maps:merge(Row#{links => Links, monitors => Monitors,
+                                 parallelism => port_item(Port, parallelism, false),
+                                 locking => port_item(Port, locking, null)}, Extra)}
+    end.
+
+port_close(PortBin) ->
+    try erlang:port_close(to_port(PortBin)) of
+        true -> ok
+    catch
+        error:badarg -> {error, not_found}
+    end.
+
+%% gen_tcp / gen_udp / gen_sctp sockets (inet driver ports).
+inet_list() ->
+    [maps:merge(Row, inet_info(Port))
+     || Port <- erlang:ports(),
+        Row <- [port_row(Port)],
+        Row =/= undefined, maps:get(inet, Row)].
+
+inet_info(Port) ->
+    Stats = case catch inet:getstat(Port, [recv_oct, send_oct, recv_cnt, send_cnt]) of
+                {ok, S} -> maps:from_list(S);
+                _ -> #{}
+            end,
+    #{local => addr(catch inet:sockname(Port)),
+      remote => addr(catch inet:peername(Port)),
+      protocol => case erlang:port_info(Port, name) of
+                      {name, "tcp_inet"} -> tcp;
+                      {name, "udp_inet"} -> udp;
+                      {name, "sctp_inet"} -> sctp;
+                      _ -> unknown
+                  end,
+      stats => Stats}.
+
+%% Sockets created with the socket module (OTP 22+).
+socket_list() ->
+    case erlang:function_exported(socket, which_sockets, 0)
+         orelse code:ensure_loaded(socket) =:= {module, socket}
+                andalso erlang:function_exported(socket, which_sockets, 0) of
+        false ->
+            {error, unsupported};
+        true ->
+            {ok, [socket_row(S) || S <- socket:which_sockets()]}
+    end.
+
+socket_row(S) ->
+    Info = case catch socket:info(S) of
+               I when is_map(I) -> I;
+               _ -> #{}
+           end,
+    Counters = maps:get(counters, Info, #{}),
+    #{id => fmt(S),
+      domain => maps:get(domain, Info, null),
+      type => maps:get(type, Info, null),
+      protocol => maps:get(protocol, Info, null),
+      owner => ref_bin(maps:get(owner, Info, null)),
+      rstates => [fmt(X) || X <- maps:get(rstates, Info, [])],
+      wstates => [fmt(X) || X <- maps:get(wstates, Info, [])],
+      local => addr(catch socket:sockname(S)),
+      remote => addr(catch socket:peername(S)),
+      read_bytes => maps:get(read_byte, Counters, 0),
+      write_bytes => maps:get(write_byte, Counters, 0),
+      counters => maps:from_list([{K, V} || {K, V} <- maps:to_list(Counters),
+                                            is_integer(V)])}.
+
+addr({ok, {Ip, Port}}) when is_tuple(Ip) ->
+    bin(inet:ntoa(Ip) ++ ":" ++ integer_to_list(Port));
+addr({ok, #{addr := Ip, port := Port}}) when is_tuple(Ip) ->
+    bin(inet:ntoa(Ip) ++ ":" ++ integer_to_list(Port));
+addr({ok, #{path := Path}}) ->
+    bin(io_lib:format("~ts", [Path]));
+addr({ok, Other}) ->
+    fmt(Other);
+addr(_) ->
+    null.
+
+%%--------------------------------------------------------------------
+%% ETS and Mnesia tables
+%%--------------------------------------------------------------------
+
+ets_list() ->
+    Word = erlang:system_info(wordsize),
+    [T || T <- [ets_row(Tab, Word) || Tab <- ets:all()], T =/= undefined].
+
+ets_row(Tab, Word) ->
+    case catch ets:info(Tab) of
+        Info when is_list(Info) ->
+            Owner = proplists:get_value(owner, Info),
+            Name = proplists:get_value(name, Info),
+            #{id => table_id(Tab),
+              name => Name,
+              named => proplists:get_value(named_table, Info, false),
+              type => proplists:get_value(type, Info),
+              size => proplists:get_value(size, Info, 0),
+              memory => proplists:get_value(memory, Info, 0) * Word,
+              owner => ref_bin(Owner),
+              owner_name => registered_name(Owner),
+              protection => proplists:get_value(protection, Info),
+              keypos => proplists:get_value(keypos, Info, 1),
+              compressed => proplists:get_value(compressed, Info, false),
+              read_concurrency => proplists:get_value(read_concurrency, Info, false),
+              write_concurrency => fmt(proplists:get_value(write_concurrency, Info, false)),
+              system => system_owner(Owner)};
+        _ ->
+            undefined
+    end.
+
+%% Tables owned by kernel/stdlib processes are hidden by default, as in
+%% OTP's observer.
+system_owner(Pid) when is_pid(Pid) ->
+    case catch application:get_application(Pid) of
+        {ok, App} -> lists:member(App, [kernel, stdlib]);
+        _ -> false
+    end;
+system_owner(_) ->
+    false.
+
+table_id(Tab) when is_atom(Tab) -> atom_to_binary(Tab, utf8);
+table_id(Tab) -> fmt(Tab).
+
+%% Opts: id (from ets_list), offset, limit, search (binary).
+ets_rows(IdBin, Opts) ->
+    case find_ets(IdBin) of
+        undefined ->
+            {error, not_found};
+        Tab ->
+            case ets:info(Tab, protection) of
+                private -> {error, private};
+                _ -> {ok, read_rows(fun(Spec, N) -> ets:select(Tab, Spec, N) end,
+                                    ets:info(Tab, size), ets:info(Tab, keypos), Opts)}
+            end
+    end.
+
+find_ets(IdBin) ->
+    Match = [T || T <- ets:all(), table_id(T) =:= IdBin],
+    case Match of
+        [T | _] -> T;
+        [] -> undefined
+    end.
+
+mnesia_list() ->
+    case mnesia_running() of
+        false ->
+            {error, not_running};
+        true ->
+            Word = erlang:system_info(wordsize),
+            Tabs = [T || T <- mnesia:system_info(tables), T =/= schema],
+            {ok, [mnesia_row(T, Word) || T <- lists:sort(Tabs)]}
+    end.
+
+mnesia_row(Tab, Word) ->
+    Info = fun(Item) -> catch mnesia:table_info(Tab, Item) end,
+    Storage = Info(storage_type),
+    Memory = case Info(memory) of
+                 M when is_integer(M), Storage =:= disc_only_copies -> M;
+                 M when is_integer(M) -> M * Word;
+                 _ -> 0
+             end,
+    #{id => atom_to_binary(Tab, utf8),
+      name => Tab,
+      storage => fmt(Storage),
+      type => fmt(Info(type)),
+      size => case Info(size) of S when is_integer(S) -> S; _ -> 0 end,
+      memory => Memory,
+      record_name => fmt(Info(record_name)),
+      attributes => [fmt(A) || A <- case Info(attributes) of L when is_list(L) -> L; _ -> [] end],
+      where_to_read => fmt(Info(where_to_read))}.
+
+mnesia_rows(IdBin, Opts) ->
+    case mnesia_running() of
+        false ->
+            {error, not_running};
+        true ->
+            case [T || T <- mnesia:system_info(tables), atom_to_binary(T, utf8) =:= IdBin] of
+                [Tab] ->
+                    Select = fun(Spec, N) -> mnesia_select(Tab, Spec, N) end,
+                    Size = mnesia:table_info(Tab, size),
+                    {ok, (read_rows(Select, Size, 2, Opts))#{attributes =>
+                         [fmt(A) || A <- mnesia:table_info(Tab, attributes)]}};
+                _ ->
+                    {error, not_found}
+            end
+    end.
+
+%% Paged read inside an activity, so it works for every storage type.
+mnesia_select(Tab, Spec, N) ->
+    case mnesia:activity(async_dirty,
+                         fun() -> mnesia:select(Tab, Spec, N, read) end) of
+        '$end_of_table' -> '$end_of_table';
+        {Objs, Cont} -> {Objs, {mnesia_cont, Cont}}
+    end.
+
+mnesia_running() ->
+    lists:keymember(mnesia, 1, application:which_applications())
+        andalso (catch mnesia:system_info(is_running)) =:= yes.
+
+%% Reads one page of objects via Select(MatchSpec, ChunkSize), which must
+%% behave like ets:select/3. Without a search the page is reached by
+%% skipping Offset objects; with a search every object is formatted and
+%% matched, scanning at most SEARCH_SCAN objects.
+read_rows(Select, Size, KeyPos, Opts) ->
+    Offset = maps:get(offset, Opts, 0),
+    Limit = min(maps:get(limit, Opts, 50), 500),
+    Search = string:to_lower(unicode:characters_to_list(maps:get(search, Opts, <<>>))),
+    Spec = [{'_', [], ['$_']}],
+    {Objects, Matched, Scanned, Complete} =
+        case Search of
+            "" ->
+                Objs = take(Select(Spec, 500), Offset, Limit),
+                {Objs, Size, Offset + length(Objs), true};
+            _ ->
+                search(Select(Spec, 500), Search, Offset, Limit)
+        end,
+    Rows = [row_cells(O) || O <- Objects],
+    #{rows => Rows,
+      keypos => KeyPos,
+      columns => lists:max([0 | [length(R) || R <- Rows]]),
+      total => Matched,
+      scanned => Scanned,
+      complete => Complete}.
+
+take(Chunk, Offset, Limit) ->
+    take(Chunk, Offset, Limit, []).
+
+take(_, _, 0, Acc) ->
+    lists:reverse(Acc);
+take('$end_of_table', _, _, Acc) ->
+    lists:reverse(Acc);
+take({Objs, Cont}, Offset, Limit, Acc) ->
+    Len = length(Objs),
+    case Offset >= Len of
+        true ->
+            take(next(Cont), Offset - Len, Limit, Acc);
+        false ->
+            Page = lists:sublist(Objs, Offset + 1, Limit),
+            take(next(Cont), 0, Limit - length(Page), lists:reverse(Page, Acc))
+    end.
+
+search(Chunk, Search, Offset, Limit) ->
+    search(Chunk, Search, Offset, Limit, [], 0, 0).
+
+search('$end_of_table', _, _, _, Acc, Matched, Scanned) ->
+    {lists:reverse(Acc), Matched, Scanned, true};
+search(_, _, _, _, Acc, Matched, Scanned) when Scanned >= ?SEARCH_SCAN ->
+    {lists:reverse(Acc), Matched, Scanned, false};
+search({Objs, Cont}, Search, Offset, Limit, Acc0, Matched0, Scanned0) ->
+    {Acc, Matched} =
+        lists:foldl(
+          fun(O, {A, M}) ->
+                  Text = string:to_lower(lists:flatten(io_lib:format("~tP", [O, ?TERM_DEPTH]))),
+                  case string:str(Text, Search) > 0 of
+                      true when M >= Offset, M < Offset + Limit -> {[O | A], M + 1};
+                      true -> {A, M + 1};
+                      false -> {A, M}
+                  end
+          end, {Acc0, Matched0}, Objs),
+    search(next(Cont), Search, Offset, Limit, Acc, Matched, Scanned0 + length(Objs)).
+
+next('$end_of_table') -> '$end_of_table';
+next({mnesia_cont, Cont}) ->
+    case mnesia:activity(async_dirty, fun() -> mnesia:select(Cont) end) of
+        '$end_of_table' -> '$end_of_table';
+        {Objs, Cont1} -> {Objs, {mnesia_cont, Cont1}}
+    end;
+next(Cont) ->
+    ets:select(Cont).
+
+row_cells(Obj) when is_tuple(Obj) ->
+    [cell(E) || E <- tuple_to_list(Obj)];
+row_cells(Obj) ->
+    [cell(Obj)].
+
+cell(Term) ->
+    Chars = lists:flatten(io_lib:format("~tP", [Term, ?TERM_DEPTH])),
+    case length(Chars) > ?CELL_CHARS of
+        true -> unicode:characters_to_binary(lists:sublist(Chars, ?CELL_CHARS) ++ " ...");
+        false -> unicode:characters_to_binary(Chars)
+    end.
+
+to_port(Bin) when is_binary(Bin) ->
+    list_to_port(binary_to_list(Bin)).
+
 to_pid(Bin) when is_binary(Bin) ->
     list_to_pid(binary_to_list(Bin)).
 
@@ -425,6 +856,8 @@ monitor_bin(Other) -> fmt(Other).
 
 ref_bin(P) when is_pid(P) -> list_to_binary(pid_to_list(P));
 ref_bin(P) when is_port(P) -> list_to_binary(erlang:port_to_list(P));
+ref_bin(null) -> null;
+ref_bin(undefined) -> null;
 ref_bin(Other) -> fmt(Other).
 
 mfa({M, F, A}) -> atom_to_list(M) ++ ":" ++ atom_to_list(F) ++ "/" ++ integer_to_list(A);
@@ -438,6 +871,108 @@ fmt(Term) ->
     end.
 
 bin(Chars) -> unicode:characters_to_binary(Chars).
+
+%%--------------------------------------------------------------------
+%% Memory allocators
+%%--------------------------------------------------------------------
+
+%% Block (used) and carrier (reserved) sizes per alloc_util allocator,
+%% summed over its instances. Handles both the OTP 22 format
+%% ({blocks_size, Cur, Max, MaxEver}) and the typed blocks of OTP 23+.
+alloc_info() ->
+    Allocs = try erlang:system_info(alloc_util_allocators) catch _:_ -> [] end,
+    #{allocators => [A || A <- [alloc_row(T) || T <- Allocs], A =/= undefined],
+      memory_total => erlang:memory(total)}.
+
+alloc_row(Type) ->
+    case catch erlang:system_info({allocator_sizes, Type}) of
+        Instances when is_list(Instances), Instances =/= [] ->
+            Zero = #{mbcs_blocks => 0, mbcs_carriers => 0, sbcs_blocks => 0,
+                     sbcs_carriers => 0, carriers_max => 0},
+            Sums = lists:foldl(fun alloc_instance/2, Zero, Instances),
+            #{mbcs_blocks := MB, mbcs_carriers := MC, sbcs_blocks := SB, sbcs_carriers := SC} = Sums,
+            Sums#{type => Type,
+                  instances => length(Instances),
+                  blocks => MB + SB,
+                  carriers => MC + SC};
+        _ ->
+            undefined
+    end.
+
+alloc_instance({instance, _, Sections}, Acc) when is_list(Sections) ->
+    lists:foldl(fun alloc_section/2, Acc, Sections);
+alloc_instance(_, Acc) ->
+    Acc.
+
+alloc_section({Kind, Data}, Acc) when is_list(Data) ->
+    Prefix = case Kind of
+                 sbcs -> sbcs;
+                 mbcs -> mbcs;
+                 mbcs_pool -> mbcs;
+                 _ -> skip
+             end,
+    case Prefix of
+        skip ->
+            Acc;
+        _ ->
+            BS = blocks_size(Data),
+            {CS, CMax} = case lists:keyfind(carriers_size, 1, Data) of
+                             {carriers_size, C, _, Max} -> {C, Max};
+                             {carriers_size, C} -> {C, C};
+                             _ -> {0, 0}
+                         end,
+            BK = list_to_atom(atom_to_list(Prefix) ++ "_blocks"),
+            CK = list_to_atom(atom_to_list(Prefix) ++ "_carriers"),
+            Acc#{BK := maps:get(BK, Acc) + BS,
+                 CK := maps:get(CK, Acc) + CS,
+                 carriers_max := maps:get(carriers_max, Acc) + CMax}
+    end;
+alloc_section(_, Acc) ->
+    Acc.
+
+blocks_size(Data) ->
+    case lists:keyfind(blocks_size, 1, Data) of
+        {blocks_size, BS, _, _} -> BS;
+        {blocks_size, BS} -> BS;
+        false ->
+            case lists:keyfind(blocks, 1, Data) of
+                {blocks, Typed} when is_list(Typed) ->
+                    lists:sum([typed_size(Info) || {_, Info} <- Typed]);
+                _ -> 0
+            end
+    end.
+
+typed_size(Info) when is_list(Info) ->
+    case lists:keyfind(size, 1, Info) of
+        {size, S, _, _} -> S;
+        {size, S} -> S;
+        _ -> 0
+    end;
+typed_size(_) ->
+    0.
+
+%%--------------------------------------------------------------------
+%% Distribution
+%%--------------------------------------------------------------------
+
+%% The node's distribution connections, for the cluster view.
+dist_info() ->
+    Ctrl = try erlang:system_info(dist_ctrl) catch _:_ -> [] end,
+    Hidden = nodes(hidden),
+    #{node => node(),
+      alive => is_alive(),
+      connections => [dist_conn(N, C, lists:member(N, Hidden)) || {N, C} <- Ctrl]}.
+
+dist_conn(Node, Ctrl, Hidden) ->
+    {In, Out} = case Ctrl of
+                    P when is_port(P) ->
+                        {stat(erlang:port_info(P, input)), stat(erlang:port_info(P, output))};
+                    _ -> {null, null}
+                end,
+    #{node => Node, hidden => Hidden, input => In, output => Out}.
+
+stat({_, N}) -> N;
+stat(_) -> null.
 
 features() ->
     #{socket => has_which_sockets(),

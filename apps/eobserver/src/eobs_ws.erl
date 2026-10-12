@@ -41,10 +41,10 @@ websocket_info({resp, Id, Result}, State) ->
     {[frame(result(#{type => resp, id => Id}, result, Result))], State};
 websocket_info({tick, Id}, State) ->
     {[], start_tick(Id, State)};
-websocket_info({push, Id, Worker, Result}, #{subs := Subs} = State) ->
+websocket_info({push, Id, Worker, Result, TopicState}, #{subs := Subs} = State) ->
     case Subs of
         #{Id := #{worker := Worker} = Sub} ->
-            Sub1 = Sub#{worker := undefined},
+            Sub1 = Sub#{worker := undefined, state := TopicState},
             {[frame(result(#{type => push, id => Id}, data, Result))],
              State#{subs := Subs#{Id := Sub1}}};
         _ ->
@@ -67,7 +67,8 @@ handle_msg(#{<<"type">> := <<"sub">>, <<"id">> := Id, <<"topic">> := Topic} = Ms
             params => maps:get(<<"params">>, Msg, #{}),
             interval => Interval,
             worker => undefined,
-            timer => undefined},
+            timer => undefined,
+            state => undefined},
     State1 = State#{subs := maps:put(Id, Sub, cancel(Id, Subs))},
     {[], start_tick(Id, State1)};
 handle_msg(#{<<"type">> := <<"unsub">>, <<"id">> := Id}, #{subs := Subs} = State) ->
@@ -77,9 +78,11 @@ handle_msg(_Msg, State) ->
 
 start_tick(Id, #{subs := Subs} = State) ->
     case Subs of
-        #{Id := #{interval := Interval, topic := Topic, params := Params} = Sub} ->
+        #{Id := #{interval := Interval, topic := Topic, params := Params,
+                  state := TopicState} = Sub} ->
             Worker = case Sub of
-                         #{worker := undefined} -> spawn_collect(Id, Topic, Params);
+                         #{worker := undefined} ->
+                             spawn_collect(Id, Topic, Params, TopicState);
                          #{worker := Busy} -> Busy
                      end,
             Timer = erlang:send_after(Interval, self(), {tick, Id}),
@@ -88,11 +91,15 @@ start_tick(Id, #{subs := Subs} = State) ->
             State
     end.
 
-spawn_collect(Id, Topic, Params) ->
+spawn_collect(Id, Topic, Params, TopicState) ->
     Self = self(),
     spawn(fun() ->
-                  Result = run(fun() -> eobs_api:collect(Topic, Params) end),
-                  Self ! {push, Id, self(), Result}
+                  {Result, TopicState1} =
+                      case run(fun() -> eobs_api:collect(Topic, Params, TopicState) end) of
+                          {ok, {Data, NewState}} -> {{ok, Data}, NewState};
+                          Error -> {Error, TopicState}
+                      end,
+                  Self ! {push, Id, self(), Result, TopicState1}
           end).
 
 cancel(Id, Subs) ->
@@ -108,6 +115,7 @@ run(Fun) ->
     try Fun() of
         ok -> {ok, null};
         {ok, _} = Ok -> Ok;
+        {ok, Data, NewState} -> {ok, {Data, NewState}};
         {error, _} = Error -> Error;
         Other -> {error, {bad_return, Other}}
     catch

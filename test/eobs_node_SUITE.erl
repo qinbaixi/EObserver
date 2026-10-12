@@ -5,11 +5,11 @@
 -export([all/0, init_per_suite/1, end_per_suite/1,
          init_per_testcase/2, end_per_testcase/2]).
 -export([connect_loads_agent/1, tool_is_hidden/1, disconnect_unloads_agent/1,
-         unreachable_node_retries/1, api_requests/1]).
+         unreachable_node_retries/1, api_requests/1, load_sampling/1]).
 
 all() ->
     [connect_loads_agent, tool_is_hidden, disconnect_unloads_agent,
-     unreachable_node_retries, api_requests].
+     unreachable_node_retries, api_requests, load_sampling].
 
 init_per_suite(Config) ->
     application:load(eobserver),
@@ -78,6 +78,22 @@ api_requests(Config) ->
     %% The JSON layer must cope with everything the summary contains.
     {ok, Summary} = eobs_api:collect(<<"node.summary">>, #{<<"node">> => NodeBin}),
     ?assert(is_binary(eobs_json:encode(Summary))).
+
+load_sampling(Config) ->
+    Node = ?config(target, Config),
+    connect(Node),
+    Params = #{<<"node">> => atom_to_binary(Node, utf8)},
+    {ok, First, State} = eobs_api:collect(<<"node.load">>, Params, undefined),
+    ?assertEqual(null, maps:get(schedulers, First)),
+    timer:sleep(200),
+    {ok, Second, _} = eobs_api:collect(<<"node.load">>, Params, State),
+    Scheds = maps:get(schedulers, Second),
+    ?assert(length(Scheds) >= erlang:system_info(schedulers)),
+    ?assert(lists:all(fun(#{util := U}) -> U >= 0 andalso U =< 1 end, Scheds)),
+    %% The holder keeps scheduler_wall_time enabled on the target.
+    ?assertNotEqual(undefined, peer:call(?config(peer, Config), erlang, whereis,
+                                         [eobs_agent_swt])),
+    ?assert(is_binary(eobs_json:encode(Second))).
 
 %% helpers
 

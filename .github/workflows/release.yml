@@ -2,8 +2,9 @@ name: Release
 
 # Pushing a tag such as v0.0.1 builds the release archives and desktop
 # apps for Linux, macOS and Windows and publishes them as a GitHub
-# Release. Pull requests that touch packaging, and manual runs, build
-# everything without publishing.
+# Release. A manual run on main with "publish" checked does the same,
+# creating the tag v<app version> on the commit it ran on. Pull requests
+# that touch packaging, and other manual runs, build without publishing.
 on:
   push:
     tags: ['v*']
@@ -15,6 +16,11 @@ on:
       - rebar.config
       - config/**
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a GitHub Release tagged v<app version>
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -198,10 +204,14 @@ jobs:
 
   publish:
     needs: [check-version, package]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main')
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    env:
+      TAG: v${{ needs.check-version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -226,6 +236,8 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+        # On a manual run the tag does not exist yet; gh creates it on the
+        # commit this run built.
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --title "EObserver $GITHUB_REF_NAME" --notes-file notes.md --verify-tag
+          gh release create "$TAG" dist/* --target "$GITHUB_SHA" \
+            --title "EObserver $TAG" --notes-file notes.md

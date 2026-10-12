@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: '26.2'
+          rebar3-version: '3.24'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build frontend
+        run: make web
+
+      - name: Unit tests
+        run: rebar3 eunit
+
+      - name: Integration tests
+        run: rebar3 ct
+
+      - name: Release
+        run: rebar3 release
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ct-logs
+          path: _build/test/logs

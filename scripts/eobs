@@ -1,0 +1,18 @@
+#!/bin/sh
+# Starts EObserver from a release, e.g. `bin/eobs --node app@host --cookie secret`.
+#
+# The tool boots without a node name and enables distribution as a hidden
+# node once it knows the target, so it bypasses the relx start script
+# (which insists on -name/-sname) and runs the release boot file directly.
+set -e
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+ROOT=$(dirname "$SCRIPT_DIR")
+REL_VSN=$(cut -d' ' -f2 "$ROOT/releases/start_erl.data")
+ERTS_VSN=$(cut -d' ' -f1 "$ROOT/releases/start_erl.data")
+REL_DIR="$ROOT/releases/$REL_VSN"
+ERL="$ROOT/erts-$ERTS_VSN/bin/erl"
+[ -x "$ERL" ] || ERL=erl
+
+exec "$ERL" -boot "$REL_DIR/start" -boot_var SYSTEM_LIB_DIR "$ROOT/lib" \
+    -config "$REL_DIR/sys.config" -args_file "$REL_DIR/vm.args" \
+    -noshell -eobs_cli -extra "$@"

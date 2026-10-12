@@ -2,6 +2,7 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
+-export([busy_loop/1]).
 -export([all/0, init_per_suite/1, end_per_suite/1,
          init_per_testcase/2, end_per_testcase/2]).
 -export([connect_loads_agent/1, tool_is_hidden/1, disconnect_unloads_agent/1,
@@ -112,11 +113,14 @@ process_list(Config) ->
     Node = ?config(target, Config),
     connect(Node),
     Peer = ?config(peer, Config),
-    Busy = peer:call(Peer, erlang, spawn, [lists, seq, [1, 100000000]]),
+    %% Spins until the peer stops, so it stays the busiest process between
+    %% the two samples (a finite job could finish or be outrun).
+    Busy = peer:call(Peer, erlang, spawn, [?MODULE, busy_loop, [0]]),
     Base = #{<<"node">> => atom_to_binary(Node, utf8), <<"limit">> => 10},
     {ok, First, S} = eobs_api:collect(<<"node.processes">>, Base, undefined),
     ?assertNot(maps:get(has_delta, First)),
     ?assertEqual(10, length(maps:get(rows, First))),
+    timer:sleep(200),
     {ok, Second, _} = eobs_api:collect(<<"node.processes">>, Base, S),
     ?assert(maps:get(has_delta, Second)),
     [Top | _] = maps:get(rows, Second),
@@ -382,3 +386,6 @@ wait_for(Node, Pred, N) ->
             timer:sleep(100),
             wait_for(Node, Pred, N - 1)
     end.
+
+busy_loop(N) ->
+    busy_loop(N + 1).

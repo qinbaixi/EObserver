@@ -10,6 +10,7 @@ import NodeGuard from '../components/NodeGuard.vue'
 import KpiTile from '../components/KpiTile.vue'
 import TimeSeriesChart, { type Series } from '../charts/TimeSeriesChart.vue'
 import { term } from '../api/term'
+import { useResizableTable } from '../api/table'
 
 const nodes = useNodes()
 const node = computed(() =>
@@ -84,6 +85,7 @@ const columns: DataTableColumns<AllocatorRow> = [
 function ratio(r: AllocatorRow) {
   return r.carriers > 0 ? r.blocks / r.carriers : 0
 }
+const allocTable = useResizableTable(columns)
 </script>
 
 <template>
@@ -108,8 +110,8 @@ function ratio(r: AllocatorRow) {
       <NGi span="4">
         <NCard size="small" title="各分配器">
           <template #header-extra><NText depth="3" style="font-size: 12px">所有实例之和</NText></template>
-          <NDataTable :columns="columns" :data="data?.allocators ?? []" :loading="!data && !error" size="small"
-                      :row-key="(r: AllocatorRow) => r.type" :scroll-x="1100" />
+          <NDataTable v-bind="allocTable" :data="data?.allocators ?? []" :loading="!data && !error" size="small"
+                      :row-key="(r: AllocatorRow) => r.type" />
         </NCard>
       </NGi>
     </NGrid>

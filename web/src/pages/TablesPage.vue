@@ -16,6 +16,7 @@ import NodeGuard from '../components/NodeGuard.vue'
 import ProcessDrawer from '../components/ProcessDrawer.vue'
 import TableRowsDrawer from '../components/TableRowsDrawer.vue'
 import { term } from '../api/term'
+import { useResizableTable } from '../api/table'
 
 const nodes = useNodes()
 const node = computed(() =>
@@ -109,7 +110,7 @@ const mnesiaColumns: DataTableColumns<MnesiaTable> = [
   { key: 'record_name', title: '记录', width: 140, render: (r) => mono(r.record_name) },
   { key: 'attributes', title: '字段', minWidth: 240, ellipsis: { tooltip: true },
     render: (r) => h('span', { class: 'mono muted' }, r.attributes.join(', ')) },
-  { key: 'where_to_read', title: term('读取节点'), width: 160, ellipsis: { tooltip: true },
+  { key: 'where_to_read', title: term('读取节点'), width: 280, ellipsis: { tooltip: true },
     render: (r) => h('span', { class: 'mono muted' }, r.where_to_read) },
 ]
 
@@ -127,6 +128,8 @@ const subtitle = computed(() => {
   if (tab.value === 'mnesia' && mnesia.data.value) return `${formatNumber(mnesiaRows.value.length)} 张 Mnesia 表`
   return nodes.current ?? undefined
 })
+const etsTable = useResizableTable(etsColumns)
+const mnesiaTable = useResizableTable(mnesiaColumns)
 </script>
 
 <template>
@@ -145,18 +148,16 @@ const subtitle = computed(() => {
     <NTabs v-model:value="tab" type="line" animated>
       <NTabPane name="ets" tab="ETS">
         <NAlert v-if="ets.error.value" type="error" style="margin-bottom: 12px">{{ ets.error.value }}</NAlert>
-        <NDataTable :columns="etsColumns" :data="etsRows" :loading="!ets.data.value && !ets.error.value"
-                    size="small" :row-key="(r: EtsTable) => r.id" :row-props="etsRowProps"
-                    :scroll-x="1100" :pagination="{ pageSize: 50 }" />
+        <NDataTable v-bind="etsTable" :data="etsRows" :loading="!ets.data.value && !ets.error.value"
+                    size="small" :row-key="(r: EtsTable) => r.id" :row-props="etsRowProps" :pagination="{ pageSize: 50 }" />
       </NTabPane>
       <NTabPane name="mnesia" tab="Mnesia">
         <NEmpty v-if="mnesiaOff" description="该节点没有运行 Mnesia" style="padding: 64px 0" />
         <template v-else>
           <NAlert v-if="mnesia.error.value" type="error" style="margin-bottom: 12px">{{ mnesia.error.value }}</NAlert>
-          <NDataTable :columns="mnesiaColumns" :data="mnesiaRows"
+          <NDataTable v-bind="mnesiaTable" :data="mnesiaRows"
                       :loading="!mnesia.data.value && !mnesia.error.value" size="small"
-                      :row-key="(r: MnesiaTable) => r.id" :row-props="mnesiaRowProps"
-                      :scroll-x="1100" :pagination="{ pageSize: 50 }" />
+                      :row-key="(r: MnesiaTable) => r.id" :row-props="mnesiaRowProps" :pagination="{ pageSize: 50 }" />
         </template>
       </NTabPane>
     </NTabs>

@@ -12,6 +12,7 @@ import NodeGuard from '../components/NodeGuard.vue'
 import PortDrawer from '../components/PortDrawer.vue'
 import ProcessDrawer from '../components/ProcessDrawer.vue'
 import { term } from '../api/term'
+import { useResizableTable } from '../api/table'
 
 const nodes = useNodes()
 const node = computed(() =>
@@ -63,6 +64,7 @@ function portNo(id: string) {
 }
 
 const rowProps = (r: PortRow) => ({ style: 'cursor: pointer', onClick: () => { selectedPort.value = r.id } })
+const portTable = useResizableTable(columns)
 </script>
 
 <template>
@@ -73,8 +75,8 @@ const rowProps = (r: PortRow) => ({ style: 'cursor: pointer', onClick: () => { s
   </PageHeader>
   <NodeGuard>
     <NAlert v-if="error" type="error" style="margin-bottom: 12px">{{ error }}</NAlert>
-    <NDataTable :columns="columns" :data="rows" :loading="!data && !error" size="small"
-                :row-key="(r: PortRow) => r.id" :row-props="rowProps" :scroll-x="1000"
+    <NDataTable v-bind="portTable" :data="rows" :loading="!data && !error" size="small"
+                :row-key="(r: PortRow) => r.id" :row-props="rowProps"
                 :pagination="{ pageSize: 50 }" />
     <template v-if="node">
       <PortDrawer v-model:port="selectedPort" :node="node" @open-pid="(p) => (selectedPid = p)" />

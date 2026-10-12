@@ -11,6 +11,7 @@ import NodeGuard from '../components/NodeGuard.vue'
 import PortDrawer from '../components/PortDrawer.vue'
 import ProcessDrawer from '../components/ProcessDrawer.vue'
 import { term } from '../api/term'
+import { useResizableTable } from '../api/table'
 
 const nodes = useNodes()
 const node = computed(() =>
@@ -73,6 +74,8 @@ const socketColumns: DataTableColumns<SocketRow> = [
 ]
 
 const inetRowProps = (r: InetRow) => ({ style: 'cursor: pointer', onClick: () => { selectedPort.value = r.id } })
+const inetTable = useResizableTable(inetColumns)
+const socketTable = useResizableTable(socketColumns)
 </script>
 
 <template>
@@ -85,17 +88,17 @@ const inetRowProps = (r: InetRow) => ({ style: 'cursor: pointer', onClick: () =>
     <NTabs v-model:value="tab" type="line">
       <NTabPane name="inet" tab="gen_tcp / gen_udp">
         <NAlert v-if="inet.error.value" type="error">{{ inet.error.value }}</NAlert>
-        <NDataTable :columns="inetColumns" :data="inetRows" :loading="!inet.data.value && !inet.error.value"
-                    size="small" :row-key="(r: InetRow) => r.id" :row-props="inetRowProps" :scroll-x="900"
+        <NDataTable v-bind="inetTable" :data="inetRows" :loading="!inet.data.value && !inet.error.value"
+                    size="small" :row-key="(r: InetRow) => r.id" :row-props="inetRowProps"
                     :pagination="{ pageSize: 50 }" />
       </NTabPane>
       <NTabPane name="socket" tab="socket 模块">
         <NEmpty v-if="!hasSocket" description="该节点的 OTP 版本不支持 socket:which_sockets/0" style="padding: 60px 0" />
         <template v-else>
           <NAlert v-if="sockets.error.value" type="error">{{ sockets.error.value }}</NAlert>
-          <NDataTable :columns="socketColumns" :data="socketRows"
+          <NDataTable v-bind="socketTable" :data="socketRows"
                       :loading="!sockets.data.value && !sockets.error.value" size="small"
-                      :row-key="(r: SocketRow) => r.id" :scroll-x="900" :pagination="{ pageSize: 50 }" />
+                      :row-key="(r: SocketRow) => r.id" :pagination="{ pageSize: 50 }" />
         </template>
       </NTabPane>
     </NTabs>

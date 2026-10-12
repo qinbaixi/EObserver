@@ -216,11 +216,15 @@ jobs:
           tar -C "$T/cli" -xzf "out/eobserver-cli-$VERSION-linux-x64.tar.gz"
           tar -C "$T/tar" -xzf "out/EObserver-$VERSION-linux-x64.tar.gz"
           cp "out/EObserver-$VERSION-linux-x86_64.AppImage" "$T/appimage/"
-          (cd "$T/appimage" && chmod +x ./*.AppImage && ./*.AppImage --appimage-extract >/dev/null)
+          chmod +x "$T"/appimage/*.AppImage
           chmod -R a-w "$T"
           node scripts/release-smoke.mjs "$T/cli/eobserver"
           xvfb-run -a node scripts/desktop-smoke.mjs "$(find "$T/tar" -name eobserver-desktop -type f)" --no-sandbox
-          xvfb-run -a node scripts/desktop-smoke.mjs "$T/appimage/squashfs-root/AppRun" --no-sandbox
+          # The runner has no FUSE; the AppImage runtime then unpacks itself to /tmp.
+          APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a node scripts/desktop-smoke.mjs \
+            "$(echo "$T"/appimage/*.AppImage)" --no-sandbox > "$RUNNER_TEMP/appimage.log" 2>&1 \
+            || { cat "$RUNNER_TEMP/appimage.log"; exit 1; }
+          grep -v '^/tmp/appimage_extracted' "$RUNNER_TEMP/appimage.log"
       - name: Test packages (macOS)
         if: runner.os == 'macOS'
         run: |

@@ -16,7 +16,7 @@ import { errorText } from '../api/errors'
 import { formatNumber } from '../api/format'
 import type { ProcessPage, TraceCategory, TraceEvent } from '../api/types'
 import {
-  CATEGORY_LABEL, KIND_LABEL, KIND_TIP, REFUSED_REASON, STOP_REASON,
+  categoryLabel, kindLabel, kindTip, refusedReason, stopReason,
   eventLine, formatLatency, formatTime, peerText,
 } from '../api/trace'
 import { useTrace } from '../stores/trace'
@@ -108,9 +108,9 @@ async function start() {
   try {
     const r = await trace.start(targets.value, maxEvents.value, maxSeconds.value)
     refused.value = r.refused
-    if (r.processes.length) message.success(`开始跟踪 ${r.processes.length} 个进程`)
+    if (r.processes.length) message.success(t('procs.trace.started', { n: r.processes.length }, r.processes.length))
   } catch (e) {
-    message.error(`无法开始跟踪：${errorText(e)}`)
+    message.error(t('procs.trace.start_failed', { err: errorText(e) }))
   } finally {
     starting.value = false
   }
@@ -124,11 +124,11 @@ async function stop() {
   }
 }
 
-// "跟踪消息" from the process list or the process drawer: ?target=<pid>.
-watch(() => [route.query.target, trace.node] as const, ([t, n]) => {
-  if (typeof t !== 'string' || !t || !n || settings.readOnly) return
+// "Trace messages" from the process list or the process drawer: ?target=<pid>.
+watch(() => [route.query.target, trace.node] as const, ([target, n]) => {
+  if (typeof target !== 'string' || !target || !n || settings.readOnly) return
   trace.closeReplay()
-  targets.value = [t]
+  targets.value = [target]
   const query = { ...route.query }
   delete query.target
   void router.replace({ query })
@@ -160,7 +160,7 @@ const filtered = computed(() => {
     cs.has(e.cat)
     && (dir.value === 'all' || e.dir === dir.value)
     && (!q || e.text.toLowerCase().includes(q) || peerText(e).toLowerCase().includes(q)
-        || (KIND_LABEL[e.kind] ?? e.kind).includes(q)))
+        || kindLabel(e.kind).toLowerCase().includes(q)))
 })
 
 function latencyOf(e: TraceEvent): number | null {
@@ -170,11 +170,11 @@ function latencyOf(e: TraceEvent): number | null {
 
 const columns = computed<DataTableColumns<TraceEvent>>(() => [
   {
-    key: 't', title: '时间', width: 124,
+    key: 't', title: t('procs.trace.col.time'), width: 124,
     render: (e) => h('span', { class: 'mono muted nowrap' }, formatTime(e.t)),
   },
   ...(multi.value ? [{
-    key: 'pid', title: '进程', width: 160, ellipsis: { tooltip: true },
+    key: 'pid', title: t('procs.trace.col.process'), width: 160, ellipsis: { tooltip: true },
     render: (e: TraceEvent) => h('span', { class: 'mono' }, processName(e.pid)),
   }] : []),
   {
@@ -182,34 +182,34 @@ const columns = computed<DataTableColumns<TraceEvent>>(() => [
     render: (e) => h(NIcon, {
       component: e.dir === 'in' ? ArrowBackOutline : ArrowForwardOutline,
       class: e.dir === 'in' ? 'dir-in' : 'dir-out', size: 16,
-      title: e.dir === 'in' ? '收到' : '发出',
+      title: t(e.dir === 'in' ? 'procs.trace.received' : 'procs.trace.sent'),
     }),
   },
   {
-    key: 'kind', title: '类型', width: 110,
+    key: 'kind', title: t('procs.trace.col.kind'), width: 110,
     render: (e) => h(NTag, {
       size: 'small', bordered: false,
       type: e.cat === 'business' ? (e.kind === 'call' || e.kind === 'reply' ? 'info' : 'success')
         : e.cat === 'network' ? 'warning' : 'default',
-    }, { default: () => KIND_LABEL[e.kind] ?? e.kind }),
+    }, { default: () => kindLabel(e.kind) }),
   },
   {
-    key: 'peer', title: '对方', width: 220, ellipsis: { tooltip: true },
+    key: 'peer', title: t('procs.trace.col.peer'), width: 220, ellipsis: { tooltip: true },
     render: (e) => {
       if (e.kind === 'reply' && !e.peer) {
         const call = trace.pair(e.ref)?.call
-        return h('span', { class: 'mono muted' }, call ? `↩ ${peerText(call)}` : '调用方')
+        return h('span', { class: 'mono muted' }, call ? `↩ ${peerText(call)}` : t('procs.trace.caller'))
       }
       return h('span', { class: ['mono', e.dead ? 'dead' : ''] },
-        (e.dead ? '（已不存在）' : '') + peerText(e))
+        e.dead ? t('procs.trace.dead_peer', { peer: peerText(e) }) : peerText(e))
     },
   },
   {
-    key: 'summary', title: '内容', minWidth: 300, ellipsis: { tooltip: false },
+    key: 'summary', title: t('procs.trace.col.content'), minWidth: 300, ellipsis: { tooltip: false },
     render: (e) => h('span', { class: ['mono', e.cat !== 'business' ? 'muted' : ''] }, e.summary),
   },
   {
-    key: 'lat', title: '耗时', width: 96, align: 'right',
+    key: 'lat', title: t('procs.trace.col.latency'), width: 96, align: 'right',
     render: (e) => {
       if (e.kind !== 'call' && e.kind !== 'reply') return ''
       const l = latencyOf(e)
@@ -232,8 +232,8 @@ watch(() => filtered.value.length, async () => {
 
 const statusText = computed(() => {
   const s = trace.state
-  if (s.status === 'running') return `跟踪中 · 已收到 ${formatNumber(s.count ?? 0)} 条`
-  if (s.status === 'stopped') return STOP_REASON[s.reason ?? ''] ?? `已停止（${s.reason}）`
+  if (s.status === 'running') return t('procs.trace.running', { n: formatNumber(s.count ?? 0) })
+  if (s.status === 'stopped') return stopReason(s.reason ?? 'stopped')
   return ''
 })
 
@@ -260,7 +260,7 @@ onBeforeUnmount(() => { selected.value = null })
 </script>
 
 <template>
-  <PageHeader title="消息跟踪" :subtitle="(replay ? replay.data.node : nodes.current) ?? undefined">
+  <PageHeader :title="t('procs.trace.title')" :subtitle="(replay ? replay.data.node : nodes.current) ?? undefined">
     <NSpace align="center" :size="8">
       <NTag v-if="statusText && !replay" :type="running ? 'success' : trace.state.reason === 'stopped_by_user' || trace.state.reason === 'max_events' || trace.state.reason === 'max_seconds' ? 'default' : 'warning'"
             :bordered="false" round>
@@ -268,7 +268,7 @@ onBeforeUnmount(() => { selected.value = null })
       </NTag>
       <NButton v-if="running && !replay" secondary type="error" @click="stop">
         <template #icon><NIcon :component="StopOutline" /></template>
-        停止
+        {{ t('common.stop') }}
       </NButton>
       <NTooltip v-if="!replay && (trace.state.status !== 'none' || trace.events.length)">
         <template #trigger>
@@ -302,35 +302,40 @@ onBeforeUnmount(() => { selected.value = null })
     </div>
   </NAlert>
   <component :is="Guard">
-    <NCard v-if="!running && !replay" size="small" class="setup" title="跟踪哪些进程">
+    <NCard v-if="!running && !replay" size="small" class="setup" :title="t('procs.trace.setup_title')">
       <NAlert v-if="settings.readOnly" type="info" :bordered="false">
-        只读模式下不能开始跟踪：跟踪会给目标节点带来额外开销。
+        {{ t('procs.trace.read_only') }}
       </NAlert>
       <template v-else>
         <div class="setup-row">
           <NSelect v-model:value="targets" multiple filterable tag :options="nameOptions"
-                   :max-tag-count="6" placeholder="输入注册名或 PID（如 <0.123.0>），最多 10 个"
+                   :max-tag-count="6" :placeholder="t('procs.trace.targets_placeholder', { example: '<0.123.0>' })"
                    class="targets" />
-          <label class="lim">最多
-            <NInputNumber v-model:value="maxEvents" :min="1" :max="100000" :step="1000" size="small"
-                          style="width: 120px" />
-            条</label>
-          <label class="lim">最长
-            <NInputNumber v-model:value="maxSeconds" :min="1" :max="600" :step="30" size="small"
-                          style="width: 100px" />
-            秒</label>
+          <i18n-t keypath="procs.trace.max_events" tag="label" class="lim" scope="global">
+            <template #n>
+              <NInputNumber v-model:value="maxEvents" :min="1" :max="100000" :step="1000" size="small"
+                            style="width: 120px" />
+            </template>
+          </i18n-t>
+          <i18n-t keypath="procs.trace.max_seconds" tag="label" class="lim" scope="global">
+            <template #n>
+              <NInputNumber v-model:value="maxSeconds" :min="1" :max="600" :step="30" size="small"
+                            style="width: 100px" />
+            </template>
+          </i18n-t>
           <NButton type="primary" :loading="starting" :disabled="!targets.length" @click="start">
             <template #icon><NIcon :component="PlayOutline" /></template>
-            开始跟踪
+            {{ t('procs.trace.start') }}
           </NButton>
         </div>
         <NText depth="3" class="hint">
-          只记录收发的消息，不跟踪函数调用。为保护目标节点：消息速率超过每秒 2000 条、处理不过来、或达到上面的上限时会自动停止；EObserver 断开时也会自动停止。
-          也可以在进程列表里右键一个进程选择「跟踪消息」。
+          {{ t('procs.trace.hint') }}
         </NText>
       </template>
       <NAlert v-for="r in refused" :key="r.target" type="warning" :bordered="false" style="margin-top: 8px">
-        <span class="mono">{{ r.target }}</span>：{{ REFUSED_REASON[r.reason] ?? r.reason }}
+        <i18n-t keypath="procs.colon" scope="global">
+          <template #label><span class="mono">{{ r.target }}</span></template>
+        </i18n-t>{{ refusedReason(r.reason) }}
       </NAlert>
     </NCard>
 
@@ -347,30 +352,30 @@ onBeforeUnmount(() => { selected.value = null })
           <div class="bar">
             <NSpace align="center" :size="12">
               <NRadioGroup v-model:value="dir" size="small">
-                <NRadioButton value="all">全部</NRadioButton>
-                <NRadioButton value="in">收到</NRadioButton>
-                <NRadioButton value="out">发出</NRadioButton>
+                <NRadioButton value="all">{{ t('procs.trace.all') }}</NRadioButton>
+                <NRadioButton value="in">{{ t('procs.trace.in') }}</NRadioButton>
+                <NRadioButton value="out">{{ t('procs.trace.out') }}</NRadioButton>
               </NRadioGroup>
               <NCheckboxGroup v-model:value="cats">
                 <NSpace :size="12">
                   <NCheckbox v-for="c in (['business', 'system', 'network'] as const)" :key="c" :value="c">
-                    {{ CATEGORY_LABEL[c] }}（{{ formatNumber(counts[c] ?? 0) }}）
+                    {{ t('procs.paren', { text: categoryLabel(c), detail: formatNumber(counts[c] ?? 0) }) }}
                   </NCheckbox>
                 </NSpace>
               </NCheckboxGroup>
             </NSpace>
             <NSpace align="center" :size="8">
-              <NInput v-model:value="search" size="small" clearable placeholder="搜索内容或对方" style="width: 220px">
+              <NInput v-model:value="search" size="small" clearable :placeholder="t('procs.trace.search')" style="width: 220px">
                 <template #prefix><NIcon :component="SearchOutline" /></template>
               </NInput>
-              <label class="follow"><NSwitch v-model:value="follow" size="small" /> 自动滚到最新</label>
+              <label class="follow"><NSwitch v-model:value="follow" size="small" /> {{ t('logs.live.follow') }}</label>
               <NTooltip>
                 <template #trigger>
                   <NButton size="small" quaternary circle :disabled="!filtered.length" @click="exportText">
                     <template #icon><NIcon :component="DownloadOutline" /></template>
                   </NButton>
                 </template>
-                按当前筛选导出为文本
+                {{ t('logs.live.export') }}
               </NTooltip>
               <NTooltip v-if="!replay">
                 <template #trigger>
@@ -378,7 +383,7 @@ onBeforeUnmount(() => { selected.value = null })
                     <template #icon><NIcon :component="TrashOutline" /></template>
                   </NButton>
                 </template>
-                清空列表（不影响跟踪）
+                {{ t('procs.trace.clear') }}
               </NTooltip>
             </NSpace>
           </div>
@@ -386,13 +391,13 @@ onBeforeUnmount(() => { selected.value = null })
                       :row-props="rowProps" size="small" virtual-scroll :max-height="'calc(100vh - 420px)'"
                       :min-height="240" :scroll-x="900">
             <template #empty>
-              <NEmpty :description="trace.events.length ? '没有符合筛选条件的消息' : running ? '等待消息…' : '没有记录到消息'" />
+              <NEmpty :description="t(trace.events.length ? 'procs.trace.empty_filtered' : running ? 'procs.trace.waiting' : 'procs.trace.empty')" />
             </template>
           </NDataTable>
           <p v-if="(trace.state.dropped ?? 0) > 0" class="note">
-            目标节点上只保留最近 5000 条，较早的 {{ formatNumber(trace.state.dropped ?? 0) }} 条在读取前已被丢弃。
+            {{ t('procs.trace.dropped', { n: formatNumber(trace.state.dropped ?? 0) }) }}
           </p>
-          <p class="note">点击一行查看完整内容。调用和回复按引用自动配对并计算耗时。</p>
+          <p class="note">{{ t('procs.trace.note') }}</p>
         </NTabPane>
         <NTabPane name="stats" :tab="t('trace.tabs.stats')" display-directive="if">
           <NAlert v-if="replay && !replay.data.stats" type="warning" :bordered="false" style="margin-bottom: 10px">
@@ -412,25 +417,25 @@ onBeforeUnmount(() => { selected.value = null })
       <NCard v-if="shown" closable style="width: min(900px, 94vw)" @close="selected = null">
         <template #header>
           <NSpace align="center" :size="8">
-            <NTag size="small" :bordered="false">{{ CATEGORY_LABEL[shown.cat] }} · {{ KIND_LABEL[shown.kind] ?? shown.kind }}</NTag>
+            <NTag size="small" :bordered="false">{{ categoryLabel(shown.cat) }} · {{ kindLabel(shown.kind) }}</NTag>
             <span class="mono">{{ processName(shown.pid) }}</span>
-            <span>{{ shown.dir === 'in' ? '收到' : '发出' }}</span>
+            <span>{{ t(shown.dir === 'in' ? 'procs.trace.received' : 'procs.trace.sent') }}</span>
             <NText depth="3" class="mono">{{ formatTime(shown.t) }}</NText>
           </NSpace>
         </template>
-        <p v-if="KIND_TIP[shown.kind]" class="tip">{{ KIND_TIP[shown.kind] }}</p>
+        <p v-if="kindTip(shown.kind)" class="tip">{{ kindTip(shown.kind) }}</p>
         <p v-if="peerText(shown)" class="peer">
-          {{ shown.dir === 'in' ? '来自' : '发给' }} <span class="mono">{{ peerText(shown) }}</span>
-          <template v-if="shown.dead">（目标进程已不存在）</template>
+          {{ t(shown.dir === 'in' ? 'procs.trace.from' : 'procs.trace.to') }} <span class="mono">{{ peerText(shown) }}</span>
+          <template v-if="shown.dead">{{ t('procs.trace.peer_gone') }}</template>
         </p>
         <template v-if="selectedPair && (shown.kind === 'call' || shown.kind === 'reply')">
-          <div class="pair-title">调用</div>
-          <pre class="term">{{ selectedPair.call?.text ?? '（调用不在列表中）' }}</pre>
+          <div class="pair-title">{{ t('procs.trace.call') }}</div>
+          <pre class="term">{{ selectedPair.call?.text ?? t('procs.trace.call_missing') }}</pre>
           <div class="pair-title">
-            回复
-            <NText v-if="latencyOf(shown) !== null" depth="3">· 耗时 {{ formatLatency(latencyOf(shown)!) }}</NText>
+            {{ t('procs.trace.reply') }}
+            <NText v-if="latencyOf(shown) !== null" depth="3">{{ t('procs.trace.latency', { t: formatLatency(latencyOf(shown)!) }) }}</NText>
           </div>
-          <pre class="term">{{ selectedPair.reply?.text ?? '（还没有收到回复）' }}</pre>
+          <pre class="term">{{ selectedPair.reply?.text ?? t('procs.trace.no_reply') }}</pre>
         </template>
         <pre v-else class="term">{{ shown.text }}</pre>
       </NCard>

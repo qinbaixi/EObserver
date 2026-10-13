@@ -5,6 +5,7 @@ import type {
   SavedTrace, TraceEvent, TraceProcess, TraceStart, TraceState, TraceStats,
 } from '../api/types'
 import { useNodes } from './nodes'
+import { i18n } from '../i18n'
 
 // Events kept in the browser; older ones are dropped.
 export const MAX_EVENTS = 20000
@@ -88,7 +89,7 @@ export const useTrace = defineStore('trace', () => {
 
   async function start(targets: string[], maxEvents: number, maxSeconds: number) {
     const n = node.value
-    if (!n) throw new Error('节点未连接')
+    if (!n) throw new Error(i18n.global.t('procs.trace.not_connected'))
     const r = await client.request<TraceStart>('trace.start', {
       node: n, targets, max_events: maxEvents, max_seconds: maxSeconds,
     })

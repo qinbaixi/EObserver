@@ -35,7 +35,7 @@ const crashCount = computed(() => {
 const stopReason = computed(() => {
   const r = s.value?.reason
   if (!r) return t('logs.status.stopped')
-  return te(`logs.stop_reason.${r}`) ? t(`logs.stop_reason.${r}`) : `${t('logs.status.stopped')}（${r}）`
+  return te(`logs.stop_reason.${r}`) ? t(`logs.stop_reason.${r}`) : t('procs.paren', { text: t('logs.status.stopped'), detail: r })
 })
 
 // Levels the node's logger lets through, when that hides something.

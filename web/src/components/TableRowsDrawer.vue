@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, h, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   NDrawer, NDrawerContent, NDataTable, NInput, NIcon, NButton, NAlert, NPagination,
   NSpace, NText, type DataTableColumns,
@@ -17,6 +18,7 @@ import TableObjectModal from './TableObjectModal.vue'
 const props = defineProps<{ node: string; kind: 'ets' | 'mnesia'; table: string | null; title?: string }>()
 const emit = defineEmits<{ 'update:table': [string | null] }>()
 
+const { t } = useI18n()
 const PAGE = 50
 const page = ref(1)
 const search = ref('')
@@ -115,10 +117,10 @@ const pageCount = computed(() => Math.max(1, Math.ceil((data.value?.total ?? 0) 
 const summary = computed(() => {
   const d = data.value
   if (!d) return ''
-  if (!applied.value) return `${formatNumber(d.total)} 条记录`
+  if (!applied.value) return t('procs.rows.total', { n: formatNumber(d.total) }, d.total)
   return d.complete
-    ? `匹配 ${formatNumber(d.total)} 条`
-    : `前 ${formatNumber(d.scanned)} 条中匹配 ${formatNumber(d.total)} 条（为保护目标节点，搜索已停止）`
+    ? t('procs.rows.matched', { n: formatNumber(d.total) }, d.total)
+    : t('procs.rows.matched_partial', { n: formatNumber(d.total), scanned: formatNumber(d.scanned) })
 })
 </script>
 
@@ -136,14 +138,14 @@ const summary = computed(() => {
       </template>
       <NSpace vertical :size="12">
         <NSpace justify="space-between" align="center">
-          <NInput v-model:value="search" clearable placeholder="在格式化后的记录中搜索" style="width: 320px">
+          <NInput v-model:value="search" clearable :placeholder="t('procs.rows.search')" style="width: 320px">
             <template #prefix><NIcon :component="SearchOutline" /></template>
           </NInput>
           <NSpace align="center" :size="12">
             <NText depth="3">{{ summary }}</NText>
             <NButton v-if="!settings.readOnly && data" size="small" secondary @click="openKey = ''">
               <template #icon><NIcon :component="AddOutline" /></template>
-              添加记录
+              {{ t('procs.rows.add') }}
             </NButton>
           </NSpace>
         </NSpace>
@@ -153,7 +155,7 @@ const summary = computed(() => {
                     :scroll-x="Math.max(800, columns.length * 170)" :max-height="'calc(100vh - 230px)'"
                     :single-line="false" />
         <NSpace justify="space-between" align="center">
-          <NText depth="3" style="font-size: 12px">点击一行查看完整记录{{ settings.readOnly ? '' : '，可编辑或删除' }}；点表头可在本页内排序。</NText>
+          <NText depth="3" style="font-size: 12px">{{ t(settings.readOnly ? 'procs.rows.hint' : 'procs.rows.hint_edit') }}</NText>
           <NPagination v-model:page="page" :page-count="pageCount" :page-slot="7" />
         </NSpace>
       </NSpace>

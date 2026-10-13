@@ -75,10 +75,10 @@ const crashes = computed(() => [...logs.crashes.values()].sort((a, b) => b.last 
 function renderCrash(c: CrashGroup) {
   return h('div', { class: 'detail' }, [
     h('div', { class: 'facts' }, [
-      h('span', null, [h(NText, { depth: 3 }, { default: () => `${t('logs.crashes.class')}：` }), h('span', { class: 'mono' }, c.class)]),
-      h('span', null, [h(NText, { depth: 3 }, { default: () => `${t('logs.crashes.first')}：` }), h('span', { class: 'mono' }, formatTime(c.first))]),
-      h('span', null, [h(NText, { depth: 3 }, { default: () => `${t('logs.crashes.last')}：` }), h('span', { class: 'mono' }, formatTime(c.last))]),
-      c.pid ? h('span', null, [h(NText, { depth: 3 }, { default: () => `${t('logs.crashes.latest_pid')}：` }), h('span', { class: 'mono' }, c.pid)]) : null,
+      h('span', null, [h(NText, { depth: 3 }, { default: () => t('procs.colon', { label: t('logs.crashes.class') }) }), h('span', { class: 'mono' }, c.class)]),
+      h('span', null, [h(NText, { depth: 3 }, { default: () => t('procs.colon', { label: t('logs.crashes.first') }) }), h('span', { class: 'mono' }, formatTime(c.first))]),
+      h('span', null, [h(NText, { depth: 3 }, { default: () => t('procs.colon', { label: t('logs.crashes.last') }) }), h('span', { class: 'mono' }, formatTime(c.last))]),
+      c.pid ? h('span', null, [h(NText, { depth: 3 }, { default: () => t('procs.colon', { label: t('logs.crashes.latest_pid') }) }), h('span', { class: 'mono' }, c.pid)]) : null,
     ]),
     h('div', { class: 'label' }, t('logs.crashes.full_reason')),
     h('pre', { class: 'term' }, c.text),

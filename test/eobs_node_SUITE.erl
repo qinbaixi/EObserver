@@ -2,7 +2,7 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
--export([busy_loop/1, sink/0]).
+-export([busy_loop/1, sink/0, hold/1, grow/1, hold_binaries/1, hold_many_binaries/1]).
 %% A tiny gen_server for the message trace test, run on the peer.
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 -export([all/0, init_per_suite/1, end_per_suite/1,
@@ -13,7 +13,8 @@
          ports_and_sockets/1, ets_tables/1, mnesia_tables/1, allocators/1,
          read_only_mode/1, cluster_topology/1, http_password_and_origin/1,
          local_discovery/1, saved_cookies/1, saved_nodes/1,
-         message_trace/1, message_trace_limits/1]).
+         message_trace/1, message_trace_limits/1,
+         diagnosis/1, diagnosis_many_processes/1]).
 
 all() ->
     [connect_loads_agent, tool_is_hidden, disconnect_unloads_agent,
@@ -21,7 +22,7 @@ all() ->
      process_detail_and_actions, applications, ports_and_sockets, ets_tables,
      mnesia_tables, allocators, read_only_mode, cluster_topology,
      http_password_and_origin, local_discovery, saved_cookies, saved_nodes,
-     message_trace, message_trace_limits].
+     message_trace, message_trace_limits, diagnosis, diagnosis_many_processes].
 
 init_per_suite(Config) ->
     application:load(eobserver),
@@ -538,6 +539,27 @@ message_trace_limits(Config) ->
 sink() ->
     receive _ -> sink() end.
 
+%% Keeps a big term alive.
+hold(N) ->
+    L = lists:seq(1, N),
+    receive stop -> length(L) end.
+
+%% Keeps N 1 MB binaries alive.
+hold_binaries(N) ->
+    Bins = [binary:copy(<<I>>, 1024 * 1024) || I <- lists:seq(1, N)],
+    receive stop -> length(Bins) end.
+
+%% Keeps N small refc binaries (68 bytes each) alive.
+hold_many_binaries(N) ->
+    Bins = [binary:copy(<<I:32>>, 17) || I <- lists:seq(1, N)],
+    receive stop -> length(Bins) end.
+
+%% Keeps growing its heap.
+grow(Acc) ->
+    receive stop -> length(Acc)
+    after 10 -> grow(lists:seq(1, 2000) ++ Acc)
+    end.
+
 init([]) -> {ok, #{}}.
 handle_call({double, N}, _From, St) -> {reply, 2 * N, St}.
 handle_cast(_Msg, St) -> {noreply, St}.
@@ -573,3 +595,107 @@ wait_for(Node, Pred, N) ->
 
 busy_loop(N) ->
     busy_loop(N + 1).
+
+diagnosis(Config) ->
+    Node = ?config(target, Config),
+    Peer = ?config(peer, Config),
+    connect(Node),
+    Req = #{<<"node">> => atom_to_binary(Node)},
+    %% A process that never reads its 2000 messages, and a big one.
+    Stuck = peer:call(Peer, erlang, spawn, [timer, sleep, [infinity]]),
+    peer:call(Peer, erlang, apply, [fun() -> [Stuck ! {msg, N} || N <- lists:seq(1, 2000)], ok end, []]),
+    Big = peer:call(Peer, erlang, spawn, [?MODULE, hold, [3000000]]),
+    Bins = peer:call(Peer, erlang, spawn, [?MODULE, hold_binaries, [60]]),
+    [wait_waiting(Peer, P) || P <- [Big, Bins]],
+    StuckBin = target_pid(Peer, Stuck),
+    BigBin = target_pid(Peer, Big),
+    {ok, #{checks := Checks, took_ms := Took} = Report} = eobs_api:request(<<"diag.check">>, Req),
+    ct:pal("health check took ~p ms", [Took]),
+    ?assert(is_binary(eobs_json:encode(Report))),
+    Find = fun(Id) -> hd([C || #{id := I} = C <- Checks, I =:= Id]) end,
+    Pids = fun(#{items := Items}) -> [P || #{pid := P} <- Items] end,
+    ?assertMatch(#{level := warn, value := 1}, Find(message_queue)),
+    ?assertEqual([StuckBin], Pids(Find(message_queue))),
+    ?assertMatch(#{level := crit}, Find(stuck)),
+    ?assert(lists:member(StuckBin, Pids(Find(stuck)))),
+    ?assert(lists:member(BigBin, Pids(Find(process_memory)))),
+    ?assertMatch(#{level := warn}, Find(binary_holders)),
+    ?assertEqual([target_pid(Peer, Bins)], Pids(Find(binary_holders))),
+    %% A process with too many binaries to list is reported, and the scan
+    %% still finds the others.
+    Many = peer:call(Peer, erlang, spawn, [?MODULE, hold_many_binaries, [500000]]),
+    wait_waiting(Peer, Many),
+    {ok, #{checks := Checks2}} = eobs_api:request(<<"diag.check">>, Req),
+    #{level := crit, items := [#{pid := ManyBin, value := null}, #{pid := BinsBin}]} =
+        hd([C || #{id := binary_holders} = C <- Checks2]),
+    ?assertEqual({target_pid(Peer, Many), target_pid(Peer, Bins)}, {ManyBin, BinsBin}),
+    peer:call(Peer, erlang, exit, [Many, kill]),
+    ?assertMatch(#{level := ok}, Find(process_count)),
+    ?assertMatch(#{level := ok}, Find(atom_count)),
+    12 = length(Checks),
+    %% Window: a busy and a growing process come out on top.
+    Busy = peer:call(Peer, erlang, spawn, [?MODULE, busy_loop, [0]]),
+    Grow = peer:call(Peer, erlang, spawn, [?MODULE, grow, [[]]]),
+    Self = self(),
+    spawn(fun() -> Self ! {window, eobs_api:request(<<"diag.window">>, Req#{<<"seconds">> => 2})} end),
+    timer:sleep(200),
+    %% One diagnosis at a time per node.
+    {error, busy} = eobs_api:request(<<"diag.check">>, Req),
+    {ok, Window} = receive {window, W} -> W after 30000 -> error(window_timeout) end,
+    ?assert(is_binary(eobs_json:encode(Window))),
+    #{reductions := [#{pid := TopReds} | _], memory := Mem, created := Created} = Window,
+    ?assertEqual(target_pid(Peer, Busy), TopReds),
+    ?assert(lists:member(target_pid(Peer, Grow), [P || #{pid := P} <- Mem])),
+    ?assert(Created >= 0),
+    peer:call(Peer, erlang, exit, [Busy, kill]),
+    %% The worker goes away with the tool node.
+    spawn(fun() -> eobs_api:request(<<"diag.window">>, Req#{<<"seconds">> => 30}) end),
+    timer:sleep(300),
+    ?assert(is_pid(peer:call(Peer, erlang, whereis, [eobs_agent_diag]))),
+    ok = eobs_nodes:disconnect(Node),
+    timer:sleep(500),
+    ?assertEqual(undefined, peer:call(Peer, erlang, whereis, [eobs_agent_diag])).
+
+%% 100k processes: both diagnoses finish, the node stays responsive and
+%% its memory goes back down.
+diagnosis_many_processes(Config) ->
+    Node = ?config(target, Config),
+    Peer = ?config(peer, Config),
+    peer:call(Peer, erlang, apply,
+              [fun() -> [spawn(timer, sleep, [infinity]) || _ <- lists:seq(1, 100000)], ok end, []]),
+    connect(Node),
+    Req = #{<<"node">> => atom_to_binary(Node)},
+    Before = peer:call(Peer, erlang, memory, [total]),
+    Self = self(),
+    spawn(fun() -> Self ! {check, eobs_api:request(<<"diag.check">>, Req)} end),
+    Pings = ping_while(Peer, check),
+    {ok, #{took_ms := Took}} = receive {check, R} -> R end,
+    spawn(fun() -> Self ! {window, eobs_api:request(<<"diag.window">>, Req#{<<"seconds">> => 2})} end),
+    Pings2 = ping_while(Peer, window),
+    {ok, #{process_count := Count}} = receive {window, W} -> W end,
+    ct:pal("check ~p ms, window over ~p processes; slowest ping ~p us / ~p us",
+           [Took, Count, lists:max(Pings), lists:max(Pings2)]),
+    ?assert(Count > 100000),
+    ?assert(lists:max(Pings ++ Pings2) < 500000),
+    timer:sleep(500),
+    After = peer:call(Peer, erlang, memory, [total]),
+    ct:pal("memory before ~p after ~p", [Before, After]),
+    ?assert(After - Before < 32 * 1024 * 1024).
+
+%% Waits until a process on the peer is done setting up and waits in receive.
+wait_waiting(Peer, Pid) ->
+    case peer:call(Peer, erlang, process_info, [Pid, status]) of
+        {status, waiting} -> ok;
+        _ -> timer:sleep(50), wait_waiting(Peer, Pid)
+    end.
+
+%% Times round trips to the peer until the Tag message arrives (put back
+%% for the caller).
+ping_while(Peer, Tag) ->
+    receive
+        {Tag, _} = M -> self() ! M, [0]
+    after 0 ->
+        {T, _} = timer:tc(fun() -> peer:call(Peer, erlang, node, []) end),
+        timer:sleep(50),
+        [T | ping_while(Peer, Tag)]
+    end.

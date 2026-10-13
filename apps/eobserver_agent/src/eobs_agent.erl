@@ -15,10 +15,11 @@
 -export([table_object/3, table_delete/3, table_write/4]).
 -export([alloc_info/0, dist_info/0]).
 -export([trace_start/3, trace_stop/0, trace_events/2]).
+-export([diag_check/1, diag_window/2]).
 
 %% Bump whenever the exported API or return shapes change, so the tool
 %% replaces an older copy that is still loaded on the target.
--define(VERSION, 9).
+-define(VERSION, 10).
 
 %% Long-lived helper process on the observed node. It keeps
 %% scheduler_wall_time enabled, builds process lists while holding the
@@ -1510,6 +1511,404 @@ typed_size(Info) when is_list(Info) ->
     end;
 typed_size(_) ->
     0.
+
+%%--------------------------------------------------------------------
+%% Diagnosis: health check and window Top N
+%%
+%% Both run only when the user asks, one at a time per node, in a
+%% low-priority worker with a heap cap. A guard process kills the worker
+%% when it takes too long, when the caller goes away (the tool timed out)
+%% or when the tool node disconnects, so the worst outcome is a failed
+%% check. Only bounded results are kept, and the per-binary `binary` list
+%% is read in a separate capped helper.
+%%--------------------------------------------------------------------
+
+-define(DIAG, eobs_agent_diag).
+-define(DIAG_CHECK_HEAP_WORDS, 4000000).
+-define(DIAG_CHECK_MS, 30000).
+%% The window keeps every process's start values; refuse beyond this.
+-define(DIAG_MAX_PROCS, 500000).
+-define(DIAG_WINDOW_HEAP_WORDS, 16000000).
+-define(DIAG_TOP, 20).
+-define(DIAG_LIST, 10).
+%% How long the health check watches the run queue and stuck processes.
+-define(DIAG_SAMPLES, 5).
+-define(DIAG_SAMPLE_MS, 400).
+-define(DIAG_STUCK_CANDIDATES, 5000).
+-define(DIAG_STUCK_REDS, 100).
+%% Fewer waiting messages than this is not reported as stuck.
+-define(DIAG_STUCK_QUEUE, 10).
+-define(DIAG_BIN_WARN, (50 * ?MB)).
+-define(DIAG_BIN_CRIT, (200 * ?MB)).
+%% Heap cap of the binary scan helper (one list entry per binary read),
+%% and how many over-the-cap processes it skips before giving up.
+-define(DIAG_BIN_HEAP_WORDS, 2000000).
+-define(DIAG_BIN_RESTARTS, 3).
+-define(MB, (1024 * 1024)).
+
+%% Health check: a list of findings, each with a level (ok | warn | crit |
+%% skip), the thresholds used and the processes or tables involved. The
+%% tool turns ids and numbers into readable text.
+diag_check(Owner) ->
+    diag_run(Owner, ?DIAG_CHECK_HEAP_WORDS, ?DIAG_CHECK_MS, fun check/0).
+
+%% Top N of processes by growth of reductions, memory and message queue
+%% over a window of Seconds (1..60).
+diag_window(Owner, Seconds) ->
+    S = clamp(Seconds, 1, 60),
+    diag_run(Owner, ?DIAG_WINDOW_HEAP_WORDS, S * 1000 + 30000, fun() -> window(S) end).
+
+diag_run(Owner, HeapWords, Timeout, Fun) ->
+    Caller = self(),
+    {Guard, Ref} = spawn_monitor(fun() -> diag_guard(Caller, Owner, HeapWords, Timeout, Fun) end),
+    receive
+        {'DOWN', Ref, process, Guard, {shutdown, Reply}} -> Reply;
+        {'DOWN', Ref, process, Guard, Reason} -> {error, {failed, fmt(Reason)}}
+    end.
+
+diag_guard(Caller, Owner, HeapWords, Timeout, Fun) ->
+    try register(?DIAG, self())
+    catch error:badarg -> exit({shutdown, {error, busy}})
+    end,
+    CRef = erlang:monitor(process, Caller),
+    erlang:monitor_node(Owner, true),
+    {Worker, WRef} = spawn_opt(fun() -> exit({shutdown, Fun()}) end,
+                               [monitor, {priority, low},
+                                {max_heap_size, #{size => HeapWords, kill => true,
+                                                  error_logger => false}}]),
+    receive
+        {'DOWN', WRef, process, Worker, {shutdown, Result}} -> exit({shutdown, Result});
+        {'DOWN', WRef, process, Worker, killed} -> exit({shutdown, {error, too_big}});
+        {'DOWN', WRef, process, Worker, Reason} -> exit({shutdown, {error, {failed, fmt(Reason)}}});
+        {'DOWN', CRef, process, Caller, _} -> exit(Worker, kill), exit(normal);
+        {nodedown, Owner} -> exit(Worker, kill), exit(normal)
+    after Timeout ->
+        exit(Worker, kill),
+        exit({shutdown, {error, timeout}})
+    end.
+
+check() ->
+    Started = erlang:monotonic_time(millisecond),
+    Total = erlang:memory(total),
+    WordSize = erlang:system_info(wordsize),
+    Scheds = erlang:system_info(schedulers_online),
+    MemWarn = min(Total div 20, 100 * ?MB),
+    MemCrit = Total div 5,
+    Dist0 = dist_queues(),
+    {Queues, Mems, Candidates, Backlogged} = scan_processes(MemWarn),
+    BinHolders = bin_scan(),
+    RunQueues = sample_run_queue(?DIAG_SAMPLES, []),
+    Stuck = stuck(Candidates),
+    Dist1 = dist_queues(),
+    Checks =
+        [limit_check(process_count, erlang:system_info(process_count),
+                     erlang:system_info(process_limit)),
+         limit_check(port_count, erlang:system_info(port_count), erlang:system_info(port_limit)),
+         limit_check(atom_count, safe(fun() -> erlang:system_info(atom_count) end),
+                     safe(fun() -> erlang:system_info(atom_limit) end)),
+         limit_check(ets_count, length(ets:all()), safe(fun() -> erlang:system_info(ets_limit) end)),
+         queue_check(Queues, Backlogged),
+         memory_check(Mems, Total, MemWarn, MemCrit),
+         ets_check(Total, WordSize),
+         binary_check(Total),
+         run_queue_check(RunQueues, Scheds),
+         stuck_check(Stuck),
+         bin_holder_check(BinHolders),
+         dist_check(Dist0, Dist1)],
+    {ok, #{checks => Checks,
+           memory_total => Total,
+           process_count => erlang:system_info(process_count),
+           took_ms => erlang:monotonic_time(millisecond) - Started}}.
+
+finding(Id, Level, Fields) ->
+    maps:merge(#{id => Id, level => Level, value => null, warn => null, crit => null,
+                 items => []}, Fields).
+
+level(V, _W, C) when V >= C -> crit;
+level(V, W, _C) when V >= W -> warn;
+level(_, _, _) -> ok.
+
+%% Count against limit; thresholds are percentages.
+limit_check(Id, Count, Limit) when is_integer(Count), is_integer(Limit), Limit > 0 ->
+    finding(Id, level(Count * 100 div Limit, 70, 90),
+            #{value => Count, limit => Limit, warn => 70, crit => 90});
+limit_check(Id, _, _) ->
+    finding(Id, skip, #{}).
+
+%% One pass over all processes reading only cheap items. Keeps the longest
+%% queues, the biggest processes over the warn threshold and the
+%% processes with a backlog (stuck candidates), all bounded.
+scan_processes(MemWarn) ->
+    lists:foldl(
+      fun(Pid, {Qs, Ms, Cand, Backlogged} = Acc) ->
+              case erlang:process_info(Pid, [memory, message_queue_len, reductions]) of
+                  [{memory, M}, {message_queue_len, Q}, {reductions, R}] ->
+                      Qs1 = case Q >= 1000 of
+                                true -> top_add(Q, Pid, Q, Qs);
+                                false -> Qs
+                            end,
+                      Ms1 = case M >= MemWarn of
+                                true -> top_add(M, Pid, M, Ms);
+                                false -> Ms
+                            end,
+                      Cand1 = case Q >= ?DIAG_STUCK_QUEUE of
+                                  true -> top_add(Q, Pid, {R, Q}, Cand);
+                                  false -> Cand
+                              end,
+                      {Qs1, Ms1, Cand1, Backlogged + (if Q >= 1000 -> 1; true -> 0 end)};
+                  _ ->
+                      Acc
+              end
+      end,
+      {top_new(?DIAG_LIST), top_new(?DIAG_LIST), top_new(?DIAG_STUCK_CANDIDATES), 0},
+      erlang:processes()).
+
+%% Refc binary bytes referenced by each process. Reading `binary` copies
+%% one list entry per binary into the reader, so the scan runs in a helper
+%% with a heap cap that notes where it is in a table. A process holding so
+%% many binaries that the helper hits the cap is itself a finding: it is
+%% recorded as such and a new helper carries on after it.
+bin_scan() ->
+    Tab = ets:new(eobs_diag_bin, [public]),
+    Pids = [P || P <- lists:sort(erlang:processes()), P =/= self()],
+    Top = bin_scan(Pids, Tab, top_new(?DIAG_LIST), 0),
+    ets:delete(Tab),
+    Top.
+
+bin_scan(Pids, Tab, Top, Restarts) ->
+    ets:insert(Tab, [{top, Top}, {at, none}]),
+    {H, Ref} = spawn_opt(fun() -> exit({shutdown, bin_scan_loop(Pids, Tab, Top)}) end,
+                         [monitor, {priority, low},
+                          {max_heap_size, #{size => ?DIAG_BIN_HEAP_WORDS, kill => true,
+                                            error_logger => false}}]),
+    receive
+        {'DOWN', Ref, process, H, {shutdown, Done}} ->
+            Done;
+        {'DOWN', Ref, process, H, killed} when Restarts < ?DIAG_BIN_RESTARTS ->
+            [{top, Top1}] = ets:lookup(Tab, top),
+            case ets:lookup(Tab, at) of
+                [{at, P}] when is_pid(P) ->
+                    Rest = lists:dropwhile(fun(X) -> X =< P end, Pids),
+                    bin_scan(Rest, Tab, top_add(1 bsl 60, P, too_many, Top1), Restarts + 1);
+                _ ->
+                    Top1
+            end;
+        {'DOWN', Ref, process, H, _} ->
+            [{top, Top1}] = ets:lookup(Tab, top),
+            Top1
+    end.
+
+bin_scan_loop([], _Tab, Top) ->
+    Top;
+bin_scan_loop([P | Rest], Tab, Top) ->
+    ets:insert(Tab, {at, P}),
+    Held = case erlang:process_info(P, binary) of
+               {binary, L} -> lists:foldl(fun({_, Size, _}, A) -> A + Size end, 0, L);
+               _ -> 0
+           end,
+    case Held >= ?DIAG_BIN_WARN of
+        true ->
+            Top1 = top_add(Held, P, Held, Top),
+            ets:insert(Tab, {top, Top1}),
+            bin_scan_loop(Rest, Tab, Top1);
+        false ->
+            bin_scan_loop(Rest, Tab, Top)
+    end.
+
+%% Bounded best-K collection keyed on {Score, Pid}.
+top_new(K) -> {K, gb_trees:empty()}.
+
+top_add(Score, Pid, Val, {K, T} = Top) ->
+    Key = {Score, Pid},
+    case gb_trees:size(T) < K of
+        true -> {K, gb_trees:insert(Key, Val, T)};
+        false ->
+            {Worst, _} = gb_trees:smallest(T),
+            case Key > Worst of
+                true -> {_, _, T1} = gb_trees:take_smallest(T), {K, gb_trees:insert(Key, Val, T1)};
+                false -> Top
+            end
+    end.
+
+%% [{Pid, Val}], best first.
+top_list({_, T}) -> [{Pid, Val} || {{_, Pid}, Val} <- lists:reverse(gb_trees:to_list(T))].
+
+%% Waits between samples, so this is also the window stuck() looks at.
+sample_run_queue(0, Acc) ->
+    Acc;
+sample_run_queue(N, Acc) ->
+    timer:sleep(?DIAG_SAMPLE_MS),
+    sample_run_queue(N - 1, [erlang:statistics(run_queue) | Acc]).
+
+%% Processes that had messages waiting at the scan and did not get to
+%% handle any since then. Reading some process_info items costs the target
+%% a reduction or so (and other viewers may be reading too), hence the
+%% small allowance.
+stuck(Candidates) ->
+    lists:filtermap(
+      fun({Pid, {R0, Q0}}) ->
+              case erlang:process_info(Pid, [reductions, message_queue_len]) of
+                  [{reductions, R}, {message_queue_len, Q}] when R - R0 < ?DIAG_STUCK_REDS, Q >= Q0 ->
+                      {true, {Pid, Q}};
+                  _ -> false
+              end
+      end, top_list(Candidates)).
+
+proc_item(Pid, Value) ->
+    CF = case erlang:process_info(Pid, current_function) of
+             {current_function, C} -> bin(mfa(C));
+             _ -> null
+         end,
+    #{pid => ref_bin(Pid), name => registered_name(Pid),
+      initial_call => bin(initial_call(Pid)), current_function => CF, value => Value}.
+
+queue_check(Queues, Backlogged) ->
+    Items = [proc_item(P, Q) || {P, Q} <- top_list(Queues)],
+    Max = lists:max([0 | [Q || {_, Q} <- top_list(Queues)]]),
+    finding(message_queue, level(Max, 1000, 10000),
+            #{value => Backlogged, warn => 1000, crit => 10000, items => Items}).
+
+memory_check(Mems, Total, Warn, Crit) ->
+    List = top_list(Mems),
+    Max = lists:max([0 | [M || {_, M} <- List]]),
+    finding(process_memory, level(Max, Warn, Crit),
+            #{value => Max, total => Total, warn => Warn, crit => Crit,
+              items => [proc_item(P, M) || {P, M} <- List]}).
+
+ets_check(Total, WordSize) ->
+    Warn = Total div 10,
+    Crit = Total * 3 div 10,
+    Sizes = lists:filtermap(
+              fun(T) ->
+                      case ets:info(T, memory) of
+                          W when is_integer(W), W * WordSize >= Warn -> {true, {W * WordSize, T}};
+                          _ -> false
+                      end
+              end, ets:all()),
+    Big = lists:sublist(lists:reverse(lists:sort(Sizes)), ?DIAG_LIST),
+    Max = lists:max([0 | [B || {B, _} <- Big]]),
+    finding(ets_memory, level(Max, Warn, Crit),
+            #{value => Max, total => Total, warn => Warn, crit => Crit,
+              items => [#{table => table_id(T), name => ets:info(T, name),
+                          owner => ref_bin(ets:info(T, owner)), value => B}
+                        || {B, T} <- Big]}).
+
+binary_check(Total) ->
+    Binary = erlang:memory(binary),
+    Pct = Binary * 100 div max(1, Total),
+    finding(binary_memory, level(Pct, 40, 60),
+            #{value => Pct, bytes => Binary, total => Total, warn => 40, crit => 60}).
+
+run_queue_check(Samples, Scheds) ->
+    Min = lists:min(Samples),
+    finding(run_queue, level(Min, Scheds + 1, Scheds * 4 + 1),
+            #{value => Min, max => lists:max(Samples), schedulers => Scheds,
+              warn => Scheds + 1, crit => Scheds * 4 + 1}).
+
+stuck_check(Stuck) ->
+    Sorted = lists:reverse(lists:keysort(2, Stuck)),
+    Max = lists:max([0 | [Q || {_, Q} <- Sorted]]),
+    Level = case Sorted of
+                [] -> ok;
+                _ when Max >= 1000 -> crit;
+                _ -> warn
+            end,
+    finding(stuck, Level,
+            #{value => length(Sorted), seconds => ?DIAG_SAMPLES * ?DIAG_SAMPLE_MS / 1000,
+              items => [proc_item(P, Q) || {P, Q} <- lists:sublist(Sorted, ?DIAG_LIST)]}).
+
+%% Processes referencing a lot of refc binary data: typical of a binary
+%% leak, where a long-lived process keeps slices of big binaries alive.
+bin_holder_check(Holders) ->
+    List = top_list(Holders),
+    Level = case [B || {_, B} <- List] of
+                [too_many | _] -> crit;
+                [B | _] -> level(B, ?DIAG_BIN_WARN, ?DIAG_BIN_CRIT);
+                [] -> ok
+            end,
+    finding(binary_holders, Level,
+            #{value => length(List), warn => ?DIAG_BIN_WARN, crit => ?DIAG_BIN_CRIT,
+              items => [proc_item(P, case B of too_many -> null; _ -> B end) || {P, B} <- List]}).
+
+%% Bytes waiting in each distribution port's output queue.
+dist_queues() ->
+    Ctrl = try erlang:system_info(dist_ctrl) catch _:_ -> [] end,
+    [{N, Q} || {N, P} <- Ctrl, is_port(P), {queue_size, Q} <- [erlang:port_info(P, queue_size)]].
+
+%% A connection counts when its queue was over the threshold at both ends
+%% of the check.
+dist_check(Before, After) ->
+    Warn = ?MB,
+    Crit = 64 * ?MB,
+    Busy = [{N, Q} || {N, Q} <- After, Q >= Warn,
+                      case lists:keyfind(N, 1, Before) of
+                          {_, Q0} -> Q0 >= Warn;
+                          false -> false
+                      end],
+    Max = lists:max([0 | [Q || {_, Q} <- Busy]]),
+    finding(dist_queue, level(Max, Warn, Crit),
+            #{value => length(Busy), warn => Warn, crit => Crit,
+              items => [#{node => N, value => Q} || {N, Q} <- lists:reverse(lists:keysort(2, Busy))]}).
+
+window(Seconds) ->
+    case erlang:system_info(process_count) > ?DIAG_MAX_PROCS of
+        true ->
+            {error, too_many_processes};
+        false ->
+            T0 = erlang:monotonic_time(millisecond),
+            Start = lists:sort(snapshot()),
+            timer:sleep(Seconds * 1000),
+            End = lists:sort(snapshot()),
+            Elapsed = erlang:monotonic_time(millisecond) - T0,
+            Tops0 = {top_new(?DIAG_TOP), top_new(?DIAG_TOP), top_new(?DIAG_TOP)},
+            {{Reds, Mem, Queue}, New, Gone} = window_merge(Start, End, Tops0, 0, 0),
+            Items = fun(Top) -> [window_item(P, D) || {P, D} <- top_list(Top)] end,
+            {ok, #{seconds => Elapsed / 1000,
+                   process_count => length(End),
+                   created => New,
+                   exited => Gone,
+                   reductions => Items(Reds),
+                   memory => Items(Mem),
+                   message_queue_len => Items(Queue)}}
+    end.
+
+%% Our own diagnosis processes are left out.
+snapshot() ->
+    Own = [self(), whereis(?DIAG)],
+    lists:foldl(
+      fun(Pid, Acc) ->
+              case lists:member(Pid, Own) of
+                  true -> Acc;
+                  false ->
+                      case erlang:process_info(Pid, [reductions, memory, message_queue_len]) of
+                          [{reductions, R}, {memory, M}, {message_queue_len, Q}] -> [{Pid, R, M, Q} | Acc];
+                          _ -> Acc
+                      end
+              end
+      end, [], erlang:processes()).
+
+%% Walks both pid-sorted snapshots together. A process created during the
+%% window grows from zero.
+window_merge([{P, R0, M0, Q0} | S], [{P, R1, M1, Q1} | E], Tops, New, Gone) ->
+    window_merge(S, E, window_add(P, R1 - R0, M1 - M0, Q1 - Q0, {R1, M1, Q1}, false, Tops), New, Gone);
+window_merge([{P0, _, _, _} | S], [{P1, _, _, _} | _] = E, Tops, New, Gone) when P0 < P1 ->
+    window_merge(S, E, Tops, New, Gone + 1);
+window_merge(S, [{P, R1, M1, Q1} | E], Tops, New, Gone) ->
+    window_merge(S, E, window_add(P, R1, M1, Q1, {R1, M1, Q1}, true, Tops), New + 1, Gone);
+window_merge(S, [], Tops, New, Gone) ->
+    {Tops, New, Gone + length(S)}.
+
+%% Reading process_info costs a process a reduction or so, which is not
+%% growth worth showing.
+window_add(P, DR, DM, DQ, Now, New, {Reds, Mem, Queue}) ->
+    Add = fun(D, Min, Top) when D >= Min -> top_add(D, P, {D, Now, New}, Top);
+             (_, _, Top) -> Top
+          end,
+    {Add(DR, ?DIAG_STUCK_REDS, Reds), Add(DM, 1, Mem), Add(DQ, 1, Queue)}.
+
+window_item(Pid, {Delta, {R, M, Q}, New}) ->
+    (proc_item(Pid, Delta))#{reductions => R, memory => M, message_queue_len => Q,
+                             new => New, alive => is_process_alive(Pid)}.
 
 %%--------------------------------------------------------------------
 %% Distribution

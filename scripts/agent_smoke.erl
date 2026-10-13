@@ -73,4 +73,6 @@ check() ->
     {flags, []} = erlang:trace_info(Echo, flags),
     #{allocators := [_ | _]} = eobs_agent:alloc_info(),
     #{connections := _} = eobs_agent:dist_info(),
+    {ok, #{checks := [_ | _]}} = eobs_agent:diag_check(node()),
+    {ok, #{reductions := _, memory := _}} = eobs_agent:diag_window(node(), 1),
     ok.

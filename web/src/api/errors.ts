@@ -19,6 +19,9 @@ const TEXTS: Record<string, string> = {
   bad_object: '记录必须是一个元组，且长度不小于键的位置',
   bad_record: '记录名或字段数与 Mnesia 表的定义不一致',
   aborted: 'Mnesia 事务被中止',
+  busy: '这个节点上已经有一次诊断在进行，请稍后再试',
+  too_many_processes: '进程超过 50 万个，为保护目标节点不做区间统计',
+  too_big: '数据量太大，为保护目标节点已中止',
 }
 
 export function errorText(e: unknown): string {

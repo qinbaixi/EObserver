@@ -112,6 +112,12 @@ handle(<<"trace.start">>, #{<<"node">> := Node, <<"targets">> := Targets} = Para
     agent(Node, trace_start, [node(), [T || T <- Targets, is_binary(T)], Opts]);
 handle(<<"trace.stop">>, #{<<"node">> := Node}) ->
     agent(Node, trace_stop, []);
+%% diagnosis; the agent bounds both runs itself
+handle(<<"diag.check">>, #{<<"node">> := Node}) ->
+    unwrap(eobs_node:call(to_node(Node), diag_check, [node()], 45000));
+handle(<<"diag.window">>, #{<<"node">> := Node} = Params) ->
+    Seconds = max(1, min(60, int(maps:get(<<"seconds">>, Params, 10), 10))),
+    unwrap(eobs_node:call(to_node(Node), diag_window, [node(), Seconds], Seconds * 1000 + 45000));
 handle(Method, _Params) ->
     {error, {unknown_method, Method}}.
 

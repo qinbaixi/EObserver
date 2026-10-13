@@ -1,0 +1,119 @@
+import type zh from './zh'
+
+const en: typeof zh = {
+  common: {
+    start: 'Start',
+    stop: 'Stop',
+    process: 'Process',
+    current_function: 'Current function',
+    trace: 'Trace messages',
+    new: 'New',
+    exited: 'Exited',
+    too_many: 'Too many to count',
+  },
+  diag: {
+    title: 'Diagnosis',
+    tabs: { health: 'Health check', window: 'Window Top N' },
+    level: { crit: 'Critical', warn: 'Warning', ok: 'OK', skip: 'Skipped' },
+    health: {
+      intro: 'Checks processes, memory, system limits and scheduling for common problems. Takes about 3 seconds and only reads information.',
+      run: 'Run health check',
+      rerun: 'Run again',
+      running: 'Checking…',
+      summary: '{crit} critical, {warn} warnings, {ok} OK',
+      checked_at: 'Finished at {time} in {ms} ms, {procs} processes',
+      advice: 'What to do',
+      value: 'Value',
+      table: 'Table',
+      owner: 'Owner',
+      node: 'Node',
+      queue_bytes: 'Queued',
+    },
+    check: {
+      process_count: {
+        title: 'Process count',
+        detail: '{value} of {limit} ({pct}%)',
+        advice: 'At the limit no new process can be spawned and the node starts failing everywhere. Look for a kind of process that only grows, or raise the limit with +P.',
+      },
+      port_count: {
+        title: 'Port count',
+        detail: '{value} of {limit} ({pct}%)',
+        advice: 'Ports include sockets and open files. At the limit no new connection or file can be opened. Check that connections are closed, or raise the limit with +Q.',
+      },
+      atom_count: {
+        title: 'Atom count',
+        detail: '{value} of {limit} ({pct}%)',
+        advice: 'Atoms are never freed and the node crashes at the limit. Look for code that turns external input into atoms with list_to_atom / binary_to_atom.',
+      },
+      ets_count: {
+        title: 'ETS tables',
+        detail: '{value} of {limit} ({pct}%)',
+        advice: 'Look for code that keeps creating ETS tables without deleting them.',
+      },
+      message_queue: {
+        title: 'Message queue backlog',
+        detail: '{value} processes have more than {warn} messages queued',
+        detail_ok: 'No process has more than {warn} messages queued',
+        advice: 'A growing queue means the process cannot keep up, and memory grows with it. Check what its current function is busy with, spread or limit the load, or trace who is sending to it.',
+      },
+      process_memory: {
+        title: 'Large processes',
+        detail: 'The largest process uses {bytes} ({pct}% of total memory)',
+        detail_ok: 'No process uses more than {warn}',
+        advice: 'Usually a state that keeps accumulating data, or a message backlog. Look at its state and queue in the process details.',
+      },
+      ets_memory: {
+        title: 'Large ETS tables',
+        detail: 'The largest table uses {bytes} ({pct}% of total memory)',
+        detail_ok: 'No table uses more than 10% of total memory',
+        advice: 'Check that old data in the table is cleaned up.',
+      },
+      binary_memory: {
+        title: 'Binary memory share',
+        detail: 'Binaries take {value}% of total memory ({bytes})',
+        advice: 'A high share can mean a refc binary leak: long-lived processes that rarely GC keep slices of large binaries alive. See "Processes holding many binaries" below.',
+      },
+      run_queue: {
+        title: 'Run queue',
+        detail: 'Over the last 2 s: at least {value}, at most {max}, {schedulers} schedulers online',
+        advice: 'A run queue that stays above the scheduler count means the CPU cannot keep up and processes wait to run. Check scheduler utilisation in Load Charts and find the busiest processes in Window Top N.',
+      },
+      stuck: {
+        title: 'Possibly stuck processes',
+        detail: '{value} processes had messages waiting for {seconds} s without being scheduled once',
+        detail_ok: 'None found',
+        advice: 'Usually a wait without a timeout, such as a gen_server:call waiting on another process or a receive waiting for one particular message. Look at the current function.',
+      },
+      binary_holders: {
+        title: 'Processes holding many binaries',
+        detail: '{value} processes reference more than {warn} of binaries',
+        detail_ok: 'No process references more than {warn} of binaries',
+        advice: 'If a GC of the process frees a lot of memory, it is a refc binary leak. Let it hibernate now and then, or call garbage_collect after handling large binaries.',
+      },
+      dist_queue: {
+        title: 'Distribution send queues',
+        detail: '{value} node connections kept more than {warn} queued',
+        detail_ok: 'No backlog',
+        advice: 'Data for these nodes cannot be sent fast enough: a slow network or a peer that cannot keep up. Processes sending to them get blocked (busy_dist_port).',
+      },
+      skipped: 'Not supported by the OTP version of this node',
+    },
+    window: {
+      intro: 'Compares every process at the start and end of a window to find the ones that grew most. Only reads information.',
+      seconds: '{n} s',
+      continuous: 'Continuous',
+      continuous_tip: 'Start the next window as soon as one ends',
+      running: 'Sampling, {n} s left…',
+      summary: 'In {seconds} s: {created} processes created, {exited} exited, {count} now',
+      reductions: 'Busiest (reductions)',
+      memory: 'Memory growth',
+      message_queue_len: 'Queue growth',
+      growth: 'Growth',
+      now: 'Now',
+      empty: 'No process grew during the window',
+      note: '"New" means the process was created during the window and grows from zero. Click a row for process details.',
+    },
+  },
+}
+
+export default en

@@ -321,3 +321,56 @@ export interface TraceStart {
   refused: { target: string; reason: string }[]
   limits: { max_events: number; max_seconds: number; max_rate: number }
 }
+
+export type DiagLevel = 'ok' | 'warn' | 'crit' | 'skip'
+
+export interface DiagItem {
+  pid?: string
+  name?: string | null
+  initial_call?: string
+  current_function?: string | null
+  table?: string
+  owner?: string | null
+  node?: string
+  value: number | null
+}
+
+export interface DiagCheck {
+  id: string
+  level: DiagLevel
+  value: number | null
+  warn: number | null
+  crit: number | null
+  items: DiagItem[]
+  [extra: string]: unknown
+}
+
+export interface DiagReport {
+  checks: DiagCheck[]
+  memory_total: number
+  process_count: number
+  took_ms: number
+}
+
+export interface WindowItem {
+  pid: string
+  name: string | null
+  initial_call: string
+  current_function: string | null
+  value: number
+  reductions: number
+  memory: number
+  message_queue_len: number
+  new: boolean
+  alive: boolean
+}
+
+export interface WindowReport {
+  seconds: number
+  process_count: number
+  created: number
+  exited: number
+  reductions: WindowItem[]
+  memory: WindowItem[]
+  message_queue_len: WindowItem[]
+}

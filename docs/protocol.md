@@ -71,6 +71,8 @@ Sending `sub` again with the same `id` replaces the subscription.
 | `table.delete` | `node`, `kind`, `table`, `ref` | `ok` |
 | `trace.start` | `node`, `targets` (pids or registered names, at most 10), `max_events`, `max_seconds` (optional) | `id`, traced `processes`, `refused` targets with a reason, `limits`; replaces a running trace |
 | `trace.stop` | `node` | `ok` |
+| `diag.check` | `node` | health check: `checks` (each `id`, `level` = `ok` / `warn` / `crit` / `skip`, `value`, `warn` / `crit` thresholds, `items`), `memory_total`, `process_count`, `took_ms`; takes about 2 s; one diagnosis at a time per node (`busy`) |
+| `diag.window` | `node`, `seconds` (1–60, default 10) | processes that grew most during the window: `reductions`, `memory`, `message_queue_len` (top 20 each, with `value` = growth), `created`, `exited`, `process_count`; refused with `too_many_processes` above 500 000 processes |
 
 ## Topics
 

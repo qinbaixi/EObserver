@@ -2,6 +2,7 @@
 // One table object in full, with edit / delete (hidden in read-only mode).
 // key: the opaque key from ets.rows / mnesia.rows; '' adds a new object.
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   NModal, NCard, NInput, NButton, NSpace, NAlert, NSpin, NText, NPopconfirm, NTag, useMessage,
 } from 'naive-ui'
@@ -20,6 +21,7 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ 'update:objKey': [string | null]; changed: [] }>()
 
+const { t } = useI18n()
 const settings = useSettings()
 const message = useMessage()
 const objects = ref<TableObject[]>([])
@@ -64,11 +66,11 @@ async function save(i: number) {
       node: props.node, kind: props.kind, table: props.table,
       object: drafts.value[i], ref: adding.value ? null : objects.value[i].ref,
     }, 60000)
-    message.success(adding.value ? '已添加' : '已保存')
+    message.success(t(adding.value ? 'procs.object.added' : 'procs.object.saved'))
     emit('changed')
     emit('update:objKey', null)
   } catch (e) {
-    message.error(`保存失败：${errorText(e)}`)
+    message.error(t('procs.object.save_failed', { err: errorText(e) }))
   } finally {
     saving.value = -1
   }
@@ -79,12 +81,12 @@ async function remove(i: number) {
     await client.request('table.delete', {
       node: props.node, kind: props.kind, table: props.table, ref: objects.value[i].ref,
     }, 60000)
-    message.success('已删除')
+    message.success(t('procs.object.deleted'))
     emit('changed')
     if (objects.value.length <= 1) emit('update:objKey', null)
     else await load()
   } catch (e) {
-    message.error(`删除失败：${errorText(e)}`)
+    message.error(t('procs.object.delete_failed', { err: errorText(e) }))
   }
 }
 
@@ -95,40 +97,40 @@ function rows(text: string) {
 
 <template>
   <NModal v-model:show="show">
-    <NCard :title="adding ? '添加记录' : '记录详情'" closable style="width: min(900px, 94vw)"
+    <NCard :title="t(adding ? 'procs.object.add_title' : 'procs.object.title')" closable style="width: min(900px, 94vw)"
            @close="show = false">
       <template #header-extra>
         <NText depth="3" class="mono">{{ table }}</NText>
       </template>
       <NSpin v-if="loading" style="width: 100%; padding: 40px 0" />
       <NAlert v-else-if="error" type="warning">{{ error }}</NAlert>
-      <NText v-else-if="!adding && !objects.length" depth="3">这条记录已不存在。</NText>
+      <NText v-else-if="!adding && !objects.length" depth="3">{{ t('procs.object.gone') }}</NText>
       <NSpace v-else vertical :size="16">
         <div v-for="(d, i) in drafts" :key="i">
           <NSpace v-if="objects.length > 1" align="center" style="margin-bottom: 6px">
-            <NTag size="small" :bordered="false">第 {{ i + 1 }} / {{ objects.length }} 条（bag 表中同一个键的多条记录）</NTag>
+            <NTag size="small" :bordered="false">{{ t('procs.object.bag', { i: i + 1, n: objects.length }) }}</NTag>
           </NSpace>
           <NInput v-model:value="drafts[i]" type="textarea" class="mono-input"
                   :readonly="!canWrite || (!adding && !objects[i].editable)"
                   :autosize="{ minRows: rows(d), maxRows: 24 }"
-                  :placeholder="adding ? 'Erlang 项，例如 {key, value}' : undefined" />
+                  :placeholder="adding ? t('procs.object.placeholder') : undefined" />
           <NText v-if="!adding && !objects[i].editable" depth="3" class="hint">
-            这条记录包含 pid、引用、fun 或被截断的内容，无法以文本写回，只能查看{{ canWrite ? '和删除' : '' }}。
+            {{ t(canWrite ? 'procs.object.view_delete_only' : 'procs.object.view_only') }}
           </NText>
           <NSpace v-if="canWrite" justify="end" style="margin-top: 8px">
             <NPopconfirm v-if="!adding" @positive-click="remove(i)">
-              <template #trigger><NButton size="small" type="error" secondary>删除</NButton></template>
-              从目标节点的表中删除这条记录？
+              <template #trigger><NButton size="small" type="error" secondary>{{ t('procs.object.delete') }}</NButton></template>
+              {{ t('procs.object.delete_confirm') }}
             </NPopconfirm>
             <NButton v-if="adding || objects[i].editable" size="small" type="primary"
                      :loading="saving === i" :disabled="!adding && d === objects[i].text"
                      @click="save(i)">
-              {{ adding ? '添加' : '保存' }}
+              {{ t(adding ? 'procs.object.add' : 'procs.object.save') }}
             </NButton>
           </NSpace>
         </div>
         <NText v-if="canWrite" depth="3" class="hint">
-          修改会直接写入目标节点{{ kind === 'mnesia' ? '（在一个 Mnesia 事务中执行）' : '' }}。改了键等于移动这条记录：旧键下的记录会被删除。
+          {{ t(kind === 'mnesia' ? 'procs.object.write_hint_mnesia' : 'procs.object.write_hint') }}
         </NText>
       </NSpace>
     </NCard>

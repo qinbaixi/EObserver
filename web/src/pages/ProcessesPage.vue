@@ -2,6 +2,7 @@
 import { useQueryRef } from '../composables/useQueryRef'
 import { useRoute, useRouter } from 'vue-router'
 import { computed, h, onBeforeUnmount, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   NDataTable, NInput, NSpace, NTag, NIcon, NAlert, NButton, NDropdown, NTooltip,
   useDialog, useMessage, type DropdownOption,
@@ -23,6 +24,7 @@ import { useResizableTable } from '../api/table'
 
 type SortKey = 'reds' | 'reductions' | 'memory' | 'message_queue_len' | 'name' | 'pid'
 
+const { t } = useI18n()
 const nodes = useNodes()
 const settings = useSettings()
 const dialog = useDialog()
@@ -109,14 +111,14 @@ function kill(r: ProcessRow) {
   const n = node.value
   if (!n) return
   dialog.error({
-    title: '杀死进程',
-    content: `向 ${r.pid}${r.name ? `（${r.name}）` : ''} 发送 kill 退出信号？这会影响目标节点上正在运行的系统。`,
-    positiveText: '杀死',
-    negativeText: '取消',
+    title: t('procs.kill.title'),
+    content: t('procs.kill.content', { pid: r.name ? t('procs.kill.named', { pid: r.pid, name: r.name }) : r.pid }),
+    positiveText: t('procs.kill.ok'),
+    negativeText: t('procs.cancel'),
     onPositiveClick: async () => {
       try {
         await client.request('process.kill', { node: n, pid: r.pid })
-        message.success(`已杀死 ${r.pid}`)
+        message.success(t('procs.kill.done', { pid: r.pid }))
         refreshOnce()
       } catch (e) {
         message.error(errorText(e))
@@ -132,12 +134,12 @@ const menu = ref<{ x: number; y: number; row: ProcessRow } | null>(null)
 const menuAt = ref({ x: 0, y: 0 })
 watch(menu, (m) => { if (m) menuAt.value = { x: m.x, y: m.y } })
 const menuOptions = computed<DropdownOption[]>(() => [
-  { key: 'open', label: '查看详情' },
-  { key: 'copy', label: '复制 PID' },
+  { key: 'open', label: t('procs.processes.menu.open') },
+  { key: 'copy', label: t('procs.processes.menu.copy') },
   ...(settings.readOnly ? [] : [
-    { key: 'trace', label: '跟踪消息' },
+    { key: 'trace', label: t('procs.processes.menu.trace') },
     { type: 'divider', key: 'd' },
-    { key: 'kill', label: '杀死进程…' },
+    { key: 'kill', label: t('procs.processes.menu.kill') },
   ]),
 ])
 function onMenu(key: string) {
@@ -145,7 +147,7 @@ function onMenu(key: string) {
   menu.value = null
   if (!row) return
   if (key === 'open') selected.value = row.pid
-  else if (key === 'copy') void navigator.clipboard?.writeText(row.pid).then(() => message.success('已复制'))
+  else if (key === 'copy') void navigator.clipboard?.writeText(row.pid).then(() => message.success(t('procs.processes.copied')))
   else if (key === 'kill') kill(row)
   else if (key === 'trace') void router.push({ path: '/trace', query: { node: route.query.node, target: row.pid } })
 }
@@ -170,7 +172,7 @@ const columns = computed<DataTableColumns<ProcessRow>>(() => [
     render: (r) => h('span', { class: 'mono muted' }, formatNumber(r.reductions)),
   },
   {
-    key: 'memory', title: term('内存', '进程占用的总内存，包括堆、栈、消息队列和内部结构。'), width: 110, align: 'right', ...sorter('memory'),
+    key: 'memory', title: term('内存', t('procs.processes.memory_tip')), width: 110, align: 'right', ...sorter('memory'),
     render: (r) => h('span', { class: 'mono' }, formatBytes(r.memory)),
   },
   {
@@ -196,7 +198,7 @@ const columns = computed<DataTableColumns<ProcessRow>>(() => [
         quaternary: true, circle: true, size: 'tiny', type: 'error', class: 'kill-btn',
         onClick: (e: MouseEvent) => { e.stopPropagation(); kill(r) },
       }, { icon: () => h(NIcon, { component: CloseCircleOutline }) }),
-      default: () => '杀死进程',
+      default: () => t('procs.kill.title'),
     }),
   }]),
 ])
@@ -207,7 +209,7 @@ const pagination = computed(() => ({
   itemCount: data.value?.total ?? 0,
   pageSizes: [50, 100, 200],
   showSizePicker: true,
-  prefix: ({ itemCount }: { itemCount?: number }) => `共 ${formatNumber(itemCount ?? 0)} 个`,
+  prefix: ({ itemCount }: { itemCount?: number }) => t('procs.processes.total', { n: formatNumber(itemCount ?? 0) }),
   onUpdatePage: (p: number) => { page.value = p },
   onUpdatePageSize: (s: number) => { pageSize.value = s; page.value = 1 },
 }))
@@ -225,10 +227,11 @@ const procTable = useResizableTable(columns)
 </script>
 
 <template>
-  <PageHeader title="进程" :subtitle="data ? `${formatNumber(data.process_count)} 个进程` : nodes.current ?? undefined">
+  <PageHeader :title="t('procs.processes.title')"
+              :subtitle="data ? t('procs.processes.subtitle', { n: formatNumber(data.process_count) }, data.process_count) : nodes.current ?? undefined">
     <NSpace align="center" :size="8">
-      <NInput v-model:value="filterInput" clearable placeholder="按 PID、注册名、模块或函数过滤"
-              style="width: 300px">
+      <NInput v-model:value="filterInput" clearable :placeholder="t('procs.processes.filter')"
+              style="width: 340px">
         <template #prefix><NIcon :component="SearchOutline" /></template>
       </NInput>
       <RefreshControl v-model:paused="paused" v-model:interval="interval" @refresh="refreshOnce" />
@@ -239,7 +242,7 @@ const procTable = useResizableTable(columns)
     <NDataTable remote v-bind="procTable" :data="data?.rows ?? []" :loading="!data && !error"
                 :pagination="pagination" :row-key="(r: ProcessRow) => r.pid" :row-props="rowProps"
                 size="small" @update:sorter="onSort" />
-    <p class="note">Reds 是距上次刷新以来的 reductions 增量，可以看出当前最忙的进程。点击一行查看详情，右键可复制 PID{{ settings.readOnly ? '' : '、跟踪消息或杀死进程' }}。</p>
+    <p class="note">{{ t(settings.readOnly ? 'procs.processes.note' : 'procs.processes.note_actions') }}</p>
     <NDropdown trigger="manual" placement="bottom-start" :show="!!menu" :x="menuAt.x" :y="menuAt.y"
                :options="menuOptions" @select="onMenu" @clickoutside="menu = null" />
     <ProcessDrawer v-if="node" v-model:pid="selected" :node="node" @killed="refreshOnce" />

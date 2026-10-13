@@ -2,6 +2,7 @@
 import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
 import { useQueryRef } from '../composables/useQueryRef'
 import { computed, h, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   NDataTable, NInput, NIcon, NAlert, NTag, NTabs, NTabPane, NSwitch, NSpace, NEmpty,
   type DataTableColumns,
@@ -19,6 +20,7 @@ import TableRowsDrawer from '../components/TableRowsDrawer.vue'
 import { term } from '../api/term'
 import { useResizableTable } from '../api/table'
 
+const { t } = useI18n()
 const nodes = useNodes()
 const node = computed(() =>
   nodes.currentInfo?.status === 'connected' ? nodes.currentInfo.node : null)
@@ -46,7 +48,7 @@ const openedId = useQueryRef('table')
 const openedTitle = computed(() => {
   const id = openedId.value
   const list: { id: string; name: string }[] = (tab.value === 'ets' ? ets.data.value : mnesia.data.value) ?? []
-  return list.find((t) => t.id === id)?.name ?? id ?? undefined
+  return list.find((x) => x.id === id)?.name ?? id ?? undefined
 })
 
 const match = (q: string, ...texts: (string | null)[]) =>
@@ -54,32 +56,32 @@ const match = (q: string, ...texts: (string | null)[]) =>
 
 const etsRows = computed(() => {
   const q = search.value.trim().toLowerCase()
-  return (ets.data.value ?? []).filter((t) =>
-    (showSystem.value || !t.system) && match(q, t.name, t.id, t.owner, t.owner_name))
+  return (ets.data.value ?? []).filter((x) =>
+    (showSystem.value || !x.system) && match(q, x.name, x.id, x.owner, x.owner_name))
 })
-const hiddenSystem = computed(() => (ets.data.value ?? []).filter((t) => t.system).length)
+const hiddenSystem = computed(() => (ets.data.value ?? []).filter((x) => x.system).length)
 
 const mnesiaRows = computed(() => {
   const q = search.value.trim().toLowerCase()
-  return (mnesia.data.value ?? []).filter((t) => match(q, t.name, t.record_name))
+  return (mnesia.data.value ?? []).filter((x) => match(q, x.name, x.record_name))
 })
 const mnesiaOff = computed(() => mnesia.error.value?.includes('not_running') ?? false)
 
 const num = (a: number, b: number) => a - b
 const mono = (text: string | number) => h('span', { class: 'mono' }, text)
 
-const etsColumns: DataTableColumns<EtsTable> = [
-  { key: 'name', title: '表', minWidth: 220, ellipsis: { tooltip: true },
+const etsColumns = computed<DataTableColumns<EtsTable>>(() => [
+  { key: 'name', title: t('procs.tables.col.table'), minWidth: 220, ellipsis: { tooltip: true },
     sorter: (a, b) => a.name.localeCompare(b.name),
     render: (r) => h('span', { class: 'mono' }, [
       h('b', null, r.name),
       r.named ? null : h('span', { class: 'muted' }, ` ${r.id}`),
     ]) },
-  { key: 'type', title: '类型', width: 110,
+  { key: 'type', title: t('procs.tables.col.type'), width: 110,
     render: (r) => h(NTag, { size: 'small', bordered: false }, { default: () => r.type }) },
   { key: 'size', title: term('对象数'), width: 110, align: 'right', sorter: (a, b) => num(a.size, b.size),
     render: (r) => mono(formatNumber(r.size)) },
-  { key: 'memory', title: term('内存', '表数据占用的内存。'), width: 110, align: 'right', sorter: (a, b) => num(a.memory, b.memory),
+  { key: 'memory', title: term('内存', t('procs.tables.memory_tip')), width: 110, align: 'right', sorter: (a, b) => num(a.memory, b.memory),
     defaultSortOrder: 'descend', render: (r) => mono(formatBytes(r.memory)) },
   { key: 'owner', title: term('所属进程'), minWidth: 200, ellipsis: { tooltip: true },
     render: (r) => r.owner
@@ -96,25 +98,25 @@ const etsColumns: DataTableColumns<EtsTable> = [
       r.write_concurrency !== 'false' ? h(NTag, { size: 'tiny', bordered: false }, { default: () => `write_conc` }) : null,
       r.compressed ? h(NTag, { size: 'tiny', bordered: false }, { default: () => 'compressed' }) : null,
     ]) },
-]
+])
 
-const mnesiaColumns: DataTableColumns<MnesiaTable> = [
-  { key: 'name', title: '表', minWidth: 200, sorter: (a, b) => a.name.localeCompare(b.name),
+const mnesiaColumns = computed<DataTableColumns<MnesiaTable>>(() => [
+  { key: 'name', title: t('procs.tables.col.table'), minWidth: 200, sorter: (a, b) => a.name.localeCompare(b.name),
     render: (r) => h('b', { class: 'mono' }, r.name) },
   { key: 'storage', title: term('存储'), width: 140,
     render: (r) => h(NTag, { size: 'small', bordered: false, type: r.storage === 'ram_copies' ? 'info' : 'success' },
       { default: () => r.storage }) },
-  { key: 'type', title: '类型', width: 100, render: (r) => r.type },
-  { key: 'size', title: '记录数', width: 110, align: 'right', sorter: (a, b) => num(a.size, b.size),
+  { key: 'type', title: t('procs.tables.col.type'), width: 100, render: (r) => r.type },
+  { key: 'size', title: t('procs.tables.col.records'), width: 110, align: 'right', sorter: (a, b) => num(a.size, b.size),
     render: (r) => mono(formatNumber(r.size)) },
-  { key: 'memory', title: term('内存', '表数据占用的内存。'), width: 110, align: 'right', sorter: (a, b) => num(a.memory, b.memory),
+  { key: 'memory', title: term('内存', t('procs.tables.memory_tip')), width: 110, align: 'right', sorter: (a, b) => num(a.memory, b.memory),
     render: (r) => mono(formatBytes(r.memory)) },
-  { key: 'record_name', title: '记录', width: 140, render: (r) => mono(r.record_name) },
-  { key: 'attributes', title: '字段', minWidth: 240, ellipsis: { tooltip: true },
+  { key: 'record_name', title: t('procs.tables.col.record'), width: 140, render: (r) => mono(r.record_name) },
+  { key: 'attributes', title: t('procs.tables.col.fields'), minWidth: 240, ellipsis: { tooltip: true },
     render: (r) => h('span', { class: 'mono muted' }, r.attributes.join(', ')) },
   { key: 'where_to_read', title: term('读取节点'), width: 280, ellipsis: { tooltip: true },
     render: (r) => h('span', { class: 'mono muted' }, r.where_to_read) },
-]
+])
 
 const etsRowProps = (r: EtsTable) => ({
   style: 'cursor: pointer',
@@ -126,8 +128,8 @@ const mnesiaRowProps = (r: MnesiaTable) => ({
 })
 
 const subtitle = computed(() => {
-  if (tab.value === 'ets' && ets.data.value) return `${formatNumber(etsRows.value.length)} 张 ETS 表`
-  if (tab.value === 'mnesia' && mnesia.data.value) return `${formatNumber(mnesiaRows.value.length)} 张 Mnesia 表`
+  if (tab.value === 'ets' && ets.data.value) return t('procs.tables.ets_count', { n: formatNumber(etsRows.value.length) }, etsRows.value.length)
+  if (tab.value === 'mnesia' && mnesia.data.value) return t('procs.tables.mnesia_count', { n: formatNumber(mnesiaRows.value.length) }, mnesiaRows.value.length)
   return nodes.current ?? undefined
 })
 const etsTable = useResizableTable(etsColumns)
@@ -135,13 +137,13 @@ const mnesiaTable = useResizableTable(mnesiaColumns)
 </script>
 
 <template>
-  <PageHeader title="表" :subtitle="subtitle">
+  <PageHeader :title="t('procs.tables.title')" :subtitle="subtitle">
     <NSpace align="center" :size="16">
       <label v-if="tab === 'ets'" class="toggle">
         <NSwitch v-model:value="showSystem" size="small" />
-        <span>显示系统表<template v-if="hiddenSystem">（{{ hiddenSystem }}）</template></span>
+        <span>{{ hiddenSystem ? t('procs.tables.show_system_n', { n: hiddenSystem }) : t('procs.tables.show_system') }}</span>
       </label>
-      <NInput v-model:value="search" clearable placeholder="按表名或所属进程过滤" style="width: 260px">
+      <NInput v-model:value="search" clearable :placeholder="t('procs.tables.filter')" style="width: 260px">
         <template #prefix><NIcon :component="SearchOutline" /></template>
       </NInput>
       <RefreshControl v-model:paused="active.paused.value" v-model:interval="active.interval.value"
@@ -156,7 +158,7 @@ const mnesiaTable = useResizableTable(mnesiaColumns)
                     size="small" :row-key="(r: EtsTable) => r.id" :row-props="etsRowProps" :pagination="{ pageSize: 50 }" />
       </NTabPane>
       <NTabPane name="mnesia" tab="Mnesia">
-        <NEmpty v-if="mnesiaOff" description="该节点没有运行 Mnesia" style="padding: 64px 0" />
+        <NEmpty v-if="mnesiaOff" :description="t('procs.tables.no_mnesia')" style="padding: 64px 0" />
         <template v-else>
           <NAlert v-if="mnesia.error.value" type="error" style="margin-bottom: 12px">{{ mnesia.error.value }}</NAlert>
           <NDataTable v-bind="mnesiaTable" :data="mnesiaRows"

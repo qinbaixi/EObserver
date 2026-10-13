@@ -150,7 +150,7 @@ const atText = computed(() => last.value ? new Date(last.value.at).toLocaleTimeS
         <span class="detail">{{ detail(c) }}</span>
       </div>
       <template v-if="c.level === 'warn' || c.level === 'crit'">
-        <div class="advice"><b>{{ t('diag.health.advice') }}：</b>{{ t(`diag.check.${c.id}.advice`) }}</div>
+        <div class="advice"><b>{{ t('procs.colon', { label: t('diag.health.advice') }) }}</b>{{ t(`diag.check.${c.id}.advice`) }}</div>
         <NDataTable v-if="c.items.length" :columns="columns(c)" :data="c.items" size="small"
                     :row-props="rowProps(c)" :bordered="false" class="items" />
       </template>

@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.0.7] - 2026-10-13
+
 ### 新增
 
 - 消息跟踪：选最多 10 个进程，实时查看它们收到和发出的消息。
@@ -121,7 +123,8 @@ First public release.
   Windows x64.
 - Light and dark themes.
 
-[Unreleased]: https://github.com/qinbaixi/EObserver/compare/v0.0.6...HEAD
+[Unreleased]: https://github.com/qinbaixi/EObserver/compare/v0.0.7...HEAD
+[0.0.7]: https://github.com/qinbaixi/EObserver/compare/v0.0.6...v0.0.7
 [0.0.6]: https://github.com/qinbaixi/EObserver/compare/v0.0.5...v0.0.6
 [0.0.5]: https://github.com/qinbaixi/EObserver/compare/v0.0.4...v0.0.5
 [0.0.4]: https://github.com/qinbaixi/EObserver/compare/v0.0.3...v0.0.4

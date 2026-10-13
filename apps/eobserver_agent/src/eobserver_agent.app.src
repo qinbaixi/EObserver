@@ -1,6 +1,6 @@
 {application, eobserver_agent, [
     {description, "Collector module injected into observed nodes"},
-    {vsn, "0.0.6"},
+    {vsn, "0.0.7"},
     {registered, []},
     {applications, [kernel, stdlib]},
     {env, []},

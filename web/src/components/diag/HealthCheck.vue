@@ -23,6 +23,7 @@ const error = ref<string | null>(null)
 const last = computed(() => diag.health[props.node] ?? null)
 
 async function run() {
+  if (running.value) return
   running.value = true
   error.value = null
   try {
@@ -34,6 +35,8 @@ async function run() {
     running.value = false
   }
 }
+
+defineExpose({ run })
 
 const ORDER: Record<DiagLevel, number> = { crit: 0, warn: 1, ok: 2, skip: 3 }
 const checks = computed(() =>

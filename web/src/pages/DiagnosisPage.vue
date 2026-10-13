@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { NTabs, NTabPane } from 'naive-ui'
 import { useNodes } from '../stores/nodes'
@@ -20,6 +21,21 @@ const tab = computed({
   get: () => (tabRef.value === 'window' ? 'window' : 'health'),
   set: (v: string) => { tabRef.value = v === 'health' ? null : v },
 })
+
+// ?run=1 (from the command palette) starts a health check right away; the
+// flag is dropped from the URL so a reload does not run it again.
+const route = useRoute()
+const router = useRouter()
+const health = ref<InstanceType<typeof HealthCheck> | null>(null)
+watch([() => route.query.run, node], async ([run, n]) => {
+  if (!run || !n) return
+  const query = { ...route.query }
+  delete query.run
+  delete query.tab
+  await router.replace({ query })
+  await nextTick()
+  void health.value?.run()
+}, { immediate: true })
 </script>
 
 <template>
@@ -27,7 +43,7 @@ const tab = computed({
   <NodeGuard>
     <NTabs v-if="node" v-model:value="tab" type="line" animated display-directive="show">
       <NTabPane name="health" :tab="t('diag.tabs.health')">
-        <HealthCheck :node="node" @open="selected = $event" />
+        <HealthCheck ref="health" :node="node" @open="selected = $event" />
       </NTabPane>
       <NTabPane name="window" :tab="t('diag.tabs.window')">
         <WindowTop :node="node" @open="selected = $event" />

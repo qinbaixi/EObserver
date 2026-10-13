@@ -3,9 +3,10 @@ import { computed, h, ref } from 'vue'
 import { useRoute, useRouter, RouterView } from 'vue-router'
 import {
   NLayout, NLayoutSider, NLayoutHeader, NLayoutContent, NMenu, NIcon, NButton,
-  NTooltip, NSpace, NDropdown, useMessage, type MenuOption,
+  NTooltip, NSpace, NDropdown, useMessage, useThemeVars, type MenuOption,
 } from 'naive-ui'
-import { MoonOutline, SunnyOutline, LinkOutline, ContrastOutline } from '@vicons/ionicons5'
+import { MoonOutline, SunnyOutline, LinkOutline, ContrastOutline, SearchOutline } from '@vicons/ionicons5'
+import { useI18n } from 'vue-i18n'
 import { pages } from '../router'
 import { useTheme, type Mode } from '../stores/theme'
 import { useNodes } from '../stores/nodes'
@@ -15,6 +16,8 @@ import NodeSwitcher from './NodeSwitcher.vue'
 import WelcomePanel from './WelcomePanel.vue'
 import ConnectDialog from './ConnectDialog.vue'
 import UpdateChecker from './UpdateChecker.vue'
+import CommandPalette from './CommandPalette.vue'
+import { useUi } from '../stores/ui'
 import { useUrlSync } from '../composables/useUrlSync'
 
 const route = useRoute()
@@ -24,6 +27,10 @@ const nodes = useNodes()
 const settings = useSettings()
 const collapsed = ref(false)
 const message = useMessage()
+const ui = useUi()
+const { t } = useI18n()
+const themeVars = useThemeVars()
+const paletteKey = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl K'
 useUrlSync()
 
 const themeOptions = computed(() => ([
@@ -77,11 +84,16 @@ const socketText = computed(() => ({
       <UpdateChecker v-if="settings.version" :collapsed="collapsed" />
     </NLayoutSider>
     <NLayout>
-      <NLayoutHeader bordered class="header">
+      <NLayoutHeader bordered class="header" :style="{ '--search-border': themeVars.borderColor }">
         <div class="header-left">
           <NodeSwitcher />
         </div>
         <NSpace align="center" :size="12">
+          <button type="button" class="search-hint" :title="t('palette.open')" @click="ui.paletteOpen = true">
+            <NIcon :component="SearchOutline" />
+            <span class="search-text">{{ t('palette.open') }}</span>
+            <kbd>{{ paletteKey }}</kbd>
+          </button>
           <NTooltip v-if="settings.readOnly">
             <template #trigger>
               <span class="ro">只读</span>
@@ -120,6 +132,7 @@ const socketText = computed(() => ({
       </NLayoutContent>
     </NLayout>
     <ConnectDialog />
+    <CommandPalette />
   </NLayout>
 </template>
 
@@ -166,6 +179,35 @@ const socketText = computed(() => ({
   padding: 24px;
   max-width: 1440px;
   margin: 0 auto;
+}
+.search-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 6px 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--search-border);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  opacity: 0.75;
+}
+.search-hint:hover {
+  opacity: 1;
+}
+.search-hint kbd {
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 18px;
+  padding: 0 5px;
+  border-radius: 4px;
+  border: 1px solid var(--search-border);
+}
+@media (max-width: 720px) {
+  .search-text, .search-hint kbd { display: none; }
 }
 .ro {
   font-size: 12px;

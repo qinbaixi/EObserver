@@ -57,7 +57,12 @@ async function loadTree() {
   }
 }
 
-watch(node, () => { apps.value = []; selectedApp.value = null; void loadApps() }, { immediate: true })
+// Keep an ?app= from the URL on first load; a node switch starts over.
+watch(node, (_, old) => {
+  apps.value = []
+  if (old) selectedApp.value = null
+  void loadApps()
+}, { immediate: true })
 watch(selectedApp, () => void loadTree())
 
 // Applications may have been started or stopped since the list was read.

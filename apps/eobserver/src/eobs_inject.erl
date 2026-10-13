@@ -25,6 +25,9 @@ ensure_loaded(Node) ->
     end.
 
 unload(Node) ->
+    %% The agent is also a logger handler while the Logs page is open;
+    %% remove it first, or logger would call a module that is gone.
+    _ = rpc(Node, ?MOD, logs_stop, []),
     _ = rpc(Node, code, purge, [?MOD]),
     _ = rpc(Node, code, delete, [?MOD]),
     _ = rpc(Node, code, purge, [?MOD]),

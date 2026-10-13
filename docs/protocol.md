@@ -85,6 +85,7 @@ Sending `sub` again with the same `id` replaces the subscription.
 | `node.ets` / `node.mnesia` | `node` | table lists |
 | `node.allocators` | `node` | block and carrier sizes per allocator |
 | `trace.events` | `node` | the node's message trace: `status` (`running` / `stopped` / `none`), stop `reason`, `count`, `dropped`, `processes`, and the `events` since the previous push (direction, category, kind, peer, call/reply `ref`, summary, text) |
+| `logs.events` | `node` | the node's live log and crash records, collected only while someone pulls this topic (a logger handler is added on the first pull and removed 60 s after the last one, or when the tool disconnects); allowed in read-only mode. `status` (`running` / `stopped`), stop `reason`, `started`, target clock `now` (ms), `primary_level` (the node's logger level: less severe events are never produced), `received`, `lost` (overwritten in the 2000-line ring before this read), `dropped` (overload), `limited` (below warning, over 2000 events/s), `reset` (the collection restarted), and since the previous push: `logs` (`seq`, `t` in µs, `level`, `module`, `pid`, `text`), changed `crashes` (one per process and reason: `id`, `who`, `pid`, `class`, `reason`, `text`, `stack`, `count`, `first`, `last`) and changed `restarts` (one per supervisor and child: `id`, `supervisor`, `child`, `count`, `failed_starts`, `gave_up`, `restart_type`, `reason`, `last`, recent `times`) |
 | `cluster` | | distribution links of every observed node |
 
 The handlers live in

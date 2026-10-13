@@ -11,6 +11,7 @@ import { pages } from '../router'
 import { useTheme, type Mode } from '../stores/theme'
 import { useNodes } from '../stores/nodes'
 import { useSettings } from '../stores/settings'
+import { useTrace } from '../stores/trace'
 import { client } from '../api/ws'
 import NodeSwitcher from './NodeSwitcher.vue'
 import WelcomePanel from './WelcomePanel.vue'
@@ -25,6 +26,7 @@ const router = useRouter()
 const theme = useTheme()
 const nodes = useNodes()
 const settings = useSettings()
+const trace = useTrace()
 const collapsed = ref(false)
 const message = useMessage()
 const ui = useUi()
@@ -126,7 +128,7 @@ const socketText = computed(() => ({
       </NLayoutHeader>
       <NLayoutContent class="content" :native-scrollbar="false">
         <div class="content-inner">
-          <WelcomePanel v-if="nodes.loaded && nodes.list.length === 0" />
+          <WelcomePanel v-if="nodes.loaded && nodes.list.length === 0 && !trace.replay" />
           <RouterView v-else />
         </div>
       </NLayoutContent>

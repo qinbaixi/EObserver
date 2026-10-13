@@ -14,7 +14,7 @@
 -export([ets_list/0, ets_rows/2, mnesia_list/0, mnesia_rows/2]).
 -export([table_object/3, table_delete/3, table_write/4]).
 -export([alloc_info/0, dist_info/0]).
--export([trace_start/3, trace_stop/0, trace_events/2]).
+-export([trace_start/3, trace_stop/0, trace_events/2, trace_stats/2]).
 -export([diag_check/1, diag_window/2]).
 -export([logs_events/2, logs_stop/0]).
 %% logger handler callback, called by logger in the logging process.
@@ -22,7 +22,7 @@
 
 %% Bump whenever the exported API or return shapes change, so the tool
 %% replaces an older copy that is still loaded on the target.
--define(VERSION, 11).
+-define(VERSION, 12).
 
 %% Long-lived helper process on the observed node. It keeps
 %% scheduler_wall_time enabled, builds process lists while holding the
@@ -1021,7 +1021,11 @@ bin(Chars) -> unicode:characters_to_binary(Chars).
 %%   - formatted events go to a bounded ETS ring the tool pulls from, so
 %%     nothing accumulates when the tool or the network is slow;
 %%   - the keeper process stops everything when the tool node goes away and
-%%     exits after a while without being read.
+%%     exits after a while without being read;
+%%   - gen calls are timed in the worker into a fixed-size table (at most
+%%     TRACE_KINDS request kinds, a histogram instead of every latency, the
+%%     TRACE_SLOWEST slowest samples) with at most TRACE_PENDING calls
+%%     waiting for a reply.
 %%--------------------------------------------------------------------
 
 -define(TRACER, eobs_agent_tracer).
@@ -1034,6 +1038,27 @@ bin(Chars) -> unicode:characters_to_binary(Chars).
 -define(TRACE_SUMMARY_CHARS, 240).
 -define(TRACE_PAGE, 1000).
 -define(TRACE_FLAGS, [send, 'receive', monotonic_timestamp]).
+%% Call statistics: distinct (process, direction, request kind) rows, the
+%% rest is merged into one "other" row per process and direction; calls
+%% waiting for a reply, and how long before one counts as unanswered;
+%% slowest samples kept per row; histogram buckets per doubling of the
+%% latency (about 9% wide) and their number (up to 2^30 us, 18 minutes).
+-define(TRACE_KINDS, 200).
+-define(TRACE_PENDING, 1000).
+-define(TRACE_CALL_EXPIRE_MS, 60000).
+-define(TRACE_SLOWEST, 10).
+-define(TRACE_HIST_STEPS, 8).
+-define(TRACE_HIST_SIZE, 241).
+%% Positions in a statistics row: {Key, RowNo, Calls, Answered, SumUs,
+%% MaxUs, Pending, Unanswered, Bucket0, Bucket1, ...}.
+-define(S_ROW, 2).
+-define(S_CALLS, 3).
+-define(S_ANSWERED, 4).
+-define(S_SUM, 5).
+-define(S_MAX, 6).
+-define(S_PENDING, 7).
+-define(S_UNANSWERED, 8).
+-define(S_HIST, 9).
 
 %% Targets: pids or registered names (binaries). Opts: max_events,
 %% max_seconds, max_rate (per second). Replaces a running trace.
@@ -1065,6 +1090,15 @@ trace_events(Id, Since) ->
     case whereis(?TRACER) of
         undefined -> {error, not_running};
         Pid -> tracer_call(Pid, {events, Id, Since})
+    end.
+
+%% Call statistics of trace Id (null: whichever trace is current). Which:
+%% rows (the table only), all (with each row's histogram and slowest
+%% calls) or a row number (that row with its details).
+trace_stats(Id, Which) ->
+    case whereis(?TRACER) of
+        undefined -> {error, not_running};
+        Pid -> tracer_call(Pid, {stats, Id, Which})
     end.
 
 %% Stops the current keeper (if any) and waits until it is gone.
@@ -1115,12 +1149,13 @@ keeper_init(Parent, Owner, Resolved, Limits) ->
     erlang:monitor_node(Owner, true),
     Tab = ets:new(eobs_trace, [ordered_set, public]),
     ets:insert(Tab, {seq, 0}),
+    Stats = ets:new(eobs_trace_stats, [set, public]),
     Keeper = self(),
-    {Worker, WRef} = spawn_monitor(fun() -> worker_init(Keeper, Tab, Limits) end),
+    {Worker, WRef} = spawn_monitor(fun() -> worker_init(Keeper, Tab, Stats, Limits) end),
     Results = [{T, start_one(R, Worker)} || {T, R} <- Resolved],
     Traced = [P || {_, {ok, P}} <- Results],
     Id = erlang:unique_integer([positive]),
-    St0 = #{id => Id, owner => Owner, tab => Tab, worker => Worker, wref => WRef,
+    St0 = #{id => Id, owner => Owner, tab => Tab, stats => Stats, worker => Worker, wref => WRef,
             traced => Traced, limits => Limits, status => running, reason => null,
             started => erlang:system_time(millisecond),
             last_read => erlang:monotonic_time(millisecond)},
@@ -1167,6 +1202,13 @@ keeper_loop(#{last_read := LastRead} = St) ->
             St1 = St#{last_read := erlang:monotonic_time(millisecond)},
             case Id =:= null orelse Id =:= maps:get(id, St1) of
                 true -> From ! {Ref, {ok, events_since(Since, St1)}};
+                false -> From ! {Ref, {error, not_found}}
+            end,
+            keeper_loop(St1);
+        {From, Ref, {stats, Id, Which}} ->
+            St1 = St#{last_read := erlang:monotonic_time(millisecond)},
+            case Id =:= null orelse Id =:= maps:get(id, St1) of
+                true -> From ! {Ref, {ok, stats_read(Which, St1)}};
                 false -> From ! {Ref, {error, not_found}}
             end,
             keeper_loop(St1);
@@ -1238,7 +1280,7 @@ events_since(Since0, #{id := Id, tab := Tab, status := Status, reason := Reason,
 
 %% The worker receives the trace messages, enforces the limits and writes
 %% formatted events into the keeper's table.
-worker_init(Keeper, Tab, Limits) ->
+worker_init(Keeper, Tab, Stats, Limits) ->
     process_flag(max_heap_size, #{size => ?TRACE_HEAP_WORDS, kill => true,
                                   error_logger => false}),
     receive
@@ -1248,7 +1290,8 @@ worker_init(Keeper, Tab, Limits) ->
     worker_loop(#{keeper => Keeper, tab => Tab, limits => Limits, count => 0,
                   deadline => Now + maps:get(max_seconds, Limits) * 1000,
                   window => {Now div 1000, 0}, names => #{},
-                  offset => erlang:time_offset()}).
+                  offset => erlang:time_offset(),
+                  stats => Stats, rows => #{}, pending => #{}, swept => Now}).
 
 worker_loop(#{deadline := Deadline} = St) ->
     Timeout = max(0, Deadline - erlang:monotonic_time(millisecond)),
@@ -1284,7 +1327,7 @@ trace_event(Pid, Dir, Msg, To, Ts, #{count := Count, limits := Limits, window :=
         false ->
             {Event, St1} = make_event(Pid, Dir, Msg, To, Ts, St),
             store_event(Event, St1),
-            St2 = St1#{count := Count + 1, window := Window},
+            St2 = call_stats(Pid, Dir, Msg, Ts, Event, St1#{count := Count + 1, window := Window}),
             case Count + 1 >= MaxEvents of
                 true -> worker_done(max_events, St2);
                 false -> St2
@@ -1322,6 +1365,199 @@ make_event(Pid, Dir, Msg, To, Ts, #{offset := Offset} = St) ->
               summary => one_line(Text, ?TRACE_SUMMARY_CHARS),
               text => Text},
     {Event, St1}.
+
+%% Times gen calls of the traced processes: a call (received: the process
+%% serves it; sent: the process waits for it) waits in `pending` until the
+%% same process sends or receives the reply with its reference. Counts go
+%% straight into the statistics table, so they stay exact when the event
+%% ring drops events and survive the worker being killed at stop.
+call_stats(Pid, Dir, Msg, Ts, Event, St) ->
+    St1 = expire_calls(St),
+    case call_part(Msg) of
+        {call, Ref, Req} ->
+            {Key, St2} = stats_row(Pid, Dir, req_kind(Req), St1),
+            ets:update_counter(maps:get(stats, St2), Key, [{?S_CALLS, 1}, {?S_PENDING, 1}]),
+            #{pending := Pending} = St3 = make_room(St2),
+            Peer = case Event of
+                       #{peer_name := Name} when Name =/= null -> Name;
+                       #{peer := P} -> P
+                   end,
+            Call = {Key, Ts, maps:get(t, Event), Peer, maps:get(summary, Event),
+                    erlang:monotonic_time(millisecond)},
+            St3#{pending := Pending#{{Pid, Ref} => Call}};
+        {reply, Ref} ->
+            #{pending := Pending, stats := Tab} = St1,
+            case maps:take({Pid, Ref}, Pending) of
+                {{Key, CallTs, T, Peer, Summary, _}, Pending1} ->
+                    Us = max(0, erlang:convert_time_unit(Ts - CallTs, native, microsecond)),
+                    ets:update_counter(Tab, Key, [{?S_ANSWERED, 1}, {?S_SUM, Us}, {?S_PENDING, -1},
+                                                  {?S_HIST + hist_bucket(Us), 1}]),
+                    case ets:lookup_element(Tab, Key, ?S_MAX) < Us of
+                        true -> ets:update_element(Tab, Key, {?S_MAX, Us});
+                        false -> ok
+                    end,
+                    slowest(Tab, Key, {Us, T, Peer, Summary}),
+                    St1#{pending := Pending1};
+                error ->
+                    St1
+            end;
+        none ->
+            St1
+    end.
+
+call_part({'$gen_call', {_, Tag}, Req}) ->
+    case call_ref(Tag) of
+        undefined -> none;
+        Ref -> {call, Ref, Req}
+    end;
+call_part({Ref, _}) when is_reference(Ref) -> {reply, Ref};
+call_part({[alias | Ref], _}) when is_reference(Ref) -> {reply, Ref};
+call_part(_) -> none.
+
+%% get_info -> get_info, {buy, 1, 2} -> buy, anything else -> {other}.
+req_kind(Req) when is_atom(Req) -> Req;
+req_kind(Req) when is_tuple(Req), tuple_size(Req) > 0, is_atom(element(1, Req)) -> element(1, Req);
+req_kind(_) -> {other}.
+
+%% The row of a (process, direction, kind); past TRACE_KINDS rows new kinds
+%% go to that process and direction's {overflow} row.
+stats_row(Pid, Dir0, Kind, #{rows := Rows, stats := Tab} = St) ->
+    Dir = case Dir0 of out_dead -> out; _ -> Dir0 end,
+    Key0 = {Pid, Dir, Kind},
+    case Rows of
+        #{Key0 := _} ->
+            {Key0, St};
+        _ ->
+            Key = case map_size(Rows) >= ?TRACE_KINDS of
+                      true -> {Pid, Dir, {overflow}};
+                      false -> Key0
+                  end,
+            case ets:member(Tab, Key) of
+                true -> ok;
+                false ->
+                    Row = ets:update_counter(Tab, rows, 1, {rows, 0}),
+                    ets:insert(Tab, list_to_tuple([Key, Row, 0, 0, 0, 0, 0, 0
+                                                   | lists:duplicate(?TRACE_HIST_SIZE, 0)]))
+            end,
+            case Key of
+                Key0 -> {Key, St#{rows := Rows#{Key => true}}};
+                _ -> {Key, St}
+            end
+    end.
+
+hist_bucket(Us) when Us < 2 -> 0;
+hist_bucket(Us) -> min(?TRACE_HIST_SIZE - 1, trunc(math:log2(Us) * ?TRACE_HIST_STEPS)).
+
+hist_low(0) -> 0;
+hist_low(I) -> round(math:pow(2, I / ?TRACE_HIST_STEPS)).
+
+hist_high(I) -> round(math:pow(2, (I + 1) / ?TRACE_HIST_STEPS)).
+
+slowest(Tab, Key, {Us, _, _, _} = Sample) ->
+    SKey = {slowest, Key},
+    case ets:lookup(Tab, SKey) of
+        [] ->
+            ets:insert(Tab, {SKey, [Sample]});
+        [{_, List}] when length(List) < ?TRACE_SLOWEST ->
+            ets:insert(Tab, {SKey, lists:reverse(lists:sort([Sample | List]))});
+        [{_, List}] ->
+            case Us > element(1, lists:last(List)) of
+                true ->
+                    New = lists:sublist(lists:reverse(lists:sort([Sample | List])), ?TRACE_SLOWEST),
+                    ets:insert(Tab, {SKey, New});
+                false ->
+                    ok
+            end
+    end.
+
+%% Calls waiting longer than TRACE_CALL_EXPIRE_MS count as unanswered;
+%% checked at most once a second.
+expire_calls(#{swept := Swept} = St) ->
+    Now = erlang:monotonic_time(millisecond),
+    case Now - Swept >= 1000 of
+        true ->
+            #{pending := Pending} = St,
+            Old = [K || {K, {_, _, _, _, _, At}} <- maps:to_list(Pending),
+                        At < Now - ?TRACE_CALL_EXPIRE_MS],
+            unanswered(Old, St#{swept := Now});
+        false ->
+            St
+    end.
+
+%% At TRACE_PENDING waiting calls the older half counts as unanswered.
+make_room(#{pending := Pending} = St) when map_size(Pending) >= ?TRACE_PENDING ->
+    ByAge = lists:keysort(2, [{K, At} || {K, {_, _, _, _, _, At}} <- maps:to_list(Pending)]),
+    unanswered([K || {K, _} <- lists:sublist(ByAge, ?TRACE_PENDING div 2)], St);
+make_room(St) ->
+    St.
+
+unanswered(Keys, #{stats := Tab} = St) ->
+    lists:foldl(
+      fun(K, #{pending := P} = Acc) ->
+              {{Key, _, _, _, _, _}, P1} = maps:take(K, P),
+              ets:update_counter(Tab, Key, [{?S_PENDING, -1}, {?S_UNANSWERED, 1}]),
+              Acc#{pending := P1}
+      end, St, Keys).
+
+%% The statistics as plain maps, read by the keeper. Once the trace has
+%% stopped, calls still waiting for a reply count as unanswered.
+stats_read(Which, #{id := Id, stats := Tab, status := Status}) ->
+    Rows = [R || R <- ets:tab2list(Tab), tuple_size(R) > 3],
+    Stopped = Status =:= stopped,
+    Maps = [stats_map(R, Tab, Stopped, Which) || R <- Rows,
+                                                 Which =:= rows orelse Which =:= all
+                                                     orelse element(?S_ROW, R) =:= Which],
+    #{id => Id, status => Status, max_kinds => ?TRACE_KINDS,
+      kinds => length([R || R <- Rows, element(3, element(1, R)) =/= {overflow}]),
+      rows => lists:sort(fun(#{row := A}, #{row := B}) -> A =< B end, Maps)}.
+
+stats_map(R, Tab, Stopped, Which) ->
+    {Pid, Dir, Kind} = Key = element(1, R),
+    Answered = element(?S_ANSWERED, R),
+    Pending = element(?S_PENDING, R),
+    Max = element(?S_MAX, R),
+    Hist = [{I, element(?S_HIST + I, R)} || I <- lists:seq(0, ?TRACE_HIST_SIZE - 1),
+                                            element(?S_HIST + I, R) > 0],
+    {KindBin, Group} = case Kind of
+                           {other} -> {null, other};
+                           {overflow} -> {null, overflow};
+                           _ -> {atom_to_binary(Kind, utf8), named}
+                       end,
+    Base = #{row => element(?S_ROW, R), pid => ref_bin(Pid), dir => Dir,
+             kind => KindBin, group => Group,
+             calls => element(?S_CALLS, R), answered => Answered,
+             pending => case Stopped of true -> 0; false -> Pending end,
+             unanswered => element(?S_UNANSWERED, R) + case Stopped of true -> Pending; false -> 0 end,
+             avg => case Answered of 0 -> null; _ -> element(?S_SUM, R) div Answered end,
+             p95 => percentile(Hist, Answered, 0.95, Max),
+             max => case Answered of 0 -> null; _ -> Max end},
+    case Which of
+        rows -> Base;
+        _ ->
+            Slowest = case ets:lookup(Tab, {slowest, Key}) of
+                          [{_, L}] -> L;
+                          [] -> []
+                      end,
+            %% maps, not lists: the JSON encoder would print [72, 79, 8] as text
+            Base#{hist => [#{low => hist_low(I), high => min(Max, hist_high(I)), count => N}
+                           || {I, N} <- Hist],
+                  slowest => [#{latency => Us, t => T, peer => Peer, summary => S}
+                              || {Us, T, Peer, S} <- Slowest]}
+    end.
+
+%% Upper bound of the bucket holding the percentile (never above the max).
+percentile(_Hist, 0, _P, _Max) ->
+    null;
+percentile(Hist, Total, P, Max) ->
+    percentile_walk(Hist, max(1, ceil(Total * P)), Max).
+
+percentile_walk([{I, N} | Rest], Target, Max) ->
+    case N >= Target of
+        true -> min(Max, hist_high(I));
+        false -> percentile_walk(Rest, Target - N, Max)
+    end;
+percentile_walk([], _Target, Max) ->
+    Max.
 
 %% {Category, Kind, Peer, ShownTerm, CallRef} from the message's shape.
 classify({'$gen_call', {From, Tag}, Req}) ->

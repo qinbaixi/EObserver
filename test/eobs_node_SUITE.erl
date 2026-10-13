@@ -3,7 +3,7 @@
 -include_lib("stdlib/include/assert.hrl").
 
 -export([busy_loop/1, sink/0, hold/1, grow/1, hold_binaries/1, hold_many_binaries/1,
-         start_crash_sup/0, log_flood/2]).
+         start_crash_sup/0, log_flood/2, call_kinds/3]).
 %% A tiny gen_server for the message trace test, run on the peer; init/1
 %% also serves as the supervisor of the logs test.
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
@@ -16,6 +16,7 @@
          read_only_mode/1, cluster_topology/1, http_password_and_origin/1,
          local_discovery/1, saved_cookies/1, saved_nodes/1,
          message_trace/1, message_trace_limits/1,
+         trace_call_stats/1, trace_call_stats_limits/1,
          diagnosis/1, diagnosis_many_processes/1,
          logs_and_crashes/1, logs_flood/1, logs_removed_with_tool/1]).
 
@@ -25,7 +26,8 @@ all() ->
      process_detail_and_actions, applications, ports_and_sockets, ets_tables,
      mnesia_tables, allocators, read_only_mode, cluster_topology,
      http_password_and_origin, local_discovery, saved_cookies, saved_nodes,
-     message_trace, message_trace_limits, diagnosis, diagnosis_many_processes,
+     message_trace, message_trace_limits, trace_call_stats, trace_call_stats_limits,
+     diagnosis, diagnosis_many_processes,
      logs_and_crashes, logs_flood, logs_removed_with_tool].
 
 init_per_suite(Config) ->
@@ -540,6 +542,112 @@ message_trace_limits(Config) ->
     {ok, #{status := stopped, reason := max_seconds}, _} =
         eobs_api:collect(<<"trace.events">>, Req, undefined).
 
+trace_call_stats(Config) ->
+    Node = ?config(target, Config),
+    Peer = ?config(peer, Config),
+    connect(Node),
+    {ok, _} = peer:call(Peer, gen_server, start, [{local, trace_echo}, ?MODULE, [], []]),
+    Req = #{<<"node">> => atom_to_binary(Node)},
+    {ok, #{id := Id}} = eobs_api:request(<<"trace.start">>, Req#{<<"targets">> => [<<"trace_echo">>]}),
+    %% 3000 calls of one kind, 6000 events: more than the event ring keeps,
+    %% paced to stay under the rate limit.
+    [begin
+         ok = peer:call(Peer, erlang, apply,
+                        [fun() -> [gen_server:call(trace_echo, {double, N}) || N <- lists:seq(1, 375)], ok end, []]),
+         timer:sleep(500)
+     end || _ <- lists:seq(1, 8)],
+    [pong = peer:call(Peer, gen_server, call, [trace_echo, ping]) || _ <- lists:seq(1, 3)],
+    [ok = peer:call(Peer, gen_server, call, [trace_echo, {sleep, 50}]) || _ <- lists:seq(1, 2)],
+    42 = peer:call(Peer, gen_server, call, [trace_echo, 42]),
+    {'EXIT', {timeout, _}} =
+        peer:call(Peer, erlang, apply, [fun() -> catch gen_server:call(trace_echo, noreply, 100) end, []]),
+    timer:sleep(300),
+    {ok, #{dropped := Dropped}, _} = eobs_api:collect(<<"trace.events">>, Req, undefined),
+    ?assert(Dropped > 0),
+    {ok, #{id := Id, status := running, kinds := 5, max_kinds := 200, rows := Rows}, _} =
+        eobs_api:collect(<<"trace.stats">>, Req, undefined),
+    Row = fun(Rs, K) -> hd([R || #{kind := Kd} = R <- Rs, Kd =:= K]) end,
+    %% Counts are exact although the ring dropped events.
+    #{calls := 3000, answered := 3000, unanswered := 0, pending := 0, dir := in, group := named,
+      p95 := P95, max := Max, row := DoubleRow} = Row(Rows, <<"double">>),
+    ?assert(P95 =< Max),
+    #{calls := 3, answered := 3} = Row(Rows, <<"ping">>),
+    #{calls := 2, answered := 2, avg := SleepAvg, p95 := SleepP95} = Row(Rows, <<"sleep">>),
+    ?assert(SleepAvg >= 50000 andalso SleepP95 >= 50000),
+    #{calls := 1, answered := 1, group := other} = Row(Rows, null),
+    %% The unanswered call is still waiting while the trace runs.
+    #{calls := 1, answered := 0, pending := 1, unanswered := 0, avg := null} = Row(Rows, <<"noreply">>),
+    %% Details of one row: the histogram holds every answered call, the
+    %% slowest ten come first.
+    {ok, #{rows := [#{hist := Hist, slowest := Slow}]}} =
+        eobs_api:request(<<"trace.stats">>, Req#{<<"row">> => DoubleRow}),
+    3000 = lists:sum([N || #{count := N} <- Hist]),
+    10 = length(Slow),
+    Lats = [L || #{latency := L} <- Slow],
+    ?assertEqual(lists:reverse(lists:sort(Lats)), Lats),
+    ?assertEqual(Max, hd(Lats)),
+    %% Once stopped, a call still waiting counts as unanswered.
+    ok = eobs_api:request(<<"trace.stop">>, Req),
+    {ok, #{status := stopped, rows := All}} = eobs_api:request(<<"trace.stats">>, Req),
+    5 = length(All),
+    #{unanswered := 1, pending := 0} = Row(All, <<"noreply">>),
+    #{slowest := [#{summary := <<"{sleep,50}">>}, _]} = Row(All, <<"sleep">>),
+    ?assert(is_binary(eobs_json:encode(All))).
+
+%% Sends N gen calls that are never answered to Sink, of 300 kinds.
+call_kinds(Sink, From, N) ->
+    [Sink ! {'$gen_call', {self(), make_ref()}, {list_to_atom("kind_" ++ integer_to_list(I rem 300)), I}}
+     || I <- lists:seq(From, From + N - 1)],
+    ok.
+
+trace_call_stats_limits(Config) ->
+    Node = ?config(target, Config),
+    Peer = ?config(peer, Config),
+    connect(Node),
+    Req = #{<<"node">> => atom_to_binary(Node)},
+    Sink = peer:call(Peer, erlang, spawn, [?MODULE, sink, []]),
+    SinkBin = target_pid(Peer, Sink),
+    %% 1500 calls of 300 kinds, never answered, paced under the rate limit:
+    %% 200 kinds get a row, the rest is merged; at most 1000 calls wait for
+    %% a reply, older ones count as unanswered.
+    {ok, _} = eobs_api:request(<<"trace.start">>, Req#{<<"targets">> => [SinkBin]}),
+    [begin
+         ok = peer:call(Peer, ?MODULE, call_kinds, [Sink, B * 100, 100]),
+         timer:sleep(100)
+     end || B <- lists:seq(0, 14)],
+    timer:sleep(300),
+    {ok, #{status := running, kinds := 200, rows := Rows}, _} =
+        eobs_api:collect(<<"trace.stats">>, Req, undefined),
+    201 = length(Rows),
+    [#{calls := 500}] = [R || #{group := overflow} = R <- Rows],
+    Sum = fun(Rs, K) -> lists:sum([maps:get(K, R) || R <- Rs]) end,
+    1500 = Sum(Rows, calls),
+    ?assert(Sum(Rows, pending) =< 1000),
+    1500 = Sum(Rows, pending) + Sum(Rows, unanswered),
+    ok = eobs_api:request(<<"trace.stop">>, Req),
+    {ok, #{rows := Stopped}, _} = eobs_api:collect(<<"trace.stats">>, Req, undefined),
+    1500 = Sum(Stopped, unanswered),
+    0 = Sum(Stopped, pending),
+    %% A flood of calls of many kinds still stops the trace, and memory
+    %% stays in check.
+    Before = peer:call(Peer, erlang, memory, [total]),
+    {ok, _} = eobs_api:request(<<"trace.start">>, Req#{<<"targets">> => [SinkBin],
+                                                       <<"max_events">> => 100000}),
+    ok = peer:call(Peer, ?MODULE, call_kinds, [Sink, 0, 300000]),
+    timer:sleep(500),
+    {ok, #{status := stopped, reason := Reason, count := Count}, _} =
+        eobs_api:collect(<<"trace.events">>, Req, undefined),
+    ct:pal("call flood stopped: ~p after ~p events", [Reason, Count]),
+    ?assert(lists:member(Reason, [backlog, max_rate, overload])),
+    {flags, []} = peer:call(Peer, erlang, trace_info, [Sink, flags]),
+    {ok, #{rows := Flood}, _} = eobs_api:collect(<<"trace.stats">>, Req, undefined),
+    ?assert(length(Flood) =< 201),
+    ?assert(Sum(Flood, calls) =< Count),
+    timer:sleep(500),
+    After = peer:call(Peer, erlang, memory, [total]),
+    ct:pal("memory before ~p after ~p", [Before, After]),
+    ?assert(After - Before < 64 * 1024 * 1024).
+
 sink() ->
     receive _ -> sink() end.
 
@@ -568,7 +676,11 @@ init(crash_sup) ->
     {ok, {#{intensity => 100, period => 1},
           [#{id => crashy, start => {gen_server, start_link, [{local, eobs_crashy}, ?MODULE, [], []]}}]}};
 init([]) -> {ok, #{}}.
-handle_call({double, N}, _From, St) -> {reply, 2 * N, St}.
+handle_call({double, N}, _From, St) -> {reply, 2 * N, St};
+handle_call(ping, _From, St) -> {reply, pong, St};
+handle_call({sleep, Ms}, _From, St) -> timer:sleep(Ms), {reply, ok, St};
+handle_call(noreply, _From, St) -> {noreply, St};
+handle_call(N, _From, St) when is_integer(N) -> {reply, N, St}.
 handle_cast(_Msg, St) -> {noreply, St}.
 handle_info(_Msg, St) -> {noreply, St}.
 

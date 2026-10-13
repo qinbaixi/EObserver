@@ -112,6 +112,17 @@ handle(<<"trace.start">>, #{<<"node">> := Node, <<"targets">> := Targets} = Para
     agent(Node, trace_start, [node(), [T || T <- Targets, is_binary(T)], Opts]);
 handle(<<"trace.stop">>, #{<<"node">> := Node}) ->
     agent(Node, trace_stop, []);
+%% call statistics with details: one row (`row`) or all of them (for saving)
+handle(<<"trace.stats">>, #{<<"node">> := Node} = Params) ->
+    Id = case maps:get(<<"id">>, Params, null) of
+             I when is_integer(I) -> I;
+             _ -> null
+         end,
+    Which = case maps:get(<<"row">>, Params, null) of
+                R when is_integer(R) -> R;
+                _ -> all
+            end,
+    agent(Node, trace_stats, [Id, Which]);
 %% diagnosis; the agent bounds both runs itself
 handle(<<"diag.check">>, #{<<"node">> := Node}) ->
     unwrap(eobs_node:call(to_node(Node), diag_check, [node()], 45000));
@@ -239,6 +250,14 @@ collect(<<"node.mnesia">>, #{<<"node">> := Node}) ->
     unwrap(eobs_node:call(to_node(Node), mnesia_list, [], ?TIMEOUT));
 collect(<<"node.allocators">>, #{<<"node">> := Node}) ->
     eobs_node:call(to_node(Node), alloc_info, [], ?TIMEOUT);
+%% Call statistics table of the node's message trace (without details).
+collect(<<"trace.stats">>, #{<<"node">> := Node}) ->
+    case eobs_node:call(to_node(Node), trace_stats, [null, rows], ?TIMEOUT) of
+        {ok, {ok, Stats}} -> {ok, Stats};
+        {ok, {error, not_running}} -> {ok, #{status => none, rows => []}};
+        {ok, {error, _} = Error} -> Error;
+        Error -> Error
+    end;
 collect(<<"cluster">>, _Params) ->
     {ok, cluster()};
 collect(Topic, _Params) ->

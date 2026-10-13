@@ -1,21 +1,23 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { NTooltip } from 'naive-ui'
-import { glossary } from '../api/glossary'
+import { termLabel, termTip } from '../api/glossary'
 
-// A label with an explanation on hover when the glossary has one.
+// A label with an explanation on hover when the glossary has one. `label`
+// is the glossary id (the Chinese label); it is shown in the UI language.
 const props = defineProps<{ label: string; tip?: string }>()
-const text = computed(() => props.tip ?? glossary[props.label])
+const shown = computed(() => termLabel(props.label))
+const text = computed(() => props.tip ?? termTip(props.label))
 </script>
 
 <template>
   <NTooltip v-if="text" :style="{ maxWidth: '320px' }">
     <template #trigger>
-      <span class="term">{{ label }}</span>
+      <span class="term">{{ shown }}</span>
     </template>
     {{ text }}
   </NTooltip>
-  <span v-else>{{ label }}</span>
+  <span v-else>{{ shown }}</span>
 </template>
 
 <style scoped>

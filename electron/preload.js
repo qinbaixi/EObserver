@@ -1,8 +1,9 @@
-// Exposes the desktop-only features (self update) to the web UI.
+// Exposes the desktop-only features (self update, UI language) to the web UI.
 const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('eobsDesktop', {
   platform: process.platform,
+  setLocale: (locale) => ipcRenderer.send('locale:set', String(locale)),
   update: {
     check: () => ipcRenderer.invoke('update:check'),
     download: () => ipcRenderer.invoke('update:download'),

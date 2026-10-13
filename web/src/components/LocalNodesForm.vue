@@ -4,6 +4,7 @@ import {
   NSelect, NButton, NIcon, NCheckbox, NFormItem, NEmpty, NAlert, NTag, NText, NSpin, useMessage,
 } from 'naive-ui'
 import { RefreshOutline } from '@vicons/ionicons5'
+import { useI18n } from 'vue-i18n'
 import { client } from '../api/ws'
 import { errorText } from '../api/errors'
 import type { Discovery } from '../api/types'
@@ -17,6 +18,7 @@ const emit = defineEmits<{ connected: [] }>()
 const nodes = useNodes()
 const cookies = useCookies()
 const message = useMessage()
+const { t } = useI18n()
 
 const HOST_KEY = 'eobs.discoverHost'
 const data = ref<Discovery | null>(null)
@@ -82,11 +84,11 @@ async function connect() {
     const results = await Promise.allSettled(
       picked.value.map((node) => client.request('nodes.connect', { node, ...params })))
     await nodes.refresh()
-    const failed = results.flatMap((r, i) => (r.status === 'rejected' ? [`${picked.value[i]}：${(r.reason as Error).message}`] : []))
+    const failed = results.flatMap((r, i) => (r.status === 'rejected' ? [t('shell.local.failed', { node: picked.value[i], error: errorText(r.reason) })] : []))
     const ok = picked.value.filter((_, i) => results[i].status === 'fulfilled')
     if (ok.length) {
       nodes.select(ok[0])
-      message.success(`已添加 ${ok.length} 个节点`)
+      message.success(t('shell.local.added', { n: ok.length }))
     }
     failed.forEach((f) => message.error(f))
     if (!failed.length) {
@@ -103,27 +105,27 @@ async function connect() {
 
 <template>
   <div>
-    <NFormItem label="主机名" :show-feedback="false" style="margin-bottom: 12px">
+    <NFormItem :label="t('shell.local.host')" :show-feedback="false" style="margin-bottom: 12px">
       <div class="row">
         <NSelect :value="host" :options="hostOptions" filterable tag clearable
-                 placeholder="节点名 @ 后面的部分" @update:value="changeHost" />
-        <NButton quaternary circle :loading="loading" title="重新扫描" @click="load">
+                 :placeholder="t('shell.local.host_placeholder')" @update:value="changeHost" />
+        <NButton quaternary circle :loading="loading" :title="t('shell.local.rescan')" @click="load">
           <template #icon><NIcon :component="RefreshOutline" /></template>
         </NButton>
       </div>
     </NFormItem>
-    <NText depth="3" class="hint">epmd 不记录节点启动时用的主机名，请选和节点 -name / -sname 一致的那个。</NText>
+    <NText depth="3" class="hint">{{ t('shell.local.host_hint') }}</NText>
 
     <NSpin :show="loading && !data">
       <NAlert v-if="data && !data.epmd" type="warning" style="margin: 12px 0">
-        本机没有运行 epmd，还没有可连接的节点。
+        {{ t('shell.local.no_epmd') }}
       </NAlert>
-      <NEmpty v-else-if="data && !data.nodes.length" description="本机 epmd 上没有其他节点" style="padding: 24px 0" />
+      <NEmpty v-else-if="data && !data.nodes.length" :description="t('shell.local.no_nodes')" style="padding: 24px 0" />
       <div v-else-if="data" class="list">
         <div class="item head">
           <NCheckbox :checked="allPicked" :indeterminate="picked.length > 0 && !allPicked"
                      :disabled="!candidates.length" @update:checked="toggleAll">
-            全选（{{ data.nodes.length }} 个节点）
+            {{ t('shell.local.select_all', { n: data.nodes.length }) }}
           </NCheckbox>
         </div>
         <div v-for="n in data.nodes" :key="n.node" class="item">
@@ -131,7 +133,7 @@ async function connect() {
                      @update:checked="(v: boolean) => toggle(n.node, v)">
             <span class="mono">{{ n.node }}</span>
           </NCheckbox>
-          <NTag v-if="observed(n.node)" size="small" type="success" :bordered="false">已连接</NTag>
+          <NTag v-if="observed(n.node)" size="small" type="success" :bordered="false">{{ t('shell.local.connected') }}</NTag>
           <NText v-else depth="3" class="mono port">:{{ n.port }}</NText>
         </div>
       </div>
@@ -141,7 +143,7 @@ async function connect() {
       <CookiePicker v-model="choice" />
     </NFormItem>
     <NButton type="primary" block :loading="connecting" :disabled="!picked.length" @click="connect">
-      {{ picked.length ? `连接所选（${picked.length}）` : '选择要连接的节点' }}
+      {{ picked.length ? t('shell.local.connect_picked', { n: picked.length }) : t('shell.local.pick') }}
     </NButton>
   </div>
 </template>

@@ -1,3 +1,5 @@
+import { i18n, currentLocale } from '../i18n'
+
 export function formatBytes(n: number): string {
   if (!Number.isFinite(n)) return '-'
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
@@ -13,13 +15,20 @@ export function formatNumber(n: number): string {
   return Number.isFinite(n) ? n.toLocaleString('en-US') : '-'
 }
 
+// The two largest units, in the UI language ("3 天 4 小时" / "3d 4h").
 export function formatDuration(ms: number): string {
   const s = Math.floor(ms / 1000)
   const d = Math.floor(s / 86400)
   const h = Math.floor((s % 86400) / 3600)
   const m = Math.floor((s % 3600) / 60)
-  if (d > 0) return `${d} 天 ${h} 小时`
-  if (h > 0) return `${h} 小时 ${m} 分`
-  if (m > 0) return `${m} 分 ${s % 60} 秒`
-  return `${s} 秒`
+  const t = (key: string, named: Record<string, number>) => i18n.global.t(`shell.format.${key}`, named)
+  if (d > 0) return t('days', { d, h })
+  if (h > 0) return t('hours', { h, m })
+  if (m > 0) return t('minutes', { m, s: s % 60 })
+  return t('seconds', { s })
+}
+
+// A date and time (epoch ms) in the UI language's usual format.
+export function formatDateTime(ms: number): string {
+  return new Date(ms).toLocaleString(currentLocale() === 'zh' ? 'zh-CN' : 'en-US')
 }

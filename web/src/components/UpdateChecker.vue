@@ -2,21 +2,20 @@
 import { computed } from 'vue'
 import { NButton, NProgress, NTooltip, NIcon, NSpin } from 'naive-ui'
 import { ArrowUpCircleOutline } from '@vicons/ionicons5'
+import { useI18n } from 'vue-i18n'
 import { useUpdate } from '../stores/update'
 
 // Bottom of the sidebar: the running version and the update status.
 defineProps<{ collapsed: boolean }>()
 const update = useUpdate()
+const { t } = useI18n()
 
-const statusText = computed(() => ({
-  idle: '检查更新',
-  checking: '正在检查…',
-  latest: '已是最新版本',
-  available: `新版本 v${update.info?.version}`,
-  downloading: `正在下载 ${Math.floor(update.progress)}%`,
-  ready: '下载完成',
-  error: '检查失败，点击重试',
-}[update.state]))
+const statusText = computed(() => {
+  const s = update.state
+  if (s === 'available') return t('shell.update.available', { version: update.info?.version })
+  if (s === 'downloading') return t('shell.update.downloading', { percent: Math.floor(update.progress) })
+  return t(`shell.update.${s}`)
+})
 const notes = computed(() => (update.info?.notes ?? '').trim().slice(0, 600))
 </script>
 
@@ -41,7 +40,7 @@ const notes = computed(() => (update.info?.notes ?? '').trim().slice(0, 600))
           {{ update.error }}
         </NTooltip>
         <a v-else-if="update.state === 'idle' || update.state === 'latest'" class="action muted"
-           title="检查 GitHub 上是否有新版本" @click="update.check()">{{ statusText }}</a>
+           :title="t('shell.update.check_tip')" @click="update.check()">{{ statusText }}</a>
       </div>
       <div v-if="update.state === 'available'" class="box">
         <NTooltip :disabled="!notes" placement="right" :style="{ maxWidth: '360px', whiteSpace: 'pre-wrap' }">
@@ -50,16 +49,16 @@ const notes = computed(() => (update.info?.notes ?? '').trim().slice(0, 600))
           </template>
           {{ notes }}
         </NTooltip>
-        <NButton v-if="update.canInstall" size="tiny" type="primary" block @click="update.download()">下载更新</NButton>
-        <NButton v-else size="tiny" type="primary" secondary block @click="update.openRelease()">前往下载页</NButton>
+        <NButton v-if="update.canInstall" size="tiny" type="primary" block @click="update.download()">{{ t('shell.update.download') }}</NButton>
+        <NButton v-else size="tiny" type="primary" secondary block @click="update.openRelease()">{{ t('shell.update.open_release') }}</NButton>
       </div>
       <div v-else-if="update.state === 'downloading'" class="box">
         <div class="headline">{{ statusText }}</div>
         <NProgress type="line" :percentage="Math.floor(update.progress)" :show-indicator="false" :height="4" />
       </div>
       <div v-else-if="update.state === 'ready'" class="box">
-        <div class="headline">v{{ update.info?.version }} {{ statusText }}</div>
-        <NButton size="tiny" type="primary" block @click="update.install()">重启并更新</NButton>
+        <div class="headline">{{ t('shell.update.ready_headline', { version: update.info?.version }) }}</div>
+        <NButton size="tiny" type="primary" block @click="update.install()">{{ t('shell.update.install') }}</NButton>
       </div>
     </template>
   </div>

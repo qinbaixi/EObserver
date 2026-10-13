@@ -5,6 +5,7 @@ const { spawn, execFile, execFileSync } = require('node:child_process')
 const path = require('node:path')
 const fs = require('node:fs')
 const net = require('node:net')
+const { initLocale, setLocale, tr } = require('./i18n')
 
 const isWin = process.platform === 'win32'
 let child = null
@@ -43,7 +44,7 @@ function launch(port) {
   const dir = releaseDir()
   const bin = path.join(dir, 'bin', isWin ? 'eobs.cmd' : 'eobs')
   if (!fs.existsSync(bin)) {
-    return Promise.reject(new Error(`EObserver release not found at ${dir}. Run \`make release\` first.`))
+    return Promise.reject(new Error(tr('notFound', { dir })))
   }
   const args = ['--port', String(port), '--no-browser']
   child = isWin
@@ -66,11 +67,11 @@ function launch(port) {
     child.on('exit', (code) => {
       child = null
       if (!quitting) {
-        reject(new Error(`EObserver exited with code ${code}`))
-        if (win) showError(new Error(`EObserver stopped unexpectedly (exit code ${code}).`))
+        reject(new Error(tr('exited', { code })))
+        if (win) showError(new Error(tr('stopped', { code })))
       }
     })
-    setTimeout(() => reject(new Error('EObserver did not start within 60 seconds')), 60000)
+    setTimeout(() => reject(new Error(tr('startTimeout'))), 60000)
   })
 }
 
@@ -91,12 +92,20 @@ function stopBackend({ wait = false } = {}) {
   }
 }
 
+// Fills a page's {{name}} slots: texts are HTML-escaped, `html` is not.
+function pageUrl(name, texts, html = {}) {
+  const vars = { lang: tr('lang'), ...texts }
+  const page = fs.readFileSync(path.join(__dirname, 'pages', name), 'utf8')
+    .replace(/\{\{(\w+)\}\}/g, (m, k) => (k in html ? html[k] : k in vars ? escapeHtml(String(vars[k])) : m))
+  return 'data:text/html;charset=utf-8,' + encodeURIComponent(page)
+}
+
 function showError(err) {
   const details = log.join('').slice(-4000)
-  const html = fs.readFileSync(path.join(__dirname, 'pages', 'error.html'), 'utf8')
-    .replace('{{message}}', escapeHtml(err.message))
-    .replace('{{log}}', escapeHtml(details || '(no output)'))
-  win?.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+  const issue = '<a href="https://github.com/qinbaixi/EObserver/issues">GitHub issue</a>'
+  win?.loadURL(pageUrl('error.html',
+    { title: tr('failed'), message: err.message, log: details || tr('noOutput') },
+    { report: tr('report').split('{issue}').map(escapeHtml).join(issue) }))
 }
 
 function escapeHtml(s) {
@@ -127,7 +136,7 @@ async function createWindow() {
     e.preventDefault()
     if (/^https?:/.test(target)) void shell.openExternal(target)
   })
-  await win.loadFile(path.join(__dirname, 'pages', 'loading.html'))
+  await win.loadURL(pageUrl('loading.html', { starting: tr('starting') }))
   try {
     const url = await startBackend()
     origin = new URL(url).origin
@@ -191,12 +200,14 @@ function getUpdater() {
 
 async function latestRelease() {
   const res = await enet.fetch(RELEASES_API, { headers: { Accept: 'application/vnd.github+json' } })
-  if (!res.ok) throw new Error(`GitHub 返回 ${res.status}`)
+  if (!res.ok) throw new Error(tr('github', { status: res.status }))
   const r = await res.json()
   return { version: String(r.tag_name).replace(/^v/, ''), url: r.html_url, notes: r.body ?? '' }
 }
 
-function registerUpdateIpc() {
+function registerIpc() {
+  // The web UI's language, sent on load and whenever it changes.
+  ipcMain.on('locale:set', (_e, l) => setLocale(app, l))
   ipcMain.handle('update:check', async () => {
     const current = app.getVersion()
     if (canSelfUpdate()) {
@@ -230,8 +241,11 @@ if (!app.requestSingleInstanceLock()) {
       win.focus()
     }
   })
-  registerUpdateIpc()
-  app.whenReady().then(createWindow).catch((err) => {
+  registerIpc()
+  app.whenReady().then(() => {
+    initLocale(app)
+    return createWindow()
+  }).catch((err) => {
     dialog.showErrorBox('EObserver', String(err))
     app.quit()
   })

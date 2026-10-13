@@ -5,10 +5,12 @@ import {
   NLayout, NLayoutSider, NLayoutHeader, NLayoutContent, NMenu, NIcon, NButton,
   NTooltip, NSpace, NDropdown, useMessage, useThemeVars, type MenuOption,
 } from 'naive-ui'
-import { MoonOutline, SunnyOutline, LinkOutline, ContrastOutline, SearchOutline } from '@vicons/ionicons5'
+import { MoonOutline, SunnyOutline, LinkOutline, ContrastOutline, SearchOutline, LanguageOutline } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
-import { pages } from '../router'
+import { pages, pageTitle } from '../router'
 import { useTheme, type Mode } from '../stores/theme'
+import { useLocale } from '../stores/locale'
+import { LOCALES, type Locale } from '../i18n'
 import { useNodes } from '../stores/nodes'
 import { useSettings } from '../stores/settings'
 import { useTrace } from '../stores/trace'
@@ -32,21 +34,30 @@ const message = useMessage()
 const ui = useUi()
 const { t } = useI18n()
 const themeVars = useThemeVars()
+const lang = useLocale()
 const paletteKey = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl K'
 useUrlSync()
 
 const themeOptions = computed(() => ([
-  ['system', '跟随系统', ContrastOutline], ['light', '浅色', SunnyOutline], ['dark', '深色', MoonOutline],
+  ['system', t('shell.layout.theme_system'), ContrastOutline],
+  ['light', t('shell.layout.theme_light'), SunnyOutline],
+  ['dark', t('shell.layout.theme_dark'), MoonOutline],
 ] as const).map(([key, label, icon]) => ({
   key,
   label: theme.mode === key ? `${label} ✓` : label,
   icon: () => h(NIcon, { component: icon }),
 })))
 
+// Each language is named in itself, so it can be found from either one.
+const localeOptions = computed(() => LOCALES.map((key) => {
+  const label = t(`shell.locale.${key}`)
+  return { key, label: lang.locale === key ? `${label} ✓` : label }
+}))
+
 async function copyLink() {
   try {
     await navigator.clipboard.writeText(window.location.href)
-    message.success('已复制当前页面链接')
+    message.success(t('shell.layout.copied'))
   } catch {
     message.info(window.location.href)
   }
@@ -56,18 +67,14 @@ const menuOptions = computed<MenuOption[]>(() =>
   pages.map((p) => ({
     key: p.name,
     label: () => h('span', { class: 'menu-label' }, [
-      p.meta.title,
+      pageTitle(p.meta),
       p.meta.milestone ? h('span', { class: 'menu-soon' }, p.meta.milestone) : null,
     ]),
     icon: () => h(NIcon, null, { default: () => h(p.meta.icon) }),
   })),
 )
 
-const socketText = computed(() => ({
-  open: '服务已连接',
-  connecting: '正在连接服务…',
-  closed: '服务连接已断开，正在重试',
-}[client.state.value]))
+const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`))
 </script>
 
 <template>
@@ -98,9 +105,9 @@ const socketText = computed(() => ({
           </button>
           <NTooltip v-if="settings.readOnly">
             <template #trigger>
-              <span class="ro">只读</span>
+              <span class="ro">{{ t('shell.layout.read_only') }}</span>
             </template>
-            以 --read-only 启动：不能 kill 进程、发送消息或关闭端口
+            {{ t('shell.layout.read_only_tip') }}
           </NTooltip>
           <NTooltip>
             <template #trigger>
@@ -114,14 +121,20 @@ const socketText = computed(() => ({
                 <template #icon><NIcon :component="LinkOutline" /></template>
               </NButton>
             </template>
-            复制当前页面链接（包含节点与打开的详情）
+            {{ t('shell.layout.copy_tip') }}
           </NTooltip>
           <NDropdown trigger="click" :options="themeOptions" :value="theme.mode"
                      @select="(m: Mode) => theme.setMode(m)">
-            <NButton quaternary circle class="theme-toggle" title="主题">
+            <NButton quaternary circle class="theme-toggle" :title="t('shell.layout.theme')">
               <template #icon>
                 <NIcon :component="theme.mode === 'system' ? ContrastOutline : theme.isDark ? MoonOutline : SunnyOutline" />
               </template>
+            </NButton>
+          </NDropdown>
+          <NDropdown trigger="click" :options="localeOptions" :value="lang.locale"
+                     @select="(l: Locale) => lang.setLocale(l)">
+            <NButton quaternary circle class="locale-toggle" :title="t('shell.layout.language')">
+              <template #icon><NIcon :component="LanguageOutline" /></template>
             </NButton>
           </NDropdown>
         </NSpace>

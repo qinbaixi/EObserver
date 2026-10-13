@@ -39,6 +39,15 @@ export default {
       health_sub: '在诊断页对当前节点做一次体检',
       connect: '连接新节点',
       connect_sub: '添加一个要观察的节点',
+      locale: '切换语言',
+      locale_sub: '界面改用 {lang}',
+    },
+    // Extra words each action is found by (searched in both languages).
+    keywords: {
+      theme: '主题 深色 浅色',
+      health: '体检 诊断',
+      connect: '连接 添加 节点',
+      locale: '语言 中文 英文',
     },
   },
   diag: {

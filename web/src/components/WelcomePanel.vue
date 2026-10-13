@@ -33,7 +33,9 @@ async function onFile(ev: Event) {
   <div class="welcome">
     <img src="/favicon.svg" alt="" class="logo" />
     <h1>EObserver</h1>
-    <p class="lead">连接一个 Erlang 节点开始观察。EObserver 以隐藏节点身份连接，不会出现在目标节点的 <code>nodes()</code> 中。</p>
+    <i18n-t keypath="shell.welcome.lead" tag="p" class="lead">
+      <template #nodes><code>nodes()</code></template>
+    </i18n-t>
     <NCard style="width: 520px; max-width: 94vw; text-align: left">
       <ConnectForm />
     </NCard>

@@ -41,6 +41,14 @@ const en: typeof zh = {
       health_sub: 'Check the current node on the Diagnosis page',
       connect: 'Connect a node',
       connect_sub: 'Add a node to observe',
+      locale: 'Switch language',
+      locale_sub: 'Show the interface in {lang}',
+    },
+    keywords: {
+      theme: 'theme dark light',
+      health: 'health check diagnosis',
+      connect: 'connect add node',
+      locale: 'language locale english chinese',
     },
   },
   diag: {

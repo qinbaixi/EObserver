@@ -25,7 +25,7 @@
     "productName": "EObserver",
     "artifactName": "EObserver-${version}-${os}-${arch}.${ext}",
     "directories": { "output": "dist", "buildResources": "build" },
-    "files": ["main.js", "preload.js", "pages/**", "package.json"],
+    "files": ["main.js", "preload.js", "i18n.js", "pages/**", "package.json"],
     "extraResources": [
       { "from": "../_build/default/rel/eobserver", "to": "eobserver", "filter": ["**/*"] }
     ],

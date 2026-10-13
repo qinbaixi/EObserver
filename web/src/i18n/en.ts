@@ -146,6 +146,41 @@ const en: typeof zh = {
       note: '"New" means the process was created during the window and grows from zero. Click a row for process details.',
     },
   },
+  overview: {
+    title: 'Overview',
+    subtitle: '{n} nodes',
+    hint: 'Load of every node is sampled every 2 s while this page is open. The status light only looks at limit usage and the run queue; run the health check on the Diagnosis page for the full picture.',
+    limited: 'More than {max} nodes: only the cards on screen are sampled',
+    open: 'Open system overview',
+    level: { ok: 'OK', warn: 'Warning', crit: 'Critical', waiting: 'Sampling' },
+    status: { connecting: 'Connecting', disconnected: 'Disconnected', failed: 'Failed' },
+    otp: 'OTP {v}',
+    uptime: 'up {d}',
+    duration: { d: '{d} d {h} h', h: '{h} h {m} min', m: '{m} min', s: 'under 1 min' },
+    metric: { memory: 'Memory', processes: 'Processes', run_queue: 'Run queue' },
+    run_queue: 'Run queue stays ≥ {value} with {limit} schedulers online',
+    no_data: 'No data yet',
+  },
+  load: {
+    mode: { single: 'Single node', compare: 'Compare' },
+    compare: {
+      metric: 'Metric',
+      nodes: 'Nodes',
+      pick: 'Pick nodes to compare',
+      max: 'At most {n} nodes at a time',
+      hint: 'In compare mode the selected nodes are sampled every 2 s until you leave.',
+      empty: 'Pick at least one node',
+      metrics: {
+        memory: 'Total memory',
+        process_count: 'Processes',
+        run_queue: 'Run queue',
+        reductions: 'Reductions / s',
+        io_input: 'IO input',
+        io_output: 'IO output',
+        scheduler: 'Scheduler utilisation (average)',
+      },
+    },
+  },
 }
 
 export default en

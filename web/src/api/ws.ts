@@ -34,14 +34,19 @@ class Client {
     const ws = new WebSocket(`${proto}://${location.host}/ws`)
     this.ws = ws
     this.state.value = 'connecting'
+    // The server drops a socket it has not heard from for 120 s, which a
+    // page that only listens (the overview wall) would otherwise hit.
+    let keepalive = 0
     ws.onopen = () => {
       this.state.value = 'open'
       this.retry = 500
+      keepalive = window.setInterval(() => this.send({ type: 'ping' }), 30000)
       for (const [id, sub] of this.subs) this.sendSub(id, sub)
       this.emit('socket_open', null)
     }
     ws.onmessage = (ev) => this.onMessage(JSON.parse(ev.data))
     ws.onclose = () => {
+      clearInterval(keepalive)
       this.state.value = 'closed'
       for (const [, p] of this.pending) {
         clearTimeout(p.timer)

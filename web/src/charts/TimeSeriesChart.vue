@@ -29,7 +29,8 @@ function clock(ms: number) {
 
 const option = computed(() => {
   const th = t.value
-  const now = props.series[0]?.data.at(-1)?.[0] ?? Date.now()
+  // The newest point of any series: overlaid nodes may have stopped early.
+  const now = Math.max(0, ...props.series.map((s) => s.data.at(-1)?.[0] ?? 0)) || Date.now()
   const multi = props.series.length > 1
   return {
     animation: false,

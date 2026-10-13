@@ -531,6 +531,9 @@ message_trace_limits(Config) ->
     ?assert(lists:member(Reason, [backlog, max_rate, overload])),
     ?assert(Count =< 5000),
     {flags, []} = peer:call(Peer, erlang, trace_info, [Sink, flags]),
+    %% The flood itself sits in the sink's queue until it is read; on a busy
+    %% machine that takes a while, and it is not the trace's memory.
+    wait_drained(Peer, Sink, 200),
     timer:sleep(500),
     After = peer:call(Peer, erlang, memory, [total]),
     ct:pal("memory before ~p after ~p", [Before, After]),
@@ -800,6 +803,14 @@ diagnosis_many_processes(Config) ->
     After = peer:call(Peer, erlang, memory, [total]),
     ct:pal("memory before ~p after ~p", [Before, After]),
     ?assert(After - Before < 32 * 1024 * 1024).
+
+wait_drained(_Peer, _Pid, 0) ->
+    error(queue_not_drained);
+wait_drained(Peer, Pid, N) ->
+    case peer:call(Peer, erlang, process_info, [Pid, message_queue_len]) of
+        {message_queue_len, 0} -> ok;
+        _ -> timer:sleep(50), wait_drained(Peer, Pid, N - 1)
+    end.
 
 %% Waits until a process on the peer is done setting up and waits in receive.
 wait_waiting(Peer, Pid) ->

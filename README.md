@@ -36,6 +36,7 @@ OTP's `observer` is indispensable but built on wxWidgets: it needs a desktop ses
 - **System**: OTP/ERTS versions, schedulers and threads, memory breakdown, usage of process, port, atom and ETS limits, runtime statistics.
 - **Load charts**: scheduler utilisation (average plus a per-scheduler heatmap that stays readable with 64+ cores), stacked memory, IO throughput, run queue and reductions. History survives page switches.
 - **Processes**: sortable, searchable, paged process table with *Reds* (reductions since the last refresh) to spot busy processes. The detail drawer shows links and monitors (click to follow), messages, process dictionary, stack trace and `sys:get_state`, and can send a message or kill the process.
+- **Message trace**: pick up to 10 processes and watch the messages they receive and send, labelled business (gen calls, casts, replies, plain messages), system (EXIT, DOWN, sys, io, timers, ...) or network, with each gen call paired with its reply and its latency. Hard caps on rate, count, duration and memory stop the trace automatically, so tracing cannot take the node down.
 - **Applications**: every running application with its supervision tree; click any node to inspect the process.
 - **Ports and sockets**: all ports with owner, IO and queue size; `gen_tcp`/`gen_udp` sockets with addresses and statistics; sockets of the `socket` module.
 - **Tables**: ETS and Mnesia tables, and a row viewer that pages and searches on the observed node, so huge tables stay cheap to browse.
@@ -92,7 +93,7 @@ Your browser opens at <http://localhost:8090/>. You can also start without `--no
 | `--port 8090` | HTTP port |
 | `--listen 127.0.0.1` | Listen address. Localhost by default because the UI can kill processes on the target |
 | `--password PASS` | Ask for this password (HTTP Basic auth, any user name). Also read from `EOBS_PASSWORD`. Use it with `--listen` |
-| `--read-only` | Disable killing processes, sending messages, closing ports and editing table rows |
+| `--read-only` | Disable killing processes, sending messages, closing ports, editing table rows and message tracing |
 | `--no-browser` | Do not open a browser |
 
 Short names (`app@host`) and long names (`app@host.example.com`) are detected automatically, but one EObserver instance uses one kind at a time.
@@ -162,7 +163,7 @@ The WebSocket protocol is described in [docs/protocol.md](docs/protocol.md).
 - [x] Cluster topology, shareable URLs, access control, prebuilt agents per OTP release
 - [x] Release archives and desktop apps for Linux, macOS and Windows
 - [ ] Signed desktop builds, macOS Intel and Linux arm64 builds
-- [ ] Tracing (out of scope for now)
+- [x] Message trace (sent and received messages, classified as business or system)
 
 ## Contributing
 

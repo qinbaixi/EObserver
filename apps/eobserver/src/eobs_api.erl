@@ -12,7 +12,7 @@
 
 %% Requests that change the observed node; refused in read-only mode.
 -define(MUTATING, [<<"process.kill">>, <<"process.send">>, <<"port.close">>,
-                   <<"table.delete">>, <<"table.write">>]).
+                   <<"table.delete">>, <<"table.write">>, <<"trace.start">>]).
 
 request(Method, Params) ->
     case lists:member(Method, ?MUTATING) andalso read_only() of
@@ -102,6 +102,16 @@ handle(<<"table.write">>, #{<<"node">> := Node, <<"table">> := Id, <<"object">> 
         {error, Reason} ->
             {error, <<"invalid_term: ", Reason/binary>>}
     end;
+%% message trace
+handle(<<"trace.start">>, #{<<"node">> := Node, <<"targets">> := Targets} = Params)
+  when is_list(Targets) ->
+    Opts = maps:from_list([{K, V} || {Key, K} <- [{<<"max_events">>, max_events},
+                                                  {<<"max_seconds">>, max_seconds},
+                                                  {<<"max_rate">>, max_rate}],
+                                     V <- [maps:get(Key, Params, undefined)], is_integer(V)]),
+    agent(Node, trace_start, [node(), [T || T <- Targets, is_binary(T)], Opts]);
+handle(<<"trace.stop">>, #{<<"node">> := Node}) ->
+    agent(Node, trace_stop, []);
 handle(Method, _Params) ->
     {error, {unknown_method, Method}}.
 
@@ -168,6 +178,25 @@ collect(<<"node.processes">>, #{<<"node">> := Node} = Params, Session0) ->
     case eobs_node:call(to_node(Node), process_list, [node(), Session, Opts], ?TIMEOUT) of
         {ok, Page} -> {ok, Page, Session};
         Error -> Error
+    end;
+%% New events of the node's message trace since the previous collection.
+%% State: {TraceId, NextSeq}; a different trace started meanwhile resets it.
+collect(<<"trace.events">>, #{<<"node">> := Node}, State) ->
+    {Id, Since} = case State of
+                      {I, S} -> {I, S};
+                      undefined -> {null, 0}
+                  end,
+    case eobs_node:call(to_node(Node), trace_events, [Id, Since], ?TIMEOUT) of
+        {ok, {ok, #{id := Id1, next := Next} = Data}} ->
+            {ok, Data#{reset => Id1 =/= Id andalso Id =/= null}, {Id1, Next}};
+        {ok, {error, not_found}} ->
+            collect(<<"trace.events">>, #{<<"node">> => Node}, undefined);
+        {ok, {error, not_running}} ->
+            {ok, #{status => none}, undefined};
+        {ok, {error, _} = Error} ->
+            Error;
+        Error ->
+            Error
     end;
 collect(Topic, Params, State) ->
     case collect(Topic, Params) of

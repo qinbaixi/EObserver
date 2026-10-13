@@ -5,7 +5,7 @@ import {
   NDrawer, NDrawerContent, NTabs, NTabPane, NDescriptions, NDescriptionsItem, NTag,
   NButton, NSpace, NEmpty, NSpin, NInput, NCode, NAlert, NIcon, useDialog, useMessage,
 } from 'naive-ui'
-import { RefreshOutline, SkullOutline, SendOutline } from '@vicons/ionicons5'
+import { RefreshOutline, SkullOutline, SendOutline, ChatbubblesOutline } from '@vicons/ionicons5'
 import { client } from '../api/ws'
 import { errorText } from '../api/errors'
 import type { ProcessDetail } from '../api/types'
@@ -62,6 +62,11 @@ function open(ref: string) {
   if (!ref.startsWith('<') || ref === props.pid) return
   if (props.pid) history.value.push(props.pid)
   emit('update:pid', ref)
+}
+
+function traceIt() {
+  const pid = props.pid
+  if (pid) void router.push({ path: '/trace', query: { node: route.query.node, target: pid } })
 }
 
 function back() {
@@ -217,7 +222,13 @@ const bytes = (words: number) => formatBytes(words * (detail.value?.word_size ??
         </NTabPane>
 
         <NTabPane v-if="!settings.readOnly" name="actions" tab="操作">
-          <div class="group-title">发送消息</div>
+          <div class="group-title">跟踪消息</div>
+          <p class="none" style="margin: 0 0 8px">实时查看这个进程收发了哪些消息，按业务 / 系统分类。</p>
+          <NButton @click="traceIt">
+            <template #icon><NIcon :component="ChatbubblesOutline" /></template>
+            跟踪这个进程的消息
+          </NButton>
+          <div class="group-title" style="margin-top: 24px">发送消息</div>
           <NInput v-model:value="sendText" type="textarea" class="mono"
                   placeholder="Erlang 项，例如 {hello, world}" :autosize="{ minRows: 2, maxRows: 6 }" />
           <NButton style="margin-top: 8px" :disabled="!sendText.trim()" @click="send">

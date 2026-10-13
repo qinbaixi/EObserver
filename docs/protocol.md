@@ -71,6 +71,7 @@ Sending `sub` again with the same `id` replaces the subscription.
 | `table.delete` | `node`, `kind`, `table`, `ref` | `ok` |
 | `trace.start` | `node`, `targets` (pids or registered names, at most 10), `max_events`, `max_seconds` (optional) | `id`, traced `processes`, `refused` targets with a reason, `limits`; replaces a running trace |
 | `trace.stop` | `node` | `ok` |
+| `trace.stats` | `node`, `id` (trace, optional), `row` (optional) | call statistics of the trace, as the `trace.stats` topic, where each row also has `hist` (`low`, `high` in microseconds and `count` per non-empty latency bucket, about 9% wide) and `slowest` (the 10 slowest calls: `latency`, `t`, `peer`, `summary`); only row `row` when given, else every row (used to save a trace) |
 | `diag.check` | `node` | health check: `checks` (each `id`, `level` = `ok` / `warn` / `crit` / `skip`, `value`, `warn` / `crit` thresholds, `items`), `memory_total`, `process_count`, `took_ms`; takes about 2 s; one diagnosis at a time per node (`busy`) |
 | `diag.window` | `node`, `seconds` (1–60, default 10) | processes that grew most during the window: `reductions`, `memory`, `message_queue_len` (top 20 each, with `value` = growth), `created`, `exited`, `process_count`; refused with `too_many_processes` above 500 000 processes |
 
@@ -85,6 +86,7 @@ Sending `sub` again with the same `id` replaces the subscription.
 | `node.ets` / `node.mnesia` | `node` | table lists |
 | `node.allocators` | `node` | block and carrier sizes per allocator |
 | `trace.events` | `node` | the node's message trace: `status` (`running` / `stopped` / `none`), stop `reason`, `count`, `dropped`, `processes`, and the `events` since the previous push (direction, category, kind, peer, call/reply `ref`, summary, text) |
+| `trace.stats` | `node` | gen call statistics of the message trace, counted on the node so they stay exact when events are dropped: `id`, `status`, `kinds` (distinct request kinds, at most `max_kinds` = 200), `rows`, one per traced process, direction (`in`: calls it served, `out`: calls it made) and request kind (a tuple's first element or an atom; `group` = `named`, `other` for any other shape, or `overflow` for kinds beyond the cap), each with `row` (number), `pid`, `dir`, `kind`, `calls`, `answered`, `pending` (waiting for a reply), `unanswered` (no reply within 60 s, pushed out by the cap of 1000 waiting calls, or still waiting when the trace stopped), and `avg` / `p95` / `max` latency in microseconds (`p95` is the upper bound of its histogram bucket) |
 | `cluster` | | distribution links of every observed node |
 
 The handlers live in

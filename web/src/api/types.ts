@@ -322,7 +322,48 @@ export interface TraceStart {
   limits: { max_events: number; max_seconds: number; max_rate: number }
 }
 
-export type DiagLevel = 'ok' | 'warn' | 'crit' | 'skip'
+// gen call statistics of one (process, direction, request kind).
+export interface TraceStatsRow {
+  row: number
+  pid: string
+  // in: calls the process served; out: calls it made
+  dir: 'in' | 'out'
+  // a tuple's first element or the atom; null for the two groups below
+  kind: string | null
+  group: 'named' | 'other' | 'overflow'
+  calls: number
+  answered: number
+  pending: number
+  unanswered: number
+  // microseconds; null without any answered call
+  avg: number | null
+  p95: number | null
+  max: number | null
+  // only with details: one entry per non-empty bucket, in microseconds
+  hist?: { low: number; high: number; count: number }[]
+  slowest?: { latency: number; t: number; peer: string | null; summary: string }[]
+}
+
+export interface TraceStats {
+  status: 'running' | 'stopped' | 'none'
+  id?: number
+  kinds?: number
+  max_kinds?: number
+  rows: TraceStatsRow[]
+}
+
+// A trace saved to a file, opened later without a node.
+export interface SavedTrace {
+  format: 'eobserver-trace'
+  version: 1
+  node: string | null
+  saved_at: number
+  state: TraceState
+  events: TraceEvent[]
+  stats: TraceStats | null
+}
+
+export type DiagLevel ='ok' | 'warn' | 'crit' | 'skip'
 
 export interface DiagItem {
   pid?: string

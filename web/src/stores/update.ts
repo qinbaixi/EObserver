@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import { useSettings } from './settings'
+import { i18n } from '../i18n'
 
 // Checks GitHub for a newer release. The desktop app can download and
 // install it in place (see electron/preload.js); the browser UI and the
@@ -8,6 +9,8 @@ import { useSettings } from './settings'
 interface UpdateInfo { current?: string; version: string; url: string; notes: string; auto: boolean }
 interface DesktopBridge {
   platform: string
+  // Desktop builds from 0.0.8 on: keeps menus and dialogs in the UI language.
+  setLocale?: (locale: string) => void
   update: {
     check: () => Promise<UpdateInfo>
     download: () => Promise<boolean>
@@ -57,7 +60,7 @@ export const useUpdate = defineStore('update', () => {
   async function fetchLatest(): Promise<UpdateInfo> {
     if (desktop) return desktop.update.check()
     const res = await fetch(RELEASES_API, { headers: { Accept: 'application/vnd.github+json' } })
-    if (!res.ok) throw new Error(`GitHub 返回 ${res.status}`)
+    if (!res.ok) throw new Error(i18n.global.t('shell.update.github_status', { status: res.status }))
     const r = await res.json()
     return { version: String(r.tag_name).replace(/^v/, ''), url: r.html_url, notes: r.body ?? '', auto: false }
   }

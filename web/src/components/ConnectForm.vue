@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { NForm, NFormItem, NInput, NButton, NTabs, NTabPane, useMessage } from 'naive-ui'
 import { useNodes } from '../stores/nodes'
 import { errorText } from '../api/errors'
@@ -13,6 +14,7 @@ const nodes = useNodes()
 const cookies = useCookies()
 const message = useMessage()
 const ui = useUi()
+const { t } = useI18n()
 
 const TAB_KEY = 'eobs.connectTab'
 const tab = ref(ui.connectNode ? 'manual' : storedTab())
@@ -21,9 +23,9 @@ watch(() => ui.connectNode, (n) => {
   node.value = n
   if (n) tab.value = 'manual'
 })
-watch(tab, (t) => {
+watch(tab, (v) => {
   try {
-    localStorage.setItem(TAB_KEY, t)
+    localStorage.setItem(TAB_KEY, v)
   } catch {
     /* storage unavailable */
   }
@@ -42,13 +44,13 @@ function storedTab() {
 async function submit() {
   const name = node.value.trim()
   if (!/^[^@\s]+@[^@\s]+$/.test(name)) {
-    message.warning('节点名格式应为 name@host')
+    message.warning(t('shell.connect.bad_name'))
     return
   }
   loading.value = true
   try {
     await nodes.connect(name, await cookies.params(choice.value))
-    message.success(`已添加 ${name}`)
+    message.success(t('shell.connect.added', { node: name }))
     node.value = ''
     ui.connectNode = ''
     if (choice.value.kind === 'new') choice.value = cookies.lastChoice()
@@ -63,19 +65,19 @@ async function submit() {
 
 <template>
   <NTabs v-model:value="tab" type="segment" animated>
-    <NTabPane name="local" tab="本机节点">
+    <NTabPane name="local" :tab="t('shell.connect.tab_local')">
       <LocalNodesForm @connected="emit('connected')" />
     </NTabPane>
-    <NTabPane name="manual" tab="手动输入">
+    <NTabPane name="manual" :tab="t('shell.connect.tab_manual')">
       <NForm label-placement="top" @submit.prevent="submit">
-        <NFormItem label="节点名">
+        <NFormItem :label="t('shell.connect.node')">
           <NInput v-model:value="node" placeholder="app@hostname" class="mono"
                   @keyup.enter="submit" />
         </NFormItem>
         <NFormItem label="Cookie">
           <CookiePicker v-model="choice" />
         </NFormItem>
-        <NButton type="primary" block :loading="loading" @click="submit">连接</NButton>
+        <NButton type="primary" block :loading="loading" @click="submit">{{ t('shell.connect.submit') }}</NButton>
       </NForm>
     </NTabPane>
   </NTabs>

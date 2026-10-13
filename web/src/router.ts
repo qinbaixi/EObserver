@@ -19,28 +19,40 @@ import SocketsPage from './pages/SocketsPage.vue'
 import TablesPage from './pages/TablesPage.vue'
 import AllocatorsPage from './pages/AllocatorsPage.vue'
 import ClusterPage from './pages/ClusterPage.vue'
+import { i18n, type Locale } from './i18n'
 
+// Titles are i18n keys (shell.nav.<name>.title / .subtitle); resolve them
+// with pageTitle / pageSubtitle inside a computed or render so they follow
+// the UI language.
 export interface PageMeta {
-  title: string
-  subtitle: string
+  titleKey: string
+  subtitleKey: string
   icon: Component
   milestone?: string
 }
 
+const meta = (name: string, icon: Component): PageMeta =>
+  ({ titleKey: `shell.nav.${name}.title`, subtitleKey: `shell.nav.${name}.subtitle`, icon })
+
+// locale: another language than the current one (e.g. for search).
+export const pageTitle = (m: PageMeta, locale?: Locale) =>
+  (locale ? i18n.global.t(m.titleKey, {}, { locale }) : i18n.global.t(m.titleKey))
+export const pageSubtitle = (m: PageMeta) => i18n.global.t(m.subtitleKey)
+
 export const pages: { path: string; name: string; meta: PageMeta }[] = [
-  { path: '/overview', name: 'overview', meta: { title: '总览墙', subtitle: 'Overview', icon: AlbumsOutline } },
-  { path: '/system', name: 'system', meta: { title: '系统概览', subtitle: 'System', icon: SpeedometerOutline } },
-  { path: '/load', name: 'load', meta: { title: '负载图表', subtitle: 'Load Charts', icon: PulseOutline } },
-  { path: '/allocators', name: 'allocators', meta: { title: '内存分配器', subtitle: 'Memory Allocators', icon: HardwareChipOutline } },
-  { path: '/applications', name: 'applications', meta: { title: '应用', subtitle: 'Applications', icon: AppsOutline } },
-  { path: '/diagnosis', name: 'diagnosis', meta: { title: '诊断', subtitle: 'Diagnosis', icon: MedkitOutline } },
-  { path: '/logs', name: 'logs', meta: { title: '日志', subtitle: 'Logs', icon: DocumentTextOutline } },
-  { path: '/processes', name: 'processes', meta: { title: '进程', subtitle: 'Processes', icon: GitNetworkOutline } },
-  { path: '/trace', name: 'trace', meta: { title: '消息跟踪', subtitle: 'Message Trace', icon: ChatbubblesOutline } },
-  { path: '/ports', name: 'ports', meta: { title: '端口', subtitle: 'Ports', icon: SwapHorizontalOutline } },
-  { path: '/sockets', name: 'sockets', meta: { title: 'Sockets', subtitle: 'Sockets', icon: WifiOutline } },
-  { path: '/tables', name: 'tables', meta: { title: '表', subtitle: 'ETS / Mnesia', icon: GridOutline } },
-  { path: '/cluster', name: 'cluster', meta: { title: '集群拓扑', subtitle: 'Cluster', icon: ShareSocialOutline } },
+  { path: '/overview', name: 'overview', meta: meta('overview', AlbumsOutline) },
+  { path: '/system', name: 'system', meta: meta('system', SpeedometerOutline) },
+  { path: '/load', name: 'load', meta: meta('load', PulseOutline) },
+  { path: '/allocators', name: 'allocators', meta: meta('allocators', HardwareChipOutline) },
+  { path: '/applications', name: 'applications', meta: meta('applications', AppsOutline) },
+  { path: '/diagnosis', name: 'diagnosis', meta: meta('diagnosis', MedkitOutline) },
+  { path: '/logs', name: 'logs', meta: meta('logs', DocumentTextOutline) },
+  { path: '/processes', name: 'processes', meta: meta('processes', GitNetworkOutline) },
+  { path: '/trace', name: 'trace', meta: meta('trace', ChatbubblesOutline) },
+  { path: '/ports', name: 'ports', meta: meta('ports', SwapHorizontalOutline) },
+  { path: '/sockets', name: 'sockets', meta: meta('sockets', WifiOutline) },
+  { path: '/tables', name: 'tables', meta: meta('tables', GridOutline) },
+  { path: '/cluster', name: 'cluster', meta: meta('cluster', ShareSocialOutline) },
 ]
 
 const components: Record<string, Component> = {

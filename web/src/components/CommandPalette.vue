@@ -5,9 +5,10 @@ import { useRouter } from 'vue-router'
 import { NModal, NInput, NIcon, NSpin, useThemeVars } from 'naive-ui'
 import {
   SearchOutline, ServerOutline, GitNetworkOutline, GridOutline, AppsOutline,
-  MoonOutline, SunnyOutline, MedkitOutline, AddCircleOutline,
+  MoonOutline, SunnyOutline, MedkitOutline, AddCircleOutline, LanguageOutline,
 } from '@vicons/ionicons5'
-import { pages } from '../router'
+import { pages, pageTitle, pageSubtitle } from '../router'
+import { useLocale } from '../stores/locale'
 import { client } from '../api/ws'
 import { useNodes } from '../stores/nodes'
 import { useTheme } from '../stores/theme'
@@ -46,6 +47,7 @@ const router = useRouter()
 const nodes = useNodes()
 const theme = useTheme()
 const ui = useUi()
+const lang = useLocale()
 
 const query = ref('')
 const q = computed(() => query.value.trim())
@@ -176,10 +178,14 @@ const items = computed<Item[]>(() => {
   const out: Item[] = []
   const add = (item: Omit<Item, 'score'>, s: number) => { if (s >= 0) out.push({ ...item, score: s }) }
 
+  // Pages match their title in either language.
+  const other = lang.locale === 'zh' ? 'en' : 'zh'
   for (const p of pages) {
-    add({ key: `page:${p.name}`, group: 'pages', title: p.meta.title, subtitle: p.meta.subtitle,
+    const title = pageTitle(p.meta)
+    const sub = pageSubtitle(p.meta)
+    add({ key: `page:${p.name}`, group: 'pages', title, subtitle: sub && sub !== title ? sub : undefined,
           icon: p.meta.icon, run: () => go(p.path) },
-        score(text, p.meta.title, p.meta.subtitle, p.name))
+        score(text, title, sub, pageTitle(p.meta, other), p.name))
   }
   for (const n of nodes.list) {
     add({ key: `node:${n.node}`, group: 'nodes', title: n.node, status: n.status,
@@ -214,19 +220,25 @@ const items = computed<Item[]>(() => {
           score(text, a.name, a.description))
     }
   }
+  // Actions match their title and keywords in either language.
+  const both = (key: string) => [t(key), t(key, {}, { locale: other })]
   const themeTitle = theme.isDark ? t('palette.actions.theme_light') : t('palette.actions.theme_dark')
   add({ key: 'act:theme', group: 'actions', title: themeTitle, icon: theme.isDark ? SunnyOutline : MoonOutline,
         run: () => theme.setMode(theme.isDark ? 'light' : 'dark') },
-      score(text, themeTitle, 'theme dark light 主题 深色 浅色'))
+      score(text, themeTitle, ...both('palette.keywords.theme')))
   if (node.value) {
     add({ key: 'act:health', group: 'actions', title: t('palette.actions.health'),
           subtitle: t('palette.actions.health_sub'), icon: MedkitOutline,
           run: () => go('/diagnosis', { run: '1' }) },
-        score(text, t('palette.actions.health'), 'health check diagnosis 体检 诊断'))
+        score(text, ...both('palette.actions.health'), ...both('palette.keywords.health')))
   }
   add({ key: 'act:connect', group: 'actions', title: t('palette.actions.connect'),
         subtitle: t('palette.actions.connect_sub'), icon: AddCircleOutline, run: () => ui.openConnect() },
-      score(text, t('palette.actions.connect'), 'connect add node 连接 添加 节点'))
+      score(text, ...both('palette.actions.connect'), ...both('palette.keywords.connect')))
+  add({ key: 'act:locale', group: 'actions', title: t('palette.actions.locale'),
+        subtitle: t('palette.actions.locale_sub', { lang: t(`shell.locale.${other}`) }), icon: LanguageOutline,
+        run: () => lang.setLocale(other) },
+      score(text, ...both('palette.actions.locale'), ...both('palette.keywords.locale')))
 
   const sorted: Item[] = []
   for (const g of GROUPS) {

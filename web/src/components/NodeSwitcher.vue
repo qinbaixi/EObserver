@@ -2,6 +2,7 @@
 import { computed, h, type VNode } from 'vue'
 import { NSelect, NButton, NIcon, NTooltip, useDialog, useMessage, type SelectOption } from 'naive-ui'
 import { AddOutline, CloseOutline } from '@vicons/ionicons5'
+import { useI18n } from 'vue-i18n'
 import { useNodes } from '../stores/nodes'
 import { errorText } from '../api/errors'
 import StatusDot from './StatusDot.vue'
@@ -12,6 +13,7 @@ const nodes = useNodes()
 const dialog = useDialog()
 const message = useMessage()
 const ui = useUi()
+const { t } = useI18n()
 
 const options = computed<SelectOption[]>(() =>
   nodes.list.map((n) => ({ label: n.node, value: n.node, status: n.status })),
@@ -29,7 +31,7 @@ function renderOption({ node, option }: { node: VNode; option: SelectOption }) {
   return h('div', { class: 'node-row' }, [
     node,
     h(NButton, {
-      quaternary: true, circle: true, size: 'tiny', class: 'node-remove', title: '移除这个节点',
+      quaternary: true, circle: true, size: 'tiny', class: 'node-remove', title: t('shell.switcher.remove_one'),
       // Keep the click from selecting the row.
       onMousedown: (e: MouseEvent) => e.stopPropagation(),
       onClick: (e: MouseEvent) => { e.stopPropagation(); void remove([option.value as string]) },
@@ -42,7 +44,9 @@ const offline = computed(() => nodes.list.filter((n) => n.status !== 'connected'
 async function remove(list: string[]) {
   try {
     for (const node of list) await nodes.disconnect(node)
-    message.success(list.length === 1 ? `已移除 ${list[0]}` : `已移除 ${list.length} 个节点`)
+    message.success(list.length === 1
+      ? t('shell.switcher.removed_one', { node: list[0] })
+      : t('shell.switcher.removed_n', { n: list.length }))
   } catch (e) {
     message.error(errorText(e))
   }
@@ -51,10 +55,10 @@ async function remove(list: string[]) {
 function confirmRemoveAll() {
   const all = nodes.list.map((n) => n.node)
   dialog.warning({
-    title: '移除全部节点',
-    content: `停止观察全部 ${all.length} 个节点？目标节点不会受影响。`,
-    positiveText: '全部移除',
-    negativeText: '取消',
+    title: t('shell.switcher.remove_all_title'),
+    content: t('shell.switcher.remove_all_content', { n: all.length }),
+    positiveText: t('shell.switcher.remove_all_ok'),
+    negativeText: t('shell.switcher.cancel'),
     onPositiveClick: () => remove(all),
   })
 }
@@ -67,10 +71,10 @@ function confirmDisconnect() {
   const node = nodes.current
   if (!node) return
   dialog.warning({
-    title: '移除节点',
-    content: `停止观察 ${node} 并从列表中移除？目标节点不会受影响。`,
-    positiveText: '移除',
-    negativeText: '取消',
+    title: t('shell.switcher.remove_title'),
+    content: t('shell.switcher.remove_content', { node }),
+    positiveText: t('shell.switcher.remove_ok'),
+    negativeText: t('shell.switcher.cancel'),
     onPositiveClick: async () => {
       try {
         await nodes.disconnect(node)
@@ -87,13 +91,13 @@ function confirmDisconnect() {
     <NSelect v-if="nodes.list.length" :value="nodes.current" :options="options"
              :render-label="renderLabel" :render-option="renderOption" :consistent-menu-width="false"
              :menu-props="{ class: 'node-menu' }" :style="{ width: selectWidth }" class="node-select"
-             placeholder="选择节点" @update:value="nodes.select">
+             :placeholder="t('shell.switcher.placeholder')" @update:value="nodes.select">
       <template #action>
         <div class="node-actions">
           <NButton size="tiny" quaternary :disabled="!offline.length" @click="remove(offline)">
-            移除未连接的节点（{{ offline.length }}）
+            {{ t('shell.switcher.remove_offline', { n: offline.length }) }}
           </NButton>
-          <NButton size="tiny" quaternary type="error" @click="confirmRemoveAll">全部移除</NButton>
+          <NButton size="tiny" quaternary type="error" @click="confirmRemoveAll">{{ t('shell.switcher.remove_all') }}</NButton>
         </div>
       </template>
     </NSelect>
@@ -101,10 +105,10 @@ function confirmDisconnect() {
       <template #trigger>
         <NButton secondary @click="ui.openConnect()">
           <template #icon><NIcon :component="AddOutline" /></template>
-          添加节点
+          {{ t('shell.switcher.add') }}
         </NButton>
       </template>
-      通过节点名和 cookie 连接一个 Erlang 节点
+      {{ t('shell.switcher.add_tip') }}
     </NTooltip>
     <NTooltip v-if="nodes.current">
       <template #trigger>
@@ -112,7 +116,7 @@ function confirmDisconnect() {
           <template #icon><NIcon :component="CloseOutline" /></template>
         </NButton>
       </template>
-      移除当前节点（停止观察）
+      {{ t('shell.switcher.remove_current_tip') }}
     </NTooltip>
   </div>
 </template>

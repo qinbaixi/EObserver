@@ -4,15 +4,17 @@
 import { computed } from 'vue'
 import { NButton, NIcon, NSelect, NSpace, NTooltip } from 'naive-ui'
 import { PauseOutline, PlayOutline, RefreshOutline } from '@vicons/ionicons5'
+import { useI18n } from 'vue-i18n'
 
 const paused = defineModel<boolean>('paused', { required: true })
 const interval = defineModel<number>('interval', { required: true })
 const emit = defineEmits<{ refresh: [] }>()
+const { t } = useI18n()
 
 const STEPS = [1000, 2000, 3000, 5000, 10000, 30000]
 const options = computed(() =>
   [...new Set([...STEPS, interval.value])].sort((a, b) => a - b)
-    .map((v) => ({ label: `每 ${v / 1000} 秒`, value: v })))
+    .map((v) => ({ label: t('shell.refresh.every', { n: v / 1000 }), value: v })))
 </script>
 
 <template>
@@ -22,10 +24,10 @@ const options = computed(() =>
       <template #trigger>
         <NButton secondary @click="paused = !paused">
           <template #icon><NIcon :component="paused ? PlayOutline : PauseOutline" /></template>
-          {{ paused ? '继续' : '暂停' }}
+          {{ paused ? t('shell.refresh.resume') : t('shell.refresh.pause') }}
         </NButton>
       </template>
-      {{ paused ? '恢复自动刷新' : '暂停自动刷新，数据停在当前这一刻' }}
+      {{ paused ? t('shell.refresh.resume_tip') : t('shell.refresh.pause_tip') }}
     </NTooltip>
     <NTooltip>
       <template #trigger>
@@ -33,7 +35,7 @@ const options = computed(() =>
           <template #icon><NIcon :component="RefreshOutline" /></template>
         </NButton>
       </template>
-      立即刷新
+      {{ t('shell.refresh.now') }}
     </NTooltip>
   </NSpace>
 </template>

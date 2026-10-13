@@ -16,10 +16,13 @@
 -export([alloc_info/0, dist_info/0]).
 -export([trace_start/3, trace_stop/0, trace_events/2]).
 -export([diag_check/1, diag_window/2]).
+-export([logs_events/2, logs_stop/0]).
+%% logger handler callback, called by logger in the logging process.
+-export([log/2]).
 
 %% Bump whenever the exported API or return shapes change, so the tool
 %% replaces an older copy that is still loaded on the target.
--define(VERSION, 10).
+-define(VERSION, 11).
 
 %% Long-lived helper process on the observed node. It keeps
 %% scheduler_wall_time enabled, builds process lists while holding the
@@ -1432,6 +1435,548 @@ one_line(Bin, Max) ->
         true -> unicode:characters_to_binary([string:slice(Flat, 0, Max), "..."]);
         false -> unicode:characters_to_binary(Flat)
     end.
+
+%%--------------------------------------------------------------------
+%% Logs and crashes
+%%
+%% Nothing is installed when the tool connects. The first logs_events/2
+%% call (the tool's Logs page) starts a keeper that adds a logger handler;
+%% both the live log and the crash records come from it. Built so that it
+%% cannot take the node down:
+%%   - the handler (log/2) runs inside every process that logs, so it only
+%%     compares the level with a limit and does one non-blocking send of
+%%     the raw event to a collector; no formatting, no calls;
+%%   - at most LOG_BACKLOG events may be on their way to the collector (an
+%%     atomics counter the handler bumps before sending); beyond that the
+%%     handler drops and counts;
+%%   - above LOG_RATE events a second only warning and worse are kept for
+%%     the rest of that second, above LOG_HARD_RATE nothing; the collector
+%%     sets the limit the handler compares with;
+%%   - the collector has a heap limit and formats with depth and length
+%%     caps into fixed-size ETS rings the tool pulls from;
+%%   - the keeper removes the handler and stops when the tool node goes
+%%     away or after LOG_IDLE_MS without being read; logger itself removes
+%%     a handler that crashes.
+%%--------------------------------------------------------------------
+
+%% Registered name of the keeper, and the handler id.
+-define(LOGS, eobs_agent_logs).
+-define(LOG_RING, 2000).
+-define(LOG_GROUPS, 500).
+-define(LOG_BACKLOG, 1000).
+-define(LOG_RATE, 2000).
+-define(LOG_HARD_RATE, 5000).
+-define(LOG_IDLE_MS, 60000).
+-define(LOG_HEAP_WORDS, 2000000).
+-define(LOG_TEXT_CHARS, 2000).
+-define(LOG_REASON_CHARS, 4000).
+-define(LOG_DEPTH, 20).
+-define(LOG_STACK, 30).
+-define(LOG_PAGE, 1000).
+-define(LOG_TIMES, 10).
+%% A collector killed by its heap limit is replaced after this long.
+-define(LOG_RESTART_MS, 10000).
+%% Slots of the atomics array shared by the handler and the collector.
+-define(A_INFLIGHT, 1).
+-define(A_MAXSEV, 2).
+-define(A_DROPPED, 3).
+-define(A_LIMITED, 4).
+-define(SEV_ALL, 7).
+-define(SEV_WARNING, 4).
+-define(SEV_NONE, -1).
+
+%% New log lines, crash groups and restart counters since Cursor (null, or
+%% the `cursor` of the previous reply). Starts collecting on first use;
+%% Owner is the tool node, collection stops when it goes away.
+logs_events(Owner, Cursor) ->
+    case logs_keeper(Owner, 3) of
+        {ok, Pid} -> tracer_call(Pid, {logs, Owner, Cursor});
+        {error, _} = Error -> Error
+    end.
+
+%% Stops collecting and removes the handler. Called before the agent is
+%% unloaded, since logger would otherwise call a module that is gone.
+logs_stop() ->
+    case whereis(?LOGS) of
+        undefined ->
+            ok;
+        Pid ->
+            Ref = erlang:monitor(process, Pid),
+            Pid ! quit,
+            receive {'DOWN', Ref, process, Pid, _} -> ok
+            after 5000 -> exit(Pid, kill), receive {'DOWN', Ref, process, Pid, _} -> ok end
+            end
+    end,
+    remove_log_handler().
+
+logs_keeper(_Owner, 0) ->
+    {error, logs_failed};
+logs_keeper(Owner, Tries) ->
+    case whereis(?LOGS) of
+        undefined ->
+            Parent = self(),
+            {Pid, Ref} = spawn_monitor(fun() -> logs_init(Parent, Owner) end),
+            receive
+                {Pid, ok} -> erlang:demonitor(Ref, [flush]), {ok, Pid};
+                {Pid, busy} -> erlang:demonitor(Ref, [flush]), logs_keeper(Owner, Tries - 1);
+                {'DOWN', Ref, process, Pid, Reason} -> {error, {logs_failed, fmt(Reason)}}
+            after 10000 ->
+                exit(Pid, kill),
+                erlang:demonitor(Ref, [flush]),
+                {error, timeout}
+            end;
+        Pid ->
+            {ok, Pid}
+    end.
+
+%% The logger handler. Runs in the process that logs: keep it tiny.
+log(#{level := Level} = Event, #{config := #{ref := Ref, collector := Pid}}) ->
+    MaxSev = atomics:get(Ref, ?A_MAXSEV),
+    case severity(Level) =< MaxSev of
+        true ->
+            case atomics:add_get(Ref, ?A_INFLIGHT, 1) > ?LOG_BACKLOG of
+                false ->
+                    Pid ! {?LOGS, Event},
+                    ok;
+                true ->
+                    atomics:sub(Ref, ?A_INFLIGHT, 1),
+                    log_dropped(Ref, ?A_DROPPED, Pid)
+            end;
+        false when MaxSev =:= ?SEV_NONE ->
+            log_dropped(Ref, ?A_DROPPED, Pid);
+        false ->
+            log_dropped(Ref, ?A_LIMITED, Pid)
+    end;
+log(_Event, _Config) ->
+    ok.
+
+%% Every 1024th drop checks that the collector is still there: one that
+%% was killed with its keeper leaves nobody to remove the handler, and
+%% the error makes logger remove it.
+log_dropped(Ref, Slot, Pid) ->
+    case atomics:add_get(Ref, Slot, 1) band 1023 of
+        0 -> is_process_alive(Pid) orelse erlang:error(eobs_collector_gone), ok;
+        _ -> ok
+    end.
+
+severity(emergency) -> 0;
+severity(alert) -> 1;
+severity(critical) -> 2;
+severity(error) -> 3;
+severity(warning) -> 4;
+severity(notice) -> 5;
+severity(info) -> 6;
+severity(_) -> 7.
+
+%% Only removes the handler if it is ours.
+remove_log_handler() ->
+    case catch logger:get_handler_config(?LOGS) of
+        {ok, #{module := ?MODULE}} -> _ = logger:remove_handler(?LOGS), ok;
+        _ -> ok
+    end.
+
+%% The keeper owns the rings and the handler, and answers the tool. It
+%% never receives log events itself.
+logs_init(Parent, Owner) ->
+    try register(?LOGS, self())
+    catch error:badarg -> Parent ! {self(), busy}, exit(normal)
+    end,
+    process_flag(trap_exit, true),
+    %% A handler left behind by a keeper that was killed.
+    remove_log_handler(),
+    erlang:monitor_node(Owner, true),
+    Tabs = #{logs => ets:new(eobs_logs, [ordered_set, public]),
+             crashes => group_store(),
+             restarts => group_store()},
+    ets:insert(maps:get(logs, Tabs), {seq, 0}),
+    St0 = #{id => erlang:unique_integer([positive]), owners => [Owner], tabs => Tabs,
+            ref => atomics:new(4, [{signed, true}]), worker => undefined,
+            status => stopped, reason => null, stopped_at => 0, collector_restarts => 0,
+            started => erlang:system_time(millisecond), last_read => now_ms()},
+    St = logs_start(St0),
+    Parent ! {self(), ok},
+    try logs_loop(St)
+    after remove_log_handler()
+    end.
+
+%% Crash groups and restart counters: Key -> {Key, Seq, Group}, plus an
+%% index Seq -> Key so changes since a sequence number (and the group
+%% changed longest ago, evicted when full) are cheap to find.
+group_store() ->
+    Idx = ets:new(eobs_log_index, [ordered_set, public]),
+    ets:insert(Idx, {seq, 0}),
+    #{tab => ets:new(eobs_log_groups, [set, public]), idx => Idx}.
+
+logs_start(#{ref := Ref, tabs := Tabs} = St) ->
+    atomics:put(Ref, ?A_INFLIGHT, 0),
+    atomics:put(Ref, ?A_MAXSEV, ?SEV_ALL),
+    Worker = spawn_opt(fun() -> collector_init(Tabs, Ref) end,
+                       [link, {max_heap_size, #{size => ?LOG_HEAP_WORDS, kill => true,
+                                                error_logger => false}}]),
+    Config = #{level => all, filter_default => log, filters => [],
+               config => #{ref => Ref, collector => Worker}},
+    case logger:add_handler(?LOGS, ?MODULE, Config) of
+        ok ->
+            St#{worker := Worker, status := running, reason := null};
+        {error, Reason} ->
+            unlink(Worker),
+            exit(Worker, kill),
+            St#{worker := undefined, status := stopped, reason := fmt(Reason),
+                stopped_at := now_ms()}
+    end.
+
+logs_loop(#{last_read := LastRead} = St) ->
+    Idle = max(0, LastRead + ?LOG_IDLE_MS - now_ms()),
+    receive
+        {From, Ref, {logs, Owner, Cursor}} ->
+            St1 = logs_owner(Owner, logs_check(St#{last_read := now_ms()})),
+            From ! {Ref, {ok, logs_read(Cursor, St1)}},
+            logs_loop(St1);
+        {'EXIT', Worker, Reason} when Worker =:= map_get(worker, St) ->
+            %% killed: heap limit reached (a flood of large events)
+            Why = case Reason of
+                      killed -> overload;
+                      _ -> crashed
+                  end,
+            logs_loop(logs_halt(Why, St#{worker := undefined}));
+        {nodedown, Owner} ->
+            case lists:delete(Owner, maps:get(owners, St)) of
+                [] -> logs_halt(owner_down, St);
+                Rest -> logs_loop(St#{owners := Rest})
+            end;
+        quit ->
+            logs_halt(stopped, St);
+        _ ->
+            logs_loop(St)
+    after Idle ->
+        logs_halt(idle, St)
+    end.
+
+%% Every tool node reading the logs keeps them alive.
+logs_owner(Owner, #{owners := Owners} = St) ->
+    case lists:member(Owner, Owners) of
+        true -> St;
+        false -> erlang:monitor_node(Owner, true), St#{owners := [Owner | Owners]}
+    end.
+
+%% Notices a handler logger removed (it crashed), and replaces a collector
+%% that was killed for using too much memory once things calmed down.
+logs_check(#{status := running} = St) ->
+    case lists:member(?LOGS, logger:get_handler_ids()) of
+        true -> St;
+        false -> logs_halt(handler_removed, St)
+    end;
+logs_check(#{status := stopped, reason := Reason, stopped_at := At} = St)
+  when Reason =:= overload; Reason =:= crashed; Reason =:= handler_removed ->
+    case now_ms() - At >= ?LOG_RESTART_MS of
+        true -> logs_start(St#{collector_restarts := maps:get(collector_restarts, St) + 1});
+        false -> St
+    end;
+logs_check(St) ->
+    St.
+
+logs_halt(Reason, #{worker := Worker} = St) ->
+    remove_log_handler(),
+    case Worker of
+        undefined -> ok;
+        _ -> unlink(Worker), exit(Worker, kill)
+    end,
+    St#{worker := undefined, status := stopped, reason := Reason, stopped_at := now_ms()}.
+
+%% Cursor: {Id, LogSeq, CrashSeq, RestartSeq}. A cursor of an earlier
+%% collection (or null) reads everything there is.
+logs_read(Cursor, #{id := Id, tabs := #{logs := Logs, crashes := Crashes, restarts := Restarts},
+                    ref := Ref} = St) ->
+    {Reset, LogSince, CrashSince, RestartSince} =
+        case Cursor of
+            {Id, L, C, R} when is_integer(L), is_integer(C), is_integer(R) -> {false, L, C, R};
+            null -> {false, 0, 0, 0};
+            _ -> {true, 0, 0, 0}
+        end,
+    [{seq, Seq}] = ets:lookup(Logs, seq),
+    Lines = case ets:select(Logs, [{{'$1', '$2'}, [{is_integer, '$1'}, {'>', '$1', LogSince}], ['$2']}],
+                            ?LOG_PAGE) of
+                {Ls, _} -> Ls;
+                '$end_of_table' -> []
+            end,
+    LogNext = case Lines of
+                  [] -> Seq;
+                  _ -> maps:get(seq, lists:last(Lines))
+              end,
+    {CrashList, CrashNext} = group_changes(Crashes, CrashSince),
+    {RestartList, RestartNext} = group_changes(Restarts, RestartSince),
+    #{id => Id,
+      reset => Reset,
+      cursor => {Id, LogNext, CrashNext, RestartNext},
+      status => maps:get(status, St),
+      reason => maps:get(reason, St),
+      started => maps:get(started, St),
+      now => erlang:system_time(millisecond),
+      primary_level => primary_level(),
+      received => Seq,
+      lost => max(0, Seq - ?LOG_RING - LogSince),
+      dropped => atomics:get(Ref, ?A_DROPPED),
+      limited => atomics:get(Ref, ?A_LIMITED),
+      collector_restarts => maps:get(collector_restarts, St),
+      logs => Lines,
+      crashes => CrashList,
+      restarts => RestartList}.
+
+primary_level() ->
+    case catch logger:get_primary_config() of
+        #{level := L} -> L;
+        _ -> null
+    end.
+
+group_changes(#{tab := Tab, idx := Idx}, Since) ->
+    [{seq, Seq}] = ets:lookup(Idx, seq),
+    Keys = ets:select(Idx, [{{'$1', '$2'}, [{is_integer, '$1'}, {'>', '$1', Since}], ['$2']}]),
+    {[G || K <- Keys, {_, _, G} <- ets:lookup(Tab, K)], Seq}.
+
+%% The collector formats events and fills the rings.
+collector_init(Tabs, Ref) ->
+    collector_loop(#{tabs => Tabs, ref => Ref, sec => 0, n => 0, limited_sec => undefined}).
+
+collector_loop(#{ref := Ref} = St) ->
+    receive
+        {?LOGS, Event} ->
+            atomics:sub(Ref, ?A_INFLIGHT, 1),
+            collector_loop(collect_event(Event, St));
+        {rate_reset, Sec} when Sec =:= map_get(limited_sec, St) ->
+            atomics:put(Ref, ?A_MAXSEV, ?SEV_ALL),
+            collector_loop(St#{limited_sec := undefined});
+        _ ->
+            collector_loop(St)
+    end.
+
+collect_event(#{level := Level} = Event, #{sec := Sec, n := N, ref := Ref} = St) ->
+    NowMs = erlang:monotonic_time(millisecond),
+    Now = floor_div(NowMs, 1000),
+    N1 = case Now of
+             Sec -> N + 1;
+             _ -> 1
+         end,
+    St1 = St#{sec := Now, n := N1},
+    Sev = severity(Level),
+    if
+        N1 > ?LOG_HARD_RATE ->
+            atomics:add(Ref, ?A_DROPPED, 1),
+            rate_limit(?SEV_NONE, Now, NowMs, St1);
+        N1 > ?LOG_RATE, Sev > ?SEV_WARNING ->
+            atomics:add(Ref, ?A_LIMITED, 1),
+            rate_limit(?SEV_WARNING, Now, NowMs, St1);
+        true ->
+            try store_log(Event, St1)
+            catch _:_ -> ok
+            end,
+            St1
+    end.
+
+%% Lowers the level the handler lets through until the second is over.
+rate_limit(MaxSev, Now, NowMs, #{ref := Ref} = St) ->
+    case atomics:get(Ref, ?A_MAXSEV) > MaxSev of
+        true ->
+            atomics:put(Ref, ?A_MAXSEV, MaxSev),
+            erlang:send_after(1000 - (NowMs - Now * 1000), self(), {rate_reset, Now}),
+            St#{limited_sec := Now};
+        false ->
+            St
+    end.
+
+floor_div(A, B) when A >= 0 -> A div B;
+floor_div(A, B) -> -((-A + B - 1) div B).
+
+store_log(#{level := Level, msg := Msg, meta := Meta} = Event, #{tabs := Tabs}) ->
+    Time = case Meta of
+               #{time := T} when is_integer(T) -> T;
+               _ -> erlang:system_time(microsecond)
+           end,
+    Logs = maps:get(logs, Tabs),
+    Seq = ets:update_counter(Logs, seq, 1),
+    ets:insert(Logs, {Seq, #{seq => Seq,
+                             t => Time,
+                             level => Level,
+                             module => case Meta of
+                                           #{mfa := {M, _, _}} when is_atom(M) -> M;
+                                           _ -> null
+                                       end,
+                             pid => case Meta of
+                                        #{pid := P} when is_pid(P) -> ref_bin(P);
+                                        _ -> null
+                                    end,
+                             text => log_text(Event)}}),
+    case Seq > ?LOG_RING of
+        true -> ets:delete(Logs, Seq - ?LOG_RING);
+        false -> ok
+    end,
+    case crash_info(Msg, Meta) of
+        none -> ok;
+        {crash, Who, Pid, Class, Reason, Stack} -> store_crash(Who, Pid, Class, Reason, Stack, Time, Tabs);
+        {restart, Ctx, Sup, Child, Reason} -> store_restart(Ctx, Sup, Child, Reason, Time, Tabs)
+    end.
+
+%% The message as the node's own logger would print it, within limits.
+log_text(Event) ->
+    Config = #{template => [msg], single_line => false, legacy_header => false,
+               chars_limit => ?LOG_TEXT_CHARS, depth => ?LOG_DEPTH},
+    try logger_formatter:format(Event, Config) of
+        Chars -> clip(string:trim(unicode:characters_to_list(Chars), trailing), ?LOG_TEXT_CHARS)
+    catch _:_ ->
+        limited(maps:get(msg, Event, undefined), ?LOG_TEXT_CHARS)
+    end.
+
+clip(Chars, Max) ->
+    case length(Chars) > Max of
+        true -> unicode:characters_to_binary(lists:sublist(Chars, Max) ++ " ...");
+        false -> unicode:characters_to_binary(Chars)
+    end.
+
+%% Crashes and supervisor reports among the events:
+%%   - proc_lib crash reports (gen_server, gen_statem, proc_lib processes),
+%%   - "Error in process" errors of plain processes, from the emulator,
+%%   - supervisor reports on children that terminated or failed to start.
+crash_info({report, #{label := {proc_lib, crash}, report := [Crasher | _]}}, _Meta)
+  when is_list(Crasher) ->
+    {Class, Reason, Stack} = case proplists:get_value(error_info, Crasher) of
+                                 {C, R, S} -> {C, R, S};
+                                 Other -> {exit, Other, []}
+                             end,
+    Who = case proplists:get_value(registered_name, Crasher, []) of
+              Name when is_atom(Name), Name =/= [] -> atom_to_binary(Name, utf8);
+              _ -> case proplists:get_value(initial_call, Crasher) of
+                       {M, F, Args} when is_list(Args) -> bin(mfa({M, F, length(Args)}));
+                       {M, F, A} -> bin(mfa({M, F, A}));
+                       _ -> null
+                   end
+          end,
+    {crash, Who, proplists:get_value(pid, Crasher), Class, Reason, Stack};
+crash_info({report, #{label := {supervisor, Ctx}, report := Report}}, _Meta)
+  when Ctx =:= child_terminated; Ctx =:= start_error; Ctx =:= shutdown;
+       Ctx =:= shutdown_error ->
+    Offender = case proplists:get_value(offender, Report) of
+                   O when is_list(O) -> O;
+                   _ -> []
+               end,
+    {restart, Ctx, proplists:get_value(supervisor, Report), Offender,
+     proplists:get_value(reason, Report)};
+crash_info({Format, [Pid | Rest]}, #{error_logger := #{emulator := true}})
+  when is_list(Format), is_pid(Pid) ->
+    %% [Pid, Reason], or [Pid, Node, Reason] on a distributed node
+    case {lists:prefix("Error in process", Format), Rest} of
+        {true, [_Node, Reason]} -> {crash, null, Pid, error, Reason, []};
+        {true, [Reason]} -> {crash, null, Pid, error, Reason, []};
+        _ -> none
+    end;
+crash_info(_Msg, _Meta) ->
+    none.
+
+%% Crashes with the same process (name or initial call) and the same
+%% reason, pids and refs aside, are one group with a count.
+store_crash(Who, Pid, Class, Reason0, Stack0, Time, #{crashes := Store}) ->
+    {Reason, Stack} = split_stack(Reason0, Stack0),
+    Line = one_line(limited(Reason, 600), 300),
+    Key = {Who, re:replace(Line, "<\\d+\\.\\d+\\.\\d+>|#Ref<[\\d.]+>|#Port<[\\d.]+>", "_",
+                           [global, {return, binary}])},
+    group_put(Store, Key, fun(Old) ->
+        Base = case Old of
+                   undefined -> #{id => erlang:unique_integer([positive]), who => Who, count => 0,
+                                  first => Time};
+                   _ -> Old
+               end,
+        Base#{count := maps:get(count, Base) + 1,
+              last => Time,
+              pid => case is_pid(Pid) of true -> ref_bin(Pid); false -> null end,
+              class => Class,
+              reason => Line,
+              text => limited(Reason, ?LOG_REASON_CHARS),
+              stack => [format_frame(F) || F <- lists:sublist(Stack, ?LOG_STACK), is_frame(F)]}
+    end).
+
+%% gen_server and friends exit with {Reason, Stacktrace}; plain processes
+%% that call erlang:error/1 directly have an empty one.
+split_stack({Reason, []}, []) ->
+    {Reason, []};
+split_stack({Reason, [F | _] = Stack}, _) when is_list(Stack) ->
+    case is_frame(F) of
+        true -> {Reason, Stack};
+        false -> {{Reason, Stack}, []}
+    end;
+split_stack(Reason, Stack) when is_list(Stack) ->
+    {Reason, Stack};
+split_stack(Reason, _) ->
+    {Reason, []}.
+
+is_frame({M, F, A, L}) -> is_atom(M) andalso is_atom(F) andalso (is_integer(A) orelse is_list(A))
+                              andalso is_list(L);
+is_frame(_) -> false.
+
+%% Per supervisor and child id: terminations (each one a restart unless
+%% the child is temporary), failed starts, and whether the supervisor gave
+%% up (reached its restart intensity).
+store_restart(Ctx, Sup, Offender, Reason0, Time, #{restarts := Store}) ->
+    {Reason, _} = split_stack(Reason0, []),
+    Child = proplists:get_value(id, Offender),
+    Key = {Sup, Child},
+    group_put(Store, Key, fun(Old) ->
+        Base = case Old of
+                   undefined -> #{id => erlang:unique_integer([positive]),
+                                  supervisor => sup_name(Sup), child => fmt(Child),
+                                  count => 0, failed_starts => 0, gave_up => false, times => []};
+                   _ -> Old
+               end,
+        #{count := Count, failed_starts := Failed, times := Times} = Base,
+        Counted = Ctx =:= child_terminated orelse Ctx =:= start_error,
+        Base#{count := Count + case Ctx of child_terminated -> 1; _ -> 0 end,
+              failed_starts := Failed + case Ctx of start_error -> 1; _ -> 0 end,
+              gave_up := maps:get(gave_up, Base) orelse Ctx =:= shutdown,
+              times := case Counted of
+                           true -> lists:sublist([Time | Times], ?LOG_TIMES);
+                           false -> Times
+                       end,
+              last => Time,
+              context => Ctx,
+              restart_type => case proplists:get_value(restart_type, Offender) of
+                                  undefined -> null;
+                                  RT -> RT
+                              end,
+              pid => case proplists:get_value(pid, Offender) of
+                         P when is_pid(P) -> ref_bin(P);
+                         _ -> null
+                     end,
+              reason => one_line(limited(Reason, 600), 300)}
+    end).
+
+sup_name({local, Name}) -> atom_to_binary(Name, utf8);
+sup_name({global, Name}) -> fmt(Name);
+sup_name({via, _, Name}) -> fmt(Name);
+sup_name({Pid, Mod}) when is_pid(Pid), is_atom(Mod) -> bin(io_lib:format("~s ~s", [Mod, pid_to_list(Pid)]));
+sup_name(Other) -> fmt(Other).
+
+%% Inserts or updates the group under Key with Fun(Old | undefined); when
+%% the store is full the group changed longest ago makes room.
+group_put(#{tab := Tab, idx := Idx}, Key, Fun) ->
+    Seq = ets:update_counter(Idx, seq, 1),
+    Old = case ets:lookup(Tab, Key) of
+              [{_, OldSeq, G}] ->
+                  ets:delete(Idx, OldSeq),
+                  G;
+              [] ->
+                  case ets:info(Tab, size) >= ?LOG_GROUPS of
+                      true ->
+                          First = ets:first(Idx),
+                          [{_, K}] = ets:lookup(Idx, First),
+                          ets:delete(Idx, First),
+                          ets:delete(Tab, K);
+                      false ->
+                          ok
+                  end,
+                  undefined
+          end,
+    ets:insert(Tab, {Key, Seq, Fun(Old)}),
+    ets:insert(Idx, {Seq, Key}).
+
+now_ms() ->
+    erlang:monotonic_time(millisecond).
 
 %%--------------------------------------------------------------------
 %% Memory allocators

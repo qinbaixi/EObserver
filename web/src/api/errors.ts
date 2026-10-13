@@ -22,6 +22,7 @@ const TEXTS: Record<string, string> = {
   busy: '这个节点上已经有一次诊断在进行，请稍后再试',
   too_many_processes: '进程超过 50 万个，为保护目标节点不做区间统计',
   too_big: '数据量太大，为保护目标节点已中止',
+  logs_failed: '无法在目标节点上开始收集日志',
 }
 
 export function errorText(e: unknown): string {

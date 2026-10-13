@@ -374,3 +374,68 @@ export interface WindowReport {
   memory: WindowItem[]
   message_queue_len: WindowItem[]
 }
+
+export type LogLevel = 'emergency' | 'alert' | 'critical' | 'error' | 'warning' | 'notice' | 'info' | 'debug'
+
+export interface LogLine {
+  seq: number
+  t: number
+  level: LogLevel
+  module: string | null
+  pid: string | null
+  text: string
+}
+
+export interface StackFrame {
+  mfa: string
+  location: string | null
+}
+
+// Crashes of one process (registered name or initial call; null for
+// plain spawned processes) with the same reason.
+export interface CrashGroup {
+  id: number
+  who: string | null
+  pid: string | null
+  class: string
+  reason: string
+  text: string
+  stack: StackFrame[]
+  count: number
+  first: number
+  last: number
+}
+
+// Terminations and restarts of one child of one supervisor.
+export interface RestartGroup {
+  id: number
+  supervisor: string
+  child: string
+  count: number
+  failed_starts: number
+  gave_up: boolean
+  restart_type: string | null
+  context: string
+  reason: string
+  pid: string | null
+  last: number
+  times: number[]
+}
+
+export interface LogsData {
+  id: number
+  reset: boolean
+  status: 'running' | 'stopped'
+  reason: string | null
+  started: number
+  now: number
+  primary_level: string | null
+  received: number
+  lost: number
+  dropped: number
+  limited: number
+  collector_restarts: number
+  logs: LogLine[]
+  crashes: CrashGroup[]
+  restarts: RestartGroup[]
+}

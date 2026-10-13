@@ -75,4 +75,13 @@ check() ->
     #{connections := _} = eobs_agent:dist_info(),
     {ok, #{checks := [_ | _]}} = eobs_agent:diag_check(node()),
     {ok, #{reductions := _, memory := _}} = eobs_agent:diag_window(node(), 1),
+    {ok, #{status := running, cursor := Cursor}} = eobs_agent:logs_events(node(), null),
+    true = lists:member(eobs_agent_logs, logger:get_handler_ids()),
+    logger:error("smoke ~p", [error]),
+    spawn(fun() -> erlang:error(smoke_crash) end),
+    timer:sleep(300),
+    {ok, #{logs := [#{text := <<"smoke error">>} | _], crashes := [#{reason := <<"smoke_crash">>}]}} =
+        eobs_agent:logs_events(node(), Cursor),
+    ok = eobs_agent:logs_stop(),
+    false = lists:member(eobs_agent_logs, logger:get_handler_ids()),
     ok.

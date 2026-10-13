@@ -204,6 +204,20 @@ collect(<<"trace.events">>, #{<<"node">> := Node}, State) ->
         Error ->
             Error
     end;
+%% Live log, crash groups and restart counters of the node since the
+%% previous collection. The first collection starts the agent's log
+%% handler; it stops on its own once nobody collects. State: the agent's
+%% cursor.
+collect(<<"logs.events">>, #{<<"node">> := Node}, State) ->
+    Cursor = case State of
+                 undefined -> null;
+                 C -> C
+             end,
+    case eobs_node:call(to_node(Node), logs_events, [node(), Cursor], ?TIMEOUT) of
+        {ok, {ok, #{cursor := Next} = Data}} -> {ok, maps:remove(cursor, Data), Next};
+        {ok, {error, _} = Error} -> Error;
+        Error -> Error
+    end;
 collect(Topic, Params, State) ->
     case collect(Topic, Params) of
         {ok, Data} -> {ok, Data, State};

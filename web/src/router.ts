@@ -3,11 +3,13 @@ import type { Component } from 'vue'
 import {
   SpeedometerOutline, PulseOutline, HardwareChipOutline, AppsOutline,
   GitNetworkOutline, SwapHorizontalOutline, WifiOutline, GridOutline, ShareSocialOutline,
+  ChatbubblesOutline,
 } from '@vicons/ionicons5'
 import SystemPage from './pages/SystemPage.vue'
 import ComingSoon from './pages/ComingSoon.vue'
 import LoadPage from './pages/LoadPage.vue'
 import ProcessesPage from './pages/ProcessesPage.vue'
+import TracePage from './pages/TracePage.vue'
 import ApplicationsPage from './pages/ApplicationsPage.vue'
 import PortsPage from './pages/PortsPage.vue'
 import SocketsPage from './pages/SocketsPage.vue'
@@ -28,6 +30,7 @@ export const pages: { path: string; name: string; meta: PageMeta }[] = [
   { path: '/allocators', name: 'allocators', meta: { title: '内存分配器', subtitle: 'Memory Allocators', icon: HardwareChipOutline } },
   { path: '/applications', name: 'applications', meta: { title: '应用', subtitle: 'Applications', icon: AppsOutline } },
   { path: '/processes', name: 'processes', meta: { title: '进程', subtitle: 'Processes', icon: GitNetworkOutline } },
+  { path: '/trace', name: 'trace', meta: { title: '消息跟踪', subtitle: 'Message Trace', icon: ChatbubblesOutline } },
   { path: '/ports', name: 'ports', meta: { title: '端口', subtitle: 'Ports', icon: SwapHorizontalOutline } },
   { path: '/sockets', name: 'sockets', meta: { title: 'Sockets', subtitle: 'Sockets', icon: WifiOutline } },
   { path: '/tables', name: 'tables', meta: { title: '表', subtitle: 'ETS / Mnesia', icon: GridOutline } },
@@ -35,7 +38,7 @@ export const pages: { path: string; name: string; meta: PageMeta }[] = [
 ]
 
 const components: Record<string, Component> = {
-  system: SystemPage, load: LoadPage, processes: ProcessesPage, applications: ApplicationsPage,
+  system: SystemPage, load: LoadPage, processes: ProcessesPage, trace: TracePage, applications: ApplicationsPage,
   ports: PortsPage, sockets: SocketsPage, tables: TablesPage, allocators: AllocatorsPage, cluster: ClusterPage,
 }
 

@@ -40,7 +40,7 @@ Sending `sub` again with the same `id` replaces the subscription.
   strings with depth and length limits.
 - Node names in `params` must belong to a node the tool already observes.
 - When the tool runs with `--read-only`, `process.kill`, `process.send`,
-  `port.close`, `table.write` and `table.delete` fail with `read_only`.
+  `port.close`, `table.write`, `table.delete` and `trace.start` fail with `read_only`.
 - Nodes connected with a saved cookie (`cookie_id`) or the default cookie are
   remembered in `nodes.eterm` next to `cookies.eterm` and reconnected on the
   next start; `nodes.disconnect` forgets them.
@@ -69,6 +69,8 @@ Sending `sub` again with the same `id` replaces the subscription.
 | `table.object` | `node`, `kind` (`ets` / `mnesia`), `table`, `key` | every object under the key, each with full `text`, opaque `ref` and `editable` |
 | `table.write` | `node`, `kind`, `table`, `object` (Erlang term text), `ref` (object to replace, optional) | `ok` |
 | `table.delete` | `node`, `kind`, `table`, `ref` | `ok` |
+| `trace.start` | `node`, `targets` (pids or registered names, at most 10), `max_events`, `max_seconds` (optional) | `id`, traced `processes`, `refused` targets with a reason, `limits`; replaces a running trace |
+| `trace.stop` | `node` | `ok` |
 
 ## Topics
 
@@ -80,6 +82,7 @@ Sending `sub` again with the same `id` replaces the subscription.
 | `node.ports` / `node.inet` / `node.sockets` | `node` | ports, inet sockets, `socket` module sockets |
 | `node.ets` / `node.mnesia` | `node` | table lists |
 | `node.allocators` | `node` | block and carrier sizes per allocator |
+| `trace.events` | `node` | the node's message trace: `status` (`running` / `stopped` / `none`), stop `reason`, `count`, `dropped`, `processes`, and the `events` since the previous push (direction, category, kind, peer, call/reply `ref`, summary, text) |
 | `cluster` | | distribution links of every observed node |
 
 The handlers live in

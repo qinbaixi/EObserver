@@ -36,6 +36,7 @@ OTP 的 `observer` 很好用，但它基于 wxWidgets，有几个痛点：需要
 - **系统概览**：OTP/ERTS 版本、调度器与线程、内存分布、进程/端口/原子/ETS 上限的使用率，以及运行统计。
 - **负载图表**：调度器利用率（平均值，加上各调度器热力图，64 核以上也看得清）、内存堆叠图、IO 吞吐、运行队列、reductions。切换页面后历史数据仍然保留。
 - **进程**：可排序、可搜索、可分页的进程表。*Reds* 列是距上次刷新的 reductions 增量，方便找出当前最忙的进程。详情抽屉里可以查看 links/monitors（点击跳转）、消息、进程字典、调用栈、`sys:get_state`，也可以发送消息或 kill 进程。
+- **消息跟踪**：选最多 10 个进程，实时查看它们收到和发出的消息，自动分成业务（调用、投递、回复、普通消息）、系统（EXIT、DOWN、sys、io、定时器等）和网络三类，gen call 的调用和回复自动配对并显示耗时。速率、条数、时长和内存都有硬上限，超限自动停止，不会拖垮目标节点。
 - **应用**：列出所有运行中的应用及其监督树，点击任意节点查看进程详情。
 - **端口与 Socket**：所有端口及其所属进程、IO 与队列；`gen_tcp`/`gen_udp` 的地址与统计；`socket` 模块创建的 socket。
 - **表**：ETS 与 Mnesia 表列表，以及在目标节点上分页、搜索的记录查看器，大表也不会拖垮节点。
@@ -92,7 +93,7 @@ _build/default/rel/eobserver/bin/eobs --node myapp@myhost --cookie secret
 | `--port 8090` | 网页端口 |
 | `--listen 127.0.0.1` | 监听地址。默认只监听本机，因为页面可以 kill 目标节点上的进程 |
 | `--password PASS` | 访问密码（HTTP Basic 认证，用户名任意），也可以用环境变量 `EOBS_PASSWORD`。配合 `--listen` 使用 |
-| `--read-only` | 只读模式：禁止 kill 进程、发送消息、关闭端口和修改表记录 |
+| `--read-only` | 只读模式：禁止 kill 进程、发送消息、关闭端口、修改表记录和消息跟踪 |
 | `--no-browser` | 不自动打开浏览器 |
 
 短节点名（`app@host`）和长节点名（`app@host.example.com`）会自动识别，但同一个 EObserver 实例只能使用其中一种。
@@ -162,7 +163,7 @@ WebSocket 协议见 [docs/protocol.md](docs/protocol.md)。
 - [x] 集群拓扑、可分享链接、访问控制、按 OTP 版本预编译的采集模块
 - [x] Linux、macOS、Windows 的命令行版与桌面版发布包
 - [ ] 代码签名、macOS Intel 与 Linux arm64 构建
-- [ ] Trace（暂不在计划内）
+- [x] 消息跟踪（收发消息，按业务 / 系统分类）
 
 ## 参与贡献
 

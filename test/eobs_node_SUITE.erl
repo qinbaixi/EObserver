@@ -2,7 +2,9 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
--export([busy_loop/1]).
+-export([busy_loop/1, sink/0]).
+%% A tiny gen_server for the message trace test, run on the peer.
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 -export([all/0, init_per_suite/1, end_per_suite/1,
          init_per_testcase/2, end_per_testcase/2]).
 -export([connect_loads_agent/1, tool_is_hidden/1, disconnect_unloads_agent/1,
@@ -10,14 +12,16 @@
          process_list/1, process_detail_and_actions/1, applications/1,
          ports_and_sockets/1, ets_tables/1, mnesia_tables/1, allocators/1,
          read_only_mode/1, cluster_topology/1, http_password_and_origin/1,
-         local_discovery/1, saved_cookies/1, saved_nodes/1]).
+         local_discovery/1, saved_cookies/1, saved_nodes/1,
+         message_trace/1, message_trace_limits/1]).
 
 all() ->
     [connect_loads_agent, tool_is_hidden, disconnect_unloads_agent,
      unreachable_node_retries, api_requests, load_sampling, process_list,
      process_detail_and_actions, applications, ports_and_sockets, ets_tables,
      mnesia_tables, allocators, read_only_mode, cluster_topology,
-     http_password_and_origin, local_discovery, saved_cookies, saved_nodes].
+     http_password_and_origin, local_discovery, saved_cookies, saved_nodes,
+     message_trace, message_trace_limits].
 
 init_per_suite(Config) ->
     application:load(eobserver),
@@ -329,6 +333,7 @@ read_only_mode(Config) ->
     ?assertEqual({error, read_only}, eobs_api:request(<<"port.close">>, Req#{<<"port">> => <<"#Port<0.1>">>})),
     ?assertEqual({error, read_only}, eobs_api:request(<<"table.delete">>, Req#{<<"table">> => <<"t">>, <<"ref">> => <<>>})),
     ?assertEqual({error, read_only}, eobs_api:request(<<"table.write">>, Req#{<<"table">> => <<"t">>, <<"object">> => <<"{a}">>})),
+    ?assertEqual({error, read_only}, eobs_api:request(<<"trace.start">>, Req#{<<"targets">> => [<<"init">>]})),
     ?assert(peer:call(Peer, erlang, is_process_alive, [Target])),
     %% Reading still works.
     ?assertMatch({ok, _}, eobs_api:request(<<"process.info">>, Req)).
@@ -442,6 +447,101 @@ saved_nodes(Config) ->
     wait_for(Node, fun(#{status := S}) -> S =:= connected end),
     {ok, []} = file:consult(eobs_nodes:file()),
     ok = eobs_api:request(<<"cookies.delete">>, #{<<"id">> => Id}).
+
+message_trace(Config) ->
+    Node = ?config(target, Config),
+    Peer = ?config(peer, Config),
+    connect(Node),
+    {ok, Echo} = peer:call(Peer, gen_server, start, [{local, trace_echo}, ?MODULE, [], []]),
+    Req = #{<<"node">> => atom_to_binary(Node)},
+    {ok, #{id := Id, processes := [#{name := trace_echo}],
+           refused := [#{target := <<"nope">>, reason := not_found}]}} =
+        eobs_api:request(<<"trace.start">>, Req#{<<"targets">> => [<<"trace_echo">>, <<"nope">>]}),
+    2 = peer:call(Peer, gen_server, call, [trace_echo, {double, 1}]),
+    ok = peer:call(Peer, gen_server, cast, [trace_echo, hello]),
+    peer:call(Peer, erlang, send, [trace_echo, plain]),
+    peer:call(Peer, erlang, send, [trace_echo, {'EXIT', Peer, normal}]),
+    timer:sleep(300),
+    {ok, #{id := Id, status := running, events := Events}, {Id, Next}} =
+        eobs_api:collect(<<"trace.events">>, Req, undefined),
+    Brief = [{D, C, K, S} || #{dir := D, cat := C, kind := K, summary := S} <- Events],
+    ?assertMatch([{in, business, call, <<"{double,1}">>},
+                  {out, business, reply, <<"2">>},
+                  {in, business, cast, <<"hello">>},
+                  {in, business, info, <<"plain">>},
+                  {in, system, exit, _}], Brief),
+    %% The call and its reply carry the same reference.
+    [#{ref := Ref, peer := <<"<", _/binary>>}, #{ref := Ref} | _] = Events,
+    ?assert(is_binary(Ref)),
+    ?assert(is_binary(eobs_json:encode(Events))),
+    %% Later collections only return newer events.
+    {ok, #{events := []}, {Id, Next}} = eobs_api:collect(<<"trace.events">>, Req, {Id, Next}),
+    %% A process another tool already traces is left alone.
+    Other = peer:call(Peer, erlang, spawn, [timer, sleep, [infinity]]),
+    Tracer = peer:call(Peer, erlang, spawn, [timer, sleep, [infinity]]),
+    1 = peer:call(Peer, erlang, trace, [Other, true, [send, {tracer, Tracer}]]),
+    {ok, #{refused := [#{reason := already_traced}]}} =
+        eobs_api:request(<<"trace.start">>, Req#{<<"targets">> => [target_pid(Peer, Other)]}),
+    {flags, [send]} = peer:call(Peer, erlang, trace_info, [Other, flags]),
+    %% Stopping removes our flags; removing the node does too.
+    {ok, _} = eobs_api:request(<<"trace.start">>, Req#{<<"targets">> => [<<"trace_echo">>]}),
+    {flags, [_ | _]} = peer:call(Peer, erlang, trace_info, [Echo, flags]),
+    ok = eobs_api:request(<<"trace.stop">>, Req),
+    {flags, []} = peer:call(Peer, erlang, trace_info, [Echo, flags]),
+    {ok, #{status := stopped, reason := stopped_by_user}, _} =
+        eobs_api:collect(<<"trace.events">>, Req, undefined),
+    {ok, _} = eobs_api:request(<<"trace.start">>, Req#{<<"targets">> => [<<"trace_echo">>]}),
+    ok = eobs_nodes:disconnect(Node),
+    timer:sleep(200),
+    {flags, []} = peer:call(Peer, erlang, trace_info, [Echo, flags]).
+
+message_trace_limits(Config) ->
+    Node = ?config(target, Config),
+    Peer = ?config(peer, Config),
+    connect(Node),
+    Req = #{<<"node">> => atom_to_binary(Node)},
+    Sink = peer:call(Peer, erlang, spawn, [?MODULE, sink, []]),
+    SinkBin = target_pid(Peer, Sink),
+    %% Count limit.
+    {ok, _} = eobs_api:request(<<"trace.start">>, Req#{<<"targets">> => [SinkBin],
+                                                       <<"max_events">> => 3}),
+    [peer:call(Peer, erlang, send, [Sink, N]) || N <- lists:seq(1, 5)],
+    timer:sleep(300),
+    {ok, #{status := stopped, reason := max_events, count := 3}, _} =
+        eobs_api:collect(<<"trace.events">>, Req, undefined),
+    {flags, []} = peer:call(Peer, erlang, trace_info, [Sink, flags]),
+    %% A flood stops the trace long before the cap on events, removes the
+    %% flags, and the node stays responsive with its memory in check.
+    Before = peer:call(Peer, erlang, memory, [total]),
+    {ok, _} = eobs_api:request(<<"trace.start">>, Req#{<<"targets">> => [SinkBin],
+                                                       <<"max_events">> => 100000}),
+    peer:call(Peer, erlang, apply,
+              [fun() -> [Sink ! {flood, N, lists:seq(1, 20)} || N <- lists:seq(1, 300000)], ok end, []]),
+    timer:sleep(500),
+    {ok, #{status := stopped, reason := Reason, count := Count}, _} =
+        eobs_api:collect(<<"trace.events">>, Req, undefined),
+    ct:pal("flood stopped: ~p after ~p events", [Reason, Count]),
+    ?assert(lists:member(Reason, [backlog, max_rate, overload])),
+    ?assert(Count =< 5000),
+    {flags, []} = peer:call(Peer, erlang, trace_info, [Sink, flags]),
+    timer:sleep(500),
+    After = peer:call(Peer, erlang, memory, [total]),
+    ct:pal("memory before ~p after ~p", [Before, After]),
+    ?assert(After - Before < 64 * 1024 * 1024),
+    %% Duration limit.
+    {ok, _} = eobs_api:request(<<"trace.start">>, Req#{<<"targets">> => [SinkBin],
+                                                       <<"max_seconds">> => 1}),
+    timer:sleep(1500),
+    {ok, #{status := stopped, reason := max_seconds}, _} =
+        eobs_api:collect(<<"trace.events">>, Req, undefined).
+
+sink() ->
+    receive _ -> sink() end.
+
+init([]) -> {ok, #{}}.
+handle_call({double, N}, _From, St) -> {reply, 2 * N, St}.
+handle_cast(_Msg, St) -> {noreply, St}.
+handle_info(_Msg, St) -> {noreply, St}.
 
 restart_nodes() ->
     ok = supervisor:terminate_child(eobs_sup, eobs_nodes),

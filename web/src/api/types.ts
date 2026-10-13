@@ -277,3 +277,47 @@ export interface Discovery {
   epmd: boolean
   nodes: DiscoveredNode[]
 }
+
+export type TraceCategory = 'business' | 'system' | 'network'
+
+export interface TraceEvent {
+  seq: number
+  // microseconds since the epoch, on the observed node's clock
+  t: number
+  pid: string
+  dir: 'in' | 'out'
+  // sent to a process that no longer exists
+  dead: boolean
+  cat: TraceCategory
+  kind: string
+  peer: string | null
+  peer_name: string | null
+  // reference shared by a gen call and its reply
+  ref: string | null
+  summary: string
+  text: string
+}
+
+export interface TraceProcess {
+  pid: string
+  name: string | null
+}
+
+export interface TraceState {
+  status: 'running' | 'stopped' | 'none'
+  id?: number
+  reason?: string | null
+  count?: number
+  dropped?: number
+  started?: number
+  limits?: { max_events: number; max_seconds: number; max_rate: number }
+  processes?: TraceProcess[]
+  events?: TraceEvent[]
+}
+
+export interface TraceStart {
+  id: number
+  processes: TraceProcess[]
+  refused: { target: string; reason: string }[]
+  limits: { max_events: number; max_seconds: number; max_rate: number }
+}

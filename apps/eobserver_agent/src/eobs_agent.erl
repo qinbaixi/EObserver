@@ -14,10 +14,11 @@
 -export([ets_list/0, ets_rows/2, mnesia_list/0, mnesia_rows/2]).
 -export([table_object/3, table_delete/3, table_write/4]).
 -export([alloc_info/0, dist_info/0]).
+-export([trace_start/3, trace_stop/0, trace_events/2]).
 
 %% Bump whenever the exported API or return shapes change, so the tool
 %% replaces an older copy that is still loaded on the target.
--define(VERSION, 8).
+-define(VERSION, 9).
 
 %% Long-lived helper process on the observed node. It keeps
 %% scheduler_wall_time enabled, builds process lists while holding the
@@ -999,6 +1000,437 @@ fmt(Term) ->
     end.
 
 bin(Chars) -> unicode:characters_to_binary(Chars).
+
+%%--------------------------------------------------------------------
+%% Message trace
+%%
+%% Shows what a few chosen processes send and receive, classified as
+%% business, system or network messages. Built so that it cannot take the
+%% node down:
+%%   - only the cheap send/'receive' flags, on at most TRACE_MAX_PROCS
+%%     processes chosen by the user;
+%%   - trace messages go to a worker with a heap limit; if a flood of (big)
+%%     messages makes it exceed that, the VM kills it, and a dead tracer's
+%%     trace flags are dropped by the VM;
+%%   - caps on rate, count, duration and the worker's backlog stop the
+%%     trace (flags removed, pending trace messages discarded unread);
+%%   - formatted events go to a bounded ETS ring the tool pulls from, so
+%%     nothing accumulates when the tool or the network is slow;
+%%   - the keeper process stops everything when the tool node goes away and
+%%     exits after a while without being read.
+%%--------------------------------------------------------------------
+
+-define(TRACER, eobs_agent_tracer).
+-define(TRACE_MAX_PROCS, 10).
+-define(TRACE_BUFFER, 5000).
+-define(TRACE_BACKLOG, 1000).
+-define(TRACE_HEAP_WORDS, 1000000).
+-define(TRACE_IDLE_MS, 600000).
+-define(TRACE_TEXT_CHARS, 4000).
+-define(TRACE_SUMMARY_CHARS, 240).
+-define(TRACE_PAGE, 1000).
+-define(TRACE_FLAGS, [send, 'receive', monotonic_timestamp]).
+
+%% Targets: pids or registered names (binaries). Opts: max_events,
+%% max_seconds, max_rate (per second). Replaces a running trace.
+trace_start(Owner, Targets, Opts) ->
+    ok = quit_tracer(),
+    Limits = #{max_events => clamp(maps:get(max_events, Opts, 10000), 1, 100000),
+               max_seconds => clamp(maps:get(max_seconds, Opts, 60), 1, 600),
+               max_rate => clamp(maps:get(max_rate, Opts, 2000), 1, 5000)},
+    Resolved = [{T, resolve_target(T)} || T <- lists:sublist(Targets, ?TRACE_MAX_PROCS)],
+    Parent = self(),
+    {Pid, Ref} = spawn_monitor(fun() -> keeper_init(Parent, Owner, Resolved, Limits) end),
+    receive
+        {Pid, Reply} -> erlang:demonitor(Ref, [flush]), Reply;
+        {'DOWN', Ref, process, Pid, Reason} -> {error, {tracer_failed, fmt(Reason)}}
+    after 10000 ->
+        exit(Pid, kill),
+        {error, timeout}
+    end.
+
+trace_stop() ->
+    case whereis(?TRACER) of
+        undefined -> ok;
+        Pid -> tracer_call(Pid, stop)
+    end.
+
+%% Events after sequence number Since of trace Id (null: whichever trace
+%% is current), at most TRACE_PAGE of them, plus the trace's state.
+trace_events(Id, Since) ->
+    case whereis(?TRACER) of
+        undefined -> {error, not_running};
+        Pid -> tracer_call(Pid, {events, Id, Since})
+    end.
+
+%% Stops the current keeper (if any) and waits until it is gone.
+quit_tracer() ->
+    case whereis(?TRACER) of
+        undefined -> ok;
+        Pid ->
+            Ref = erlang:monitor(process, Pid),
+            Pid ! quit,
+            receive {'DOWN', Ref, process, Pid, _} -> ok
+            after 5000 -> exit(Pid, kill), receive {'DOWN', Ref, process, Pid, _} -> ok end
+            end
+    end.
+
+tracer_call(Pid, Request) ->
+    Ref = erlang:monitor(process, Pid),
+    Pid ! {self(), Ref, Request},
+    receive
+        {Ref, Reply} -> erlang:demonitor(Ref, [flush]), Reply;
+        {'DOWN', Ref, process, Pid, _} -> {error, not_running}
+    after 10000 ->
+        erlang:demonitor(Ref, [flush]),
+        {error, timeout}
+    end.
+
+clamp(N, Min, Max) when is_integer(N) -> max(Min, min(N, Max));
+clamp(_, _, Max) -> Max.
+
+resolve_target(Bin) ->
+    try
+        case Bin of
+            <<"<", _/binary>> -> {ok, to_pid(Bin)};
+            _ ->
+                case whereis(binary_to_existing_atom(Bin, utf8)) of
+                    undefined -> {error, not_found};
+                    P -> {ok, P}
+                end
+        end
+    catch error:badarg -> {error, not_found}
+    end.
+
+%% The keeper owns the event table and the trace's state, and answers the
+%% tool. It never receives trace messages itself.
+keeper_init(Parent, Owner, Resolved, Limits) ->
+    try register(?TRACER, self())
+    catch error:badarg -> Parent ! {self(), {error, busy}}, exit(normal)
+    end,
+    erlang:monitor_node(Owner, true),
+    Tab = ets:new(eobs_trace, [ordered_set, public]),
+    ets:insert(Tab, {seq, 0}),
+    Keeper = self(),
+    {Worker, WRef} = spawn_monitor(fun() -> worker_init(Keeper, Tab, Limits) end),
+    Results = [{T, start_one(R, Worker)} || {T, R} <- Resolved],
+    Traced = [P || {_, {ok, P}} <- Results],
+    Id = erlang:unique_integer([positive]),
+    St0 = #{id => Id, owner => Owner, tab => Tab, worker => Worker, wref => WRef,
+            traced => Traced, limits => Limits, status => running, reason => null,
+            started => erlang:system_time(millisecond),
+            last_read => erlang:monotonic_time(millisecond)},
+    St = case Traced of
+             [] -> keeper_stop(no_process, St0);
+             _ -> Worker ! {go, Traced}, St0
+         end,
+    Parent ! {self(), {ok, #{id => Id,
+                             processes => [trace_proc(P) || P <- Traced],
+                             refused => [#{target => T, reason => R}
+                                         || {T, {error, R}} <- Results],
+                             limits => Limits}}},
+    keeper_loop(St).
+
+start_one({error, R}, _Tracer) ->
+    {error, R};
+start_one({ok, Pid}, Tracer) ->
+    case lists:member(Pid, [self(), whereis(?HOLDER)]) orelse node(Pid) =/= node() of
+        true -> {error, not_allowed};
+        false ->
+            case erlang:trace_info(Pid, tracer) of
+                {tracer, []} ->
+                    try erlang:trace(Pid, true, [{tracer, Tracer} | ?TRACE_FLAGS]) of
+                        1 -> {ok, Pid};
+                        _ -> {error, not_found}
+                    catch error:badarg -> {error, not_found}
+                    end;
+                {tracer, _} -> {error, already_traced};
+                undefined -> {error, not_found}
+            end
+    end.
+
+trace_proc(Pid) ->
+    #{pid => ref_bin(Pid), name => registered_name(Pid)}.
+
+keeper_loop(#{last_read := LastRead} = St) ->
+    Idle = max(0, LastRead + ?TRACE_IDLE_MS - erlang:monotonic_time(millisecond)),
+    receive
+        {From, Ref, stop} ->
+            St1 = keeper_stop(stopped_by_user, St),
+            From ! {Ref, ok},
+            keeper_loop(St1);
+        {From, Ref, {events, Id, Since}} ->
+            St1 = St#{last_read := erlang:monotonic_time(millisecond)},
+            case Id =:= null orelse Id =:= maps:get(id, St1) of
+                true -> From ! {Ref, {ok, events_since(Since, St1)}};
+                false -> From ! {Ref, {error, not_found}}
+            end,
+            keeper_loop(St1);
+        {stopped, Worker, Reason} when Worker =:= map_get(worker, St) ->
+            keeper_loop(keeper_stop(Reason, St));
+        {'DOWN', WRef, process, _, Reason} when WRef =:= map_get(wref, St) ->
+            %% killed: heap limit reached (a flood of large messages)
+            Why = case Reason of
+                      killed -> overload;
+                      normal -> stopped;
+                      _ -> crashed
+                  end,
+            keeper_loop(keeper_stop(Why, St#{worker := undefined}));
+        quit ->
+            _ = keeper_stop(stopped, St),
+            exit(normal);
+        {nodedown, Owner} when Owner =:= map_get(owner, St) ->
+            _ = keeper_stop(owner_down, St),
+            exit(normal);
+        _ ->
+            keeper_loop(St)
+    after Idle ->
+        _ = keeper_stop(idle, St),
+        exit(normal)
+    end.
+
+%% Removes our trace flags and discards whatever the worker has not
+%% processed yet (killing it frees its mailbox at once).
+keeper_stop(_Reason, #{status := stopped} = St) ->
+    St;
+keeper_stop(Reason, #{traced := Traced, worker := Worker} = St) ->
+    [untrace(P, Worker) || P <- Traced],
+    case Worker of
+        undefined -> ok;
+        _ -> erlang:demonitor(maps:get(wref, St), [flush]), exit(Worker, kill)
+    end,
+    St#{status := stopped, reason := Reason, worker := undefined}.
+
+%% Only touches flags that are still ours: another tool may have started
+%% tracing the process after ours stopped.
+untrace(Pid, Worker) ->
+    case catch erlang:trace_info(Pid, tracer) of
+        {tracer, T} when T =:= Worker; T =:= [] ->
+            catch erlang:trace(Pid, false, ?TRACE_FLAGS);
+        {tracer, T} when is_pid(T) ->
+            case is_process_alive(T) of
+                false -> catch erlang:trace(Pid, false, ?TRACE_FLAGS);
+                true -> ok
+            end;
+        _ -> ok
+    end.
+
+events_since(Since0, #{id := Id, tab := Tab, status := Status, reason := Reason,
+                       traced := Traced, started := Started, limits := Limits}) ->
+    Since = case Since0 of
+                N when is_integer(N), N >= 0 -> N;
+                _ -> 0
+            end,
+    [{seq, Seq}] = ets:lookup(Tab, seq),
+    Events = case ets:select(Tab, [{{'$1', '$2'}, [{is_integer, '$1'}, {'>', '$1', Since}], ['$2']}],
+                             ?TRACE_PAGE) of
+                 {Es, _} -> Es;
+                 '$end_of_table' -> []
+             end,
+    #{id => Id, status => Status, reason => Reason, count => Seq,
+      dropped => max(0, Seq - ?TRACE_BUFFER), next => Seq, started => Started,
+      limits => Limits, processes => [trace_proc(P) || P <- Traced],
+      events => Events}.
+
+%% The worker receives the trace messages, enforces the limits and writes
+%% formatted events into the keeper's table.
+worker_init(Keeper, Tab, Limits) ->
+    process_flag(max_heap_size, #{size => ?TRACE_HEAP_WORDS, kill => true,
+                                  error_logger => false}),
+    receive
+        {go, _Traced} -> ok
+    end,
+    Now = erlang:monotonic_time(millisecond),
+    worker_loop(#{keeper => Keeper, tab => Tab, limits => Limits, count => 0,
+                  deadline => Now + maps:get(max_seconds, Limits) * 1000,
+                  window => {Now div 1000, 0}, names => #{},
+                  offset => erlang:time_offset()}).
+
+worker_loop(#{deadline := Deadline} = St) ->
+    Timeout = max(0, Deadline - erlang:monotonic_time(millisecond)),
+    receive
+        {trace_ts, Pid, 'receive', Msg, Ts} -> worker_loop(trace_event(Pid, in, Msg, undefined, Ts, St));
+        {trace_ts, Pid, send, Msg, To, Ts} -> worker_loop(trace_event(Pid, out, Msg, To, Ts, St));
+        {trace_ts, Pid, send_to_non_existing_process, Msg, To, Ts} ->
+            worker_loop(trace_event(Pid, out_dead, Msg, To, Ts, St));
+        _ -> worker_loop(St)
+    after Timeout ->
+        worker_done(max_seconds, St)
+    end.
+
+worker_done(Reason, #{keeper := Keeper}) ->
+    Keeper ! {stopped, self(), Reason},
+    %% The keeper removes the flags and kills us; wait for that.
+    receive after infinity -> ok end.
+
+trace_event(Pid, Dir, Msg, To, Ts, #{count := Count, limits := Limits, window := {Sec, N}} = St) ->
+    NowSec = erlang:monotonic_time(second),
+    Window = case NowSec of
+                 Sec -> {Sec, N + 1};
+                 _ -> {NowSec, 1}
+             end,
+    Backlog = case Count rem 20 of
+                  0 -> element(2, process_info(self(), message_queue_len));
+                  _ -> 0
+              end,
+    #{max_rate := MaxRate, max_events := MaxEvents} = Limits,
+    case element(2, Window) > MaxRate of
+        true -> worker_done(max_rate, St);
+        false when Backlog > ?TRACE_BACKLOG -> worker_done(backlog, St);
+        false ->
+            {Event, St1} = make_event(Pid, Dir, Msg, To, Ts, St),
+            store_event(Event, St1),
+            St2 = St1#{count := Count + 1, window := Window},
+            case Count + 1 >= MaxEvents of
+                true -> worker_done(max_events, St2);
+                false -> St2
+            end
+    end.
+
+store_event(Event, #{tab := Tab}) ->
+    Seq = ets:update_counter(Tab, seq, 1),
+    ets:insert(Tab, {Seq, Event#{seq => Seq}}),
+    case Seq > ?TRACE_BUFFER of
+        true -> ets:delete(Tab, Seq - ?TRACE_BUFFER);
+        false -> ok
+    end.
+
+make_event(Pid, Dir, Msg, To, Ts, #{offset := Offset} = St) ->
+    {Cat, Kind, Peer0, Shown, Ref} = classify(Msg),
+    %% Replies to gen calls go to an alias (a reference) on OTP 24+; the
+    %% caller is known from the paired call instead.
+    Peer = case To of
+               undefined -> Peer0;
+               Alias when is_reference(Alias) -> undefined;
+               _ -> To
+           end,
+    {PeerName, St1} = peer_name(Peer, St),
+    Text = limited(Shown, ?TRACE_TEXT_CHARS),
+    Event = #{t => erlang:convert_time_unit(Ts + Offset, native, microsecond),
+              pid => ref_bin(Pid),
+              dir => case Dir of out_dead -> out; _ -> Dir end,
+              dead => Dir =:= out_dead,
+              cat => Cat,
+              kind => Kind,
+              peer => peer_bin(Peer),
+              peer_name => PeerName,
+              ref => case Ref of undefined -> null; _ -> ref_bin_any(Ref) end,
+              summary => one_line(Text, ?TRACE_SUMMARY_CHARS),
+              text => Text},
+    {Event, St1}.
+
+%% {Category, Kind, Peer, ShownTerm, CallRef} from the message's shape.
+classify({'$gen_call', {From, Tag}, Req}) ->
+    {business, call, From, Req, call_ref(Tag)};
+classify({'$gen_cast', Msg}) ->
+    {business, cast, undefined, Msg, undefined};
+classify({system, {From, _}, Req}) when is_pid(From) ->
+    {system, sys, From, Req, undefined};
+classify({'EXIT', From, _} = M) ->
+    {system, exit, From, M, undefined};
+classify({'DOWN', _, _, Obj, _} = M) ->
+    {system, down, Obj, M, undefined};
+classify({io_request, From, _, _} = M) ->
+    {system, io, From, M, undefined};
+classify({io_reply, _, _} = M) ->
+    {system, io, undefined, M, undefined};
+classify({timeout, Ref, _} = M) when is_reference(Ref) ->
+    {system, timer, undefined, M, undefined};
+classify({ack, From, _} = M) when is_pid(From) ->
+    {system, proc_lib, From, M, undefined};
+classify({Node, _} = M) when Node =:= nodeup; Node =:= nodedown ->
+    {system, node, undefined, M, undefined};
+classify({Node, _, _} = M) when Node =:= nodeup; Node =:= nodedown ->
+    {system, node, undefined, M, undefined};
+classify({'ETS-TRANSFER', _, From, _} = M) ->
+    {system, ets_transfer, From, M, undefined};
+classify({code_server, _} = M) ->
+    {system, code, undefined, M, undefined};
+classify({code_call, From, _} = M) ->
+    {system, code, From, M, undefined};
+classify(M) when is_tuple(M), tuple_size(M) >= 2 ->
+    case element(1, M) of
+        Tag when Tag =:= tcp; Tag =:= tcp_closed; Tag =:= tcp_error; Tag =:= tcp_passive;
+                 Tag =:= udp; Tag =:= udp_closed; Tag =:= udp_error; Tag =:= udp_passive;
+                 Tag =:= ssl; Tag =:= ssl_closed; Tag =:= ssl_error; Tag =:= ssl_passive;
+                 Tag =:= sctp; Tag =:= http; Tag =:= inet_reply; Tag =:= inet_async;
+                 Tag =:= '$socket' ->
+            {network, Tag, element(2, M), M, undefined};
+        Port when is_port(Port), tuple_size(M) =:= 2 ->
+            %% {Port, {data, D}}, {Port, eof}, {Port, {exit_status, N}}
+            {network, port, Port, M, undefined};
+        Ref when is_reference(Ref), tuple_size(M) =:= 2 ->
+            {business, reply, undefined, element(2, M), Ref};
+        [alias | Ref] when is_reference(Ref), tuple_size(M) =:= 2 ->
+            {business, reply, undefined, element(2, M), Ref};
+        Pid when is_pid(Pid), tuple_size(M) =:= 2, is_tuple(element(2, M)) ->
+            %% {Pid, {command, Data}} and friends, sent to a port
+            case element(2, M) of
+                {command, _} -> {network, port, undefined, M, undefined};
+                {connect, _} -> {network, port, undefined, M, undefined};
+                close -> {network, port, undefined, M, undefined};
+                _ -> {business, info, undefined, M, undefined}
+            end;
+        _ ->
+            {business, info, undefined, M, undefined}
+    end;
+classify(M) ->
+    {business, info, undefined, M, undefined}.
+
+%% The gen tag is a reference, or [alias | Ref] on OTP 24+, possibly
+%% wrapped once more by gen_statem/gen_server multicalls.
+call_ref(Ref) when is_reference(Ref) -> Ref;
+call_ref([alias | Ref]) when is_reference(Ref) -> Ref;
+call_ref([[alias | Ref] | _]) when is_reference(Ref) -> Ref;
+call_ref(_) -> undefined.
+
+ref_bin_any(Ref) -> bin(erlang:ref_to_list(Ref)).
+
+peer_bin(undefined) -> null;
+peer_bin(P) when is_pid(P); is_port(P) -> ref_bin(P);
+peer_bin(P) -> fmt(P).
+
+%% Registered name or initial call of a local peer, cached (the cache is
+%% reset when it grows, so it stays small).
+peer_name(Pid, #{names := Names} = St) when is_pid(Pid), node(Pid) =:= node() ->
+    case Names of
+        #{Pid := Name} -> {Name, St};
+        _ ->
+            Name = case process_info(Pid, [registered_name, initial_call, dictionary]) of
+                       [{registered_name, N}, _, _] when is_atom(N), N =/= [] -> atom_to_binary(N, utf8);
+                       [_, {initial_call, IC}, {dictionary, D}] ->
+                           case proplists:get_value('$initial_call', D) of
+                               undefined -> bin(mfa(IC));
+                               Real -> bin(mfa(Real))
+                           end;
+                       _ -> null
+                   end,
+            Names1 = case map_size(Names) >= 2000 of
+                         true -> #{};
+                         false -> Names
+                     end,
+            {Name, St#{names := Names1#{Pid => Name}}}
+    end;
+peer_name(Name, St) when is_atom(Name), Name =/= undefined ->
+    {atom_to_binary(Name, utf8), St};
+peer_name({Name, Node}, St) when is_atom(Name), is_atom(Node) ->
+    {bin(io_lib:format("~ts@~ts", [Name, Node])), St};
+peer_name(_, St) ->
+    {null, St}.
+
+limited(Term, Max) ->
+    Chars = lists:flatten(io_lib:format("~tP", [Term, ?TERM_DEPTH])),
+    case length(Chars) > Max of
+        true -> unicode:characters_to_binary(lists:sublist(Chars, Max) ++ " ...");
+        false -> unicode:characters_to_binary(Chars)
+    end.
+
+one_line(Bin, Max) ->
+    Flat = re:replace(Bin, "\\s+", " ", [global, unicode, {return, list}]),
+    case string:length(Flat) > Max of
+        true -> unicode:characters_to_binary([string:slice(Flat, 0, Max), "..."]);
+        false -> unicode:characters_to_binary(Flat)
+    end.
 
 %%--------------------------------------------------------------------
 %% Memory allocators

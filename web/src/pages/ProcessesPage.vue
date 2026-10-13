@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useQueryRef } from '../composables/useQueryRef'
+import { useRoute, useRouter } from 'vue-router'
 import { computed, h, onBeforeUnmount, ref, watch } from 'vue'
 import {
   NDataTable, NInput, NSpace, NTag, NIcon, NAlert, NButton, NDropdown, NTooltip,
@@ -26,6 +27,8 @@ const nodes = useNodes()
 const settings = useSettings()
 const dialog = useDialog()
 const message = useMessage()
+const route = useRoute()
+const router = useRouter()
 const node = computed(() =>
   nodes.currentInfo?.status === 'connected' ? nodes.currentInfo.node : null)
 
@@ -124,10 +127,18 @@ function kill(r: ProcessRow) {
 
 // Right-click menu on a row.
 const menu = ref<{ x: number; y: number; row: ProcessRow } | null>(null)
+// Kept after the menu closes: without a position the dropdown looks for a
+// trigger element, and there is none.
+const menuAt = ref({ x: 0, y: 0 })
+watch(menu, (m) => { if (m) menuAt.value = { x: m.x, y: m.y } })
 const menuOptions = computed<DropdownOption[]>(() => [
   { key: 'open', label: '查看详情' },
   { key: 'copy', label: '复制 PID' },
-  ...(settings.readOnly ? [] : [{ type: 'divider', key: 'd' }, { key: 'kill', label: '杀死进程…' }]),
+  ...(settings.readOnly ? [] : [
+    { key: 'trace', label: '跟踪消息' },
+    { type: 'divider', key: 'd' },
+    { key: 'kill', label: '杀死进程…' },
+  ]),
 ])
 function onMenu(key: string) {
   const row = menu.value?.row
@@ -136,6 +147,7 @@ function onMenu(key: string) {
   if (key === 'open') selected.value = row.pid
   else if (key === 'copy') void navigator.clipboard?.writeText(row.pid).then(() => message.success('已复制'))
   else if (key === 'kill') kill(row)
+  else if (key === 'trace') void router.push({ path: '/trace', query: { node: route.query.node, target: row.pid } })
 }
 
 const columns = computed<DataTableColumns<ProcessRow>>(() => [
@@ -227,8 +239,8 @@ const procTable = useResizableTable(columns)
     <NDataTable remote v-bind="procTable" :data="data?.rows ?? []" :loading="!data && !error"
                 :pagination="pagination" :row-key="(r: ProcessRow) => r.pid" :row-props="rowProps"
                 size="small" @update:sorter="onSort" />
-    <p class="note">Reds 是距上次刷新以来的 reductions 增量，可以看出当前最忙的进程。点击一行查看详情，右键可复制 PID{{ settings.readOnly ? '' : '或杀死进程' }}。</p>
-    <NDropdown trigger="manual" placement="bottom-start" :show="!!menu" :x="menu?.x" :y="menu?.y"
+    <p class="note">Reds 是距上次刷新以来的 reductions 增量，可以看出当前最忙的进程。点击一行查看详情，右键可复制 PID{{ settings.readOnly ? '' : '、跟踪消息或杀死进程' }}。</p>
+    <NDropdown trigger="manual" placement="bottom-start" :show="!!menu" :x="menuAt.x" :y="menuAt.y"
                :options="menuOptions" @select="onMenu" @clickoutside="menu = null" />
     <ProcessDrawer v-if="node" v-model:pid="selected" :node="node" @killed="refreshOnce" />
   </NodeGuard>

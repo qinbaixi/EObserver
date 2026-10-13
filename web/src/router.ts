@@ -3,8 +3,9 @@ import type { Component } from 'vue'
 import {
   SpeedometerOutline, PulseOutline, HardwareChipOutline, AppsOutline,
   GitNetworkOutline, SwapHorizontalOutline, WifiOutline, GridOutline, ShareSocialOutline,
-  ChatbubblesOutline, MedkitOutline,
+  ChatbubblesOutline, MedkitOutline, AlbumsOutline,
 } from '@vicons/ionicons5'
+import OverviewPage from './pages/OverviewPage.vue'
 import SystemPage from './pages/SystemPage.vue'
 import ComingSoon from './pages/ComingSoon.vue'
 import LoadPage from './pages/LoadPage.vue'
@@ -26,6 +27,7 @@ export interface PageMeta {
 }
 
 export const pages: { path: string; name: string; meta: PageMeta }[] = [
+  { path: '/overview', name: 'overview', meta: { title: '总览墙', subtitle: 'Overview', icon: AlbumsOutline } },
   { path: '/system', name: 'system', meta: { title: '系统概览', subtitle: 'System', icon: SpeedometerOutline } },
   { path: '/load', name: 'load', meta: { title: '负载图表', subtitle: 'Load Charts', icon: PulseOutline } },
   { path: '/allocators', name: 'allocators', meta: { title: '内存分配器', subtitle: 'Memory Allocators', icon: HardwareChipOutline } },
@@ -40,7 +42,7 @@ export const pages: { path: string; name: string; meta: PageMeta }[] = [
 ]
 
 const components: Record<string, Component> = {
-  system: SystemPage, load: LoadPage, processes: ProcessesPage, trace: TracePage, diagnosis: DiagnosisPage, applications: ApplicationsPage,
+  overview: OverviewPage, system: SystemPage, load: LoadPage, processes: ProcessesPage, trace: TracePage, diagnosis: DiagnosisPage, applications: ApplicationsPage,
   ports: PortsPage, sockets: SocketsPage, tables: TablesPage, allocators: AllocatorsPage, cluster: ClusterPage,
 }
 

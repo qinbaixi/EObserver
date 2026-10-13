@@ -25,6 +25,15 @@ collection for the same subscription is still running.
 
 Sending `sub` again with the same `id` replaces the subscription.
 
+The server closes a socket it has not heard from for 120 seconds, so the
+browser sends `{"type": "ping"}` every 30 seconds; frames of an unknown
+type are ignored.
+
+The overview wall and the compare mode of the load charts subscribe
+`node.load` every 2 seconds for each node they show (at most 50 at a time),
+and the wall also `node.summary` every 5 seconds for the limits; the history
+is kept in the browser only, and the subscriptions end when the view closes.
+
 ## Events
 
 ```json

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { NGrid, NGi, NCard, NRadioGroup, NRadioButton, NSwitch, NSpace, NAlert } from 'naive-ui'
+import { useI18n } from 'vue-i18n'
+import { NGrid, NGi, NCard, NRadioGroup, NRadioButton, NSwitch, NSpace, NAlert, NSelect } from 'naive-ui'
 import { useLoad } from '../stores/load'
 import { useNodes } from '../stores/nodes'
 import type { LoadPoint, SchedulerUtil } from '../api/types'
@@ -11,10 +12,22 @@ import KpiTile from '../components/KpiTile.vue'
 import TimeSeriesChart, { type Series } from '../charts/TimeSeriesChart.vue'
 import SchedulerHeatmap from '../charts/SchedulerHeatmap.vue'
 import { term } from '../api/term'
+import { lineData } from '../charts/gaps'
+import { useQueryRef } from '../composables/useQueryRef'
 
+const { t } = useI18n()
 const load = useLoad()
 const nodes = useNodes()
 load.start()
+
+// Compare mode overlays one metric of several nodes; those nodes are
+// sampled only while it is shown.
+const MAX_COMPARE = 8
+const modeRef = useQueryRef('mode')
+const compare = computed({
+  get: () => modeRef.value === 'compare',
+  set: (v: boolean) => { modeRef.value = v ? 'compare' : null },
+})
 
 const windowMin = ref(5)
 const showDirty = ref(false)
@@ -40,7 +53,7 @@ const compact = (v: number) =>
     : v >= 1e3 ? `${(v / 1e3).toFixed(1)}K` : `${Math.round(v)}`
 
 function line(name: string, f: (p: LoadPoint) => number | null): Series {
-  return { name, data: visible.value.map((p) => [p.time, f(p)]) }
+  return { name, data: lineData(visible.value, f) }
 }
 
 const schedSeries = computed(() => {
@@ -71,6 +84,49 @@ const ioSeries = computed(() => [
 const runQueue = computed(() => [line('运行队列', (p) => p.run_queue)])
 const reductions = computed(() => [line('Reductions/s', (p) => p.reductions)])
 
+type Metric = 'memory' | 'process_count' | 'run_queue' | 'reductions' | 'io_input' | 'io_output' | 'scheduler'
+const METRICS: Record<Metric, { f: (p: LoadPoint) => number | null; format: (v: number) => string;
+                                 integer?: boolean; yMax?: number }> = {
+  memory: { f: (p) => p.memory.total, format: formatBytes },
+  process_count: { f: (p) => p.process_count, format: count, integer: true },
+  run_queue: { f: (p) => p.run_queue, format: count, integer: true },
+  reductions: { f: (p) => p.reductions, format: compact },
+  io_input: { f: (p) => p.io_input, format: rate },
+  io_output: { f: (p) => p.io_output, format: rate },
+  scheduler: { f: (p) => avg(p.schedulers, 'normal'), format: pct, yMax: 1 },
+}
+const metric = ref<Metric>('memory')
+const metricOptions = computed(() => (Object.keys(METRICS) as Metric[])
+  .map((m) => ({ value: m, label: t(`load.compare.metrics.${m}`) })))
+
+const connectedNodes = computed(() =>
+  nodes.list.filter((n) => n.status === 'connected').map((n) => n.node))
+const picked = ref<string[] | null>(null)
+// Until the user picks, the current node and the next connected ones.
+const compareNodes = computed<string[]>({
+  get: () => picked.value ?? [
+    ...(load.node ? [load.node] : []),
+    ...connectedNodes.value.filter((n) => n !== load.node),
+  ].slice(0, MAX_COMPARE),
+  set: (v) => { picked.value = v.slice(0, MAX_COMPARE) },
+})
+const nodeOptions = computed(() => nodes.list.map((n) => ({
+  value: n.node, label: n.node,
+  disabled: compareNodes.value.length >= MAX_COMPARE && !compareNodes.value.includes(n.node),
+})))
+
+load.useSampling('compare', () => (compare.value ? compareNodes.value : []))
+
+const compareSeries = computed<Series[]>(() => {
+  const m = METRICS[metric.value]
+  const all = compareNodes.value.map((n) => load.history[n]?.value ?? [])
+  const last = Math.max(0, ...all.map((pts) => pts.at(-1)?.time ?? 0))
+  return compareNodes.value.map((n, i) => ({
+    name: n,
+    data: lineData(all[i].filter((p) => p.time >= last - windowMs.value), m.f),
+  }))
+})
+
 const heatTypes = computed(() => (showDirty.value ? ['normal', 'dirty_cpu'] : ['normal']))
 
 const kpi = computed(() => {
@@ -89,13 +145,18 @@ const kpi = computed(() => {
 </script>
 
 <template>
-  <PageHeader title="负载图表" :subtitle="nodes.current ?? undefined">
+  <PageHeader title="负载图表" :subtitle="compare ? undefined : nodes.current ?? undefined">
     <NSpace align="center" :size="16">
-      <NSpace align="center" :size="6">
+      <NRadioGroup :value="compare ? 'compare' : 'single'" size="small"
+                   @update:value="(v: string) => compare = v === 'compare'">
+        <NRadioButton value="single">{{ t('load.mode.single') }}</NRadioButton>
+        <NRadioButton value="compare">{{ t('load.mode.compare') }}</NRadioButton>
+      </NRadioGroup>
+      <NSpace v-if="!compare" align="center" :size="6">
         <span class="ctl">Dirty 调度器</span>
         <NSwitch v-model:value="showDirty" size="small" />
       </NSpace>
-      <NRadioGroup v-model:value="load.interval" size="small">
+      <NRadioGroup v-if="!compare" v-model:value="load.interval" size="small">
         <NRadioButton :value="1000">1 秒</NRadioButton>
         <NRadioButton :value="2000">2 秒</NRadioButton>
         <NRadioButton :value="5000">5 秒</NRadioButton>
@@ -107,7 +168,29 @@ const kpi = computed(() => {
       </NRadioGroup>
     </NSpace>
   </PageHeader>
-  <NodeGuard>
+  <template v-if="compare">
+    <NCard size="small">
+      <div class="compare-ctl">
+        <label class="field">
+          <span class="ctl">{{ t('load.compare.metric') }}</span>
+          <NSelect v-model:value="metric" :options="metricOptions" size="small" style="width: 220px" />
+        </label>
+        <label class="field grow">
+          <span class="ctl">{{ t('load.compare.nodes') }}</span>
+          <NSelect v-model:value="compareNodes" :options="nodeOptions" multiple size="small"
+                   :placeholder="t('load.compare.pick')" max-tag-count="responsive" />
+        </label>
+      </div>
+      <div class="compare-hint">
+        {{ t('load.compare.hint') }} {{ t('load.compare.max', { n: MAX_COMPARE }) }}
+      </div>
+      <TimeSeriesChart v-if="compareNodes.length" :series="compareSeries" :format="METRICS[metric].format"
+                       :integer="METRICS[metric].integer" :y-max="METRICS[metric].yMax"
+                       :window-ms="windowMs" :height="380" />
+      <div v-else class="compare-empty">{{ t('load.compare.empty') }}</div>
+    </NCard>
+  </template>
+  <NodeGuard v-else>
     <NAlert v-if="load.error" type="error" style="margin-bottom: 16px">{{ load.error }}</NAlert>
     <NGrid cols="2 s:3 l:5" responsive="screen" :x-gap="16" :y-gap="16" style="margin-bottom: 16px">
       <NGi><KpiTile label="调度器利用率" :value="kpi?.util ?? '-'" hint="普通调度器平均" /></NGi>
@@ -155,5 +238,35 @@ const kpi = computed(() => {
 .ctl {
   font-size: 13px;
   opacity: 0.7;
+}
+.compare-ctl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  margin-bottom: 8px;
+}
+.field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.field.grow {
+  flex: 1;
+  min-width: min(320px, 100%);
+}
+.field.grow > :last-child {
+  flex: 1;
+  min-width: 0;
+}
+.compare-hint {
+  font-size: 12px;
+  opacity: 0.55;
+  margin-bottom: 12px;
+}
+.compare-empty {
+  padding: 48px 0;
+  text-align: center;
+  opacity: 0.6;
 }
 </style>

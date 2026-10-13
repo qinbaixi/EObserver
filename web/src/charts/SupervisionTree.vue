@@ -2,12 +2,14 @@
 import './echarts'
 import { computed } from 'vue'
 import VChart from 'vue-echarts'
+import { useI18n } from 'vue-i18n'
 import { useChartTheme } from '../composables/useChartTheme'
 import type { SupNode } from '../api/types'
 
 const props = defineProps<{ root: SupNode }>()
 const emit = defineEmits<{ select: [pid: string] }>()
 const t = useChartTheme()
+const { t: tr } = useI18n()
 
 interface TreeDatum {
   name: string
@@ -30,7 +32,7 @@ function toDatum(n: SupNode): TreeDatum {
   const children = n.children.map(toDatum)
   if (n.hidden > 0) {
     children.push({
-      name: `… 还有 ${n.hidden} 个`,
+      name: tr('pages.sup_tree.more', { n: n.hidden }),
       value: null,
       node: null,
       children: [],
@@ -74,9 +76,9 @@ const option = computed(() => {
         if (!n) return p.data.name
         const rows = [
           `<b>${p.data.name}</b>`,
-          n.pid ? `pid ${n.pid}` : `状态 ${n.status ?? '未运行'}`,
-          n.module ? `模块 ${n.module}` : '',
-          `${n.type === 'supervisor' ? '监督者' : '工作进程'} · id ${n.id}`,
+          n.pid ? `pid ${n.pid}` : tr('pages.sup_tree.status', { s: n.status ?? tr('pages.sup_tree.not_running') }),
+          n.module ? tr('pages.sup_tree.module', { m: n.module }) : '',
+          `${tr(n.type === 'supervisor' ? 'pages.sup_tree.supervisor' : 'pages.sup_tree.worker')} · id ${n.id}`,
           n.error ? `<span style="color:#d03050">${n.error}</span>` : '',
         ]
         return rows.filter(Boolean).join('<br/>')

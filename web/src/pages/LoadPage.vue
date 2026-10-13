@@ -57,7 +57,7 @@ function line(name: string, f: (p: LoadPoint) => number | null): Series {
 }
 
 const schedSeries = computed(() => {
-  const s = [line('普通调度器', (p) => avg(p.schedulers, 'normal'))]
+  const s = [line(t('pages.load.series.normal'), (p) => avg(p.schedulers, 'normal'))]
   if (showDirty.value) s.push(line('Dirty CPU', (p) => avg(p.schedulers, 'dirty_cpu')))
   return s
 })
@@ -68,20 +68,20 @@ const memSeries = computed(() => {
     return Math.max(0, m.system - m.atom - m.binary - m.code - m.ets)
   }
   return [
-    line('进程', (p) => p.memory.processes),
-    line('二进制', (p) => p.memory.binary),
-    line('代码', (p) => p.memory.code),
+    line(t('pages.load.series.processes'), (p) => p.memory.processes),
+    line(t('pages.load.series.binary'), (p) => p.memory.binary),
+    line(t('pages.load.series.code'), (p) => p.memory.code),
     line('ETS', (p) => p.memory.ets),
-    line('原子', (p) => p.memory.atom),
-    line('其他', other),
+    line(t('pages.load.series.atom'), (p) => p.memory.atom),
+    line(t('pages.load.series.other'), other),
   ]
 })
 
 const ioSeries = computed(() => [
-  line('输入', (p) => p.io_input),
-  line('输出', (p) => p.io_output),
+  line(t('pages.load.series.input'), (p) => p.io_input),
+  line(t('pages.load.series.output'), (p) => p.io_output),
 ])
-const runQueue = computed(() => [line('运行队列', (p) => p.run_queue)])
+const runQueue = computed(() => [line(t('pages.load.series.run_queue'), (p) => p.run_queue)])
 const reductions = computed(() => [line('Reductions/s', (p) => p.reductions)])
 
 type Metric = 'memory' | 'process_count' | 'run_queue' | 'reductions' | 'io_input' | 'io_output' | 'scheduler'
@@ -137,7 +137,7 @@ const kpi = computed(() => {
     util: u == null ? '-' : pct(u),
     mem: formatBytes(p.memory.total),
     io: p.io_input == null ? '-' : `${rate(p.io_input)}`,
-    ioOut: p.io_output == null ? '' : `输出 ${rate(p.io_output)}`,
+    ioOut: p.io_output == null ? '' : t('pages.load.io_out', { v: rate(p.io_output) }),
     rq: count(p.run_queue),
     procs: count(p.process_count),
   }
@@ -145,7 +145,7 @@ const kpi = computed(() => {
 </script>
 
 <template>
-  <PageHeader title="负载图表" :subtitle="compare ? undefined : nodes.current ?? undefined">
+  <PageHeader :title="t('pages.load.title')" :subtitle="compare ? undefined : nodes.current ?? undefined">
     <NSpace align="center" :size="16">
       <NRadioGroup :value="compare ? 'compare' : 'single'" size="small"
                    @update:value="(v: string) => compare = v === 'compare'">
@@ -153,18 +153,14 @@ const kpi = computed(() => {
         <NRadioButton value="compare">{{ t('load.mode.compare') }}</NRadioButton>
       </NRadioGroup>
       <NSpace v-if="!compare" align="center" :size="6">
-        <span class="ctl">Dirty 调度器</span>
+        <span class="ctl">{{ t('pages.load.dirty') }}</span>
         <NSwitch v-model:value="showDirty" size="small" />
       </NSpace>
       <NRadioGroup v-if="!compare" v-model:value="load.interval" size="small">
-        <NRadioButton :value="1000">1 秒</NRadioButton>
-        <NRadioButton :value="2000">2 秒</NRadioButton>
-        <NRadioButton :value="5000">5 秒</NRadioButton>
+        <NRadioButton v-for="n in [1, 2, 5]" :key="n" :value="n * 1000">{{ t('pages.load.seconds', { n }) }}</NRadioButton>
       </NRadioGroup>
       <NRadioGroup v-model:value="windowMin" size="small">
-        <NRadioButton :value="1">1 分钟</NRadioButton>
-        <NRadioButton :value="5">5 分钟</NRadioButton>
-        <NRadioButton :value="10">10 分钟</NRadioButton>
+        <NRadioButton v-for="n in [1, 5, 10]" :key="n" :value="n">{{ t('pages.load.minutes', { n }) }}</NRadioButton>
       </NRadioGroup>
     </NSpace>
   </PageHeader>
@@ -193,7 +189,7 @@ const kpi = computed(() => {
   <NodeGuard v-else>
     <NAlert v-if="load.error" type="error" style="margin-bottom: 16px">{{ load.error }}</NAlert>
     <NGrid cols="2 s:3 l:5" responsive="screen" :x-gap="16" :y-gap="16" style="margin-bottom: 16px">
-      <NGi><KpiTile label="调度器利用率" :value="kpi?.util ?? '-'" hint="普通调度器平均" /></NGi>
+      <NGi><KpiTile label="调度器利用率" :value="kpi?.util ?? '-'" :hint="t('pages.load.util_hint')" /></NGi>
       <NGi><KpiTile label="总内存" :value="kpi?.mem ?? '-'" /></NGi>
       <NGi><KpiTile label="IO 输入" :value="kpi?.io ?? '-'" :hint="kpi?.ioOut" /></NGi>
       <NGi><KpiTile label="运行队列" :value="kpi?.rq ?? '-'" /></NGi>
@@ -211,7 +207,7 @@ const kpi = computed(() => {
         </NCard>
       </NGi>
       <NGi>
-        <NCard :title="term('内存', '按类别统计的 erlang:memory() 随时间的变化。')" size="small">
+        <NCard :title="term('内存', t('pages.load.memory_tip'))" size="small">
           <TimeSeriesChart :series="memSeries" :format="formatBytes" stacked :window-ms="windowMs" />
         </NCard>
       </NGi>

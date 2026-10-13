@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, h, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { NGrid, NGi, NCard, NDataTable, NAlert, NTag, NText, type DataTableColumns } from 'naive-ui'
 import { useNodes } from '../stores/nodes'
 import { useUi } from '../stores/ui'
@@ -16,7 +17,8 @@ import { useResizableTable } from '../api/table'
 const nodes = useNodes()
 const ui = useUi()
 const router = useRouter()
-const t = useChartTheme()
+const th = useChartTheme()
+const { t } = useI18n()
 // The topic covers every observed node; the parameter only starts it.
 const { data, error, paused, interval, refresh } = useTopic<ClusterInfo>('cluster', ref('all'), 3000)
 
@@ -42,44 +44,45 @@ function select(node: string, observed: boolean) {
 }
 
 const mono = (s: string) => h('span', { class: 'mono' }, s)
-const columns: DataTableColumns<Row> = [
-  { key: 'from', title: '节点', minWidth: 180, sorter: (a, b) => a.from.localeCompare(b.from), render: (r) => mono(r.from) },
-  { key: 'to', title: '连接到', minWidth: 200, sorter: (a, b) => a.to.localeCompare(b.to),
+const columns = computed<DataTableColumns<Row>>(() => [
+  { key: 'from', title: t('pages.cluster.cols.from'), minWidth: 180, sorter: (a, b) => a.from.localeCompare(b.from), render: (r) => mono(r.from) },
+  { key: 'to', title: t('pages.cluster.cols.to'), minWidth: 200, sorter: (a, b) => a.to.localeCompare(b.to),
     render: (r) => h('a', { class: 'mono link', onClick: () => select(r.to, r.observed) }, r.to) },
-  { key: 'kind', title: '类型', width: 110,
+  { key: 'kind', title: t('pages.cluster.cols.kind'), width: 110,
     render: (r) => h(NTag, { size: 'small', bordered: false, type: r.hidden ? 'default' : 'info' },
-      { default: () => (r.hidden ? '隐藏' : '可见') }) },
-  { key: 'input', title: '接收', width: 110, align: 'right', sorter: (a, b) => (a.input ?? 0) - (b.input ?? 0),
+      { default: () => t(r.hidden ? 'pages.cluster.hidden' : 'pages.cluster.visible') }) },
+  { key: 'input', title: t('pages.cluster.cols.input'), width: 110, align: 'right', sorter: (a, b) => (a.input ?? 0) - (b.input ?? 0),
     render: (r) => mono(r.input == null ? '-' : formatBytes(r.input)) },
-  { key: 'output', title: '发送', width: 110, align: 'right', sorter: (a, b) => (a.output ?? 0) - (b.output ?? 0),
+  { key: 'output', title: t('pages.cluster.cols.output'), width: 110, align: 'right', sorter: (a, b) => (a.output ?? 0) - (b.output ?? 0),
     render: (r) => mono(r.output == null ? '-' : formatBytes(r.output)) },
-]
+])
 const connTable = useResizableTable(columns)
 </script>
 
 <template>
-  <PageHeader title="集群拓扑" :subtitle="data ? `观察 ${data.nodes.length} 个节点，发现 ${peers} 个相连节点` : undefined">
+  <PageHeader :title="t('pages.cluster.title')"
+              :subtitle="data ? t('pages.cluster.subtitle', { n: data.nodes.length, peers }) : undefined">
     <RefreshControl v-model:paused="paused" v-model:interval="interval" @refresh="refresh" />
   </PageHeader>
   <NAlert v-if="error" type="error" style="margin-bottom: 12px">{{ error }}</NAlert>
   <NGrid :cols="1" :y-gap="12">
     <NGi>
-      <NCard size="small" title="分布式连接">
+      <NCard size="small" :title="t('pages.cluster.graph')">
         <template #header-extra>
           <div class="legend">
-            <span><i class="dot" :style="{ background: t.series[0] }" />已观察</span>
-            <span><i class="dot ring" :style="{ borderColor: t.muted }" />集群节点</span>
-            <span><i class="dot" :style="{ background: t.series[1] }" />EObserver</span>
-            <span><i class="dash" :style="{ borderColor: t.muted }" />隐藏连接</span>
+            <span><i class="dot" :style="{ background: th.series[0] }" />{{ t('pages.cluster.legend.observed') }}</span>
+            <span><i class="dot ring" :style="{ borderColor: th.muted }" />{{ t('pages.cluster.legend.peer') }}</span>
+            <span><i class="dot" :style="{ background: th.series[1] }" />EObserver</span>
+            <span><i class="dash" :style="{ borderColor: th.muted }" />{{ t('pages.cluster.legend.hidden_link') }}</span>
           </div>
         </template>
         <ClusterGraph v-if="data && data.nodes.length" :cluster="data" :current="nodes.current" @select="select" />
-        <div v-else class="empty"><NText depth="3">{{ data ? '还没有观察任何节点' : '加载中…' }}</NText></div>
-        <NText depth="3" style="font-size: 12px">点击已观察的节点切换过去，点击其他节点可以连接它；可拖动和缩放。</NText>
+        <div v-else class="empty"><NText depth="3">{{ data ? t('pages.cluster.empty') : t('pages.cluster.loading') }}</NText></div>
+        <NText depth="3" style="font-size: 12px">{{ t('pages.cluster.hint') }}</NText>
       </NCard>
     </NGi>
     <NGi>
-      <NCard size="small" title="连接列表">
+      <NCard size="small" :title="t('pages.cluster.list')">
         <NDataTable v-bind="connTable" :data="rows" size="small" :pagination="{ pageSize: 50 }"
                     :row-key="(r: Row) => `${r.from}|${r.to}`" />
       </NCard>
@@ -88,7 +91,7 @@ const connTable = useResizableTable(columns)
 </template>
 
 <style scoped>
-.legend { display: flex; gap: 16px; font-size: 12px; opacity: 0.8; }
+.legend { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px 16px; font-size: 12px; opacity: 0.8; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
 .dot.ring { background: transparent; border: 2px solid; width: 6px; height: 6px; }

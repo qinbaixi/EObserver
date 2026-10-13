@@ -2,6 +2,7 @@
 import './echarts'
 import { computed, shallowRef, watch } from 'vue'
 import VChart from 'vue-echarts'
+import { useI18n } from 'vue-i18n'
 import type { ECElementEvent } from 'echarts/core'
 import { useChartTheme } from '../composables/useChartTheme'
 import type { ClusterInfo } from '../api/types'
@@ -10,11 +11,11 @@ import { formatBytes } from '../api/format'
 const props = defineProps<{ cluster: ClusterInfo; current: string | null; height?: number }>()
 const emit = defineEmits<{ select: [node: string, observed: boolean] }>()
 const t = useChartTheme()
+const { t: tr } = useI18n()
 
 type Kind = 'observed' | 'peer' | 'tool' | 'hidden'
-const KIND_LABEL: Record<Kind, string> = {
-  observed: '已观察', peer: '集群节点', hidden: '隐藏节点', tool: 'EObserver',
-}
+const kindLabel = (k: Kind) =>
+  k === 'tool' ? 'EObserver' : tr(`pages.cluster.legend.${k === 'hidden' ? 'hidden_node' : k}`)
 
 interface Link { source: string; target: string; hidden: boolean }
 
@@ -89,10 +90,11 @@ function buildOption() {
       textStyle: { color: th.text },
       formatter: (p: { dataType: string; data: { name?: string; kind?: Kind; source?: string; target?: string; hidden?: boolean } }) => {
         const d = p.data
-        if (p.dataType === 'node') return `<b>${d.name}</b><br/>${KIND_LABEL[d.kind!]}`
+        if (p.dataType === 'node') return `<b>${d.name}</b><br/>${kindLabel(d.kind!)}`
         const c = io.get([d.source!, d.target!].sort().join('|'))
-        const bytes = c && c.input != null ? `<br/>接收 ${formatBytes(c.input)} · 发送 ${formatBytes(c.output ?? 0)}` : ''
-        return `${d.source} ↔ ${d.target}${d.hidden ? '（隐藏连接）' : ''}${bytes}`
+        const bytes = c && c.input != null
+          ? `<br/>${tr('pages.cluster.bytes', { input: formatBytes(c.input), output: formatBytes(c.output ?? 0) })}` : ''
+        return `${d.source} ↔ ${d.target}${d.hidden ? tr('pages.cluster.hidden_suffix') : ''}${bytes}`
       },
     },
     series: [{

@@ -2,6 +2,7 @@
 import { useQueryRef } from '../composables/useQueryRef'
 import { errorText } from '../api/errors'
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { NCard, NSpin, NEmpty, NAlert, NTag, NButton, NIcon, NScrollbar, NInput } from 'naive-ui'
 import { RefreshOutline, SearchOutline } from '@vicons/ionicons5'
 import { client } from '../api/ws'
@@ -12,6 +13,7 @@ import NodeGuard from '../components/NodeGuard.vue'
 import ProcessDrawer from '../components/ProcessDrawer.vue'
 import SupervisionTree from '../charts/SupervisionTree.vue'
 
+const { t } = useI18n()
 const nodes = useNodes()
 const node = computed(() =>
   nodes.currentInfo?.status === 'connected' ? nodes.currentInfo.node : null)
@@ -76,12 +78,12 @@ const current = computed(() => apps.value.find((a) => a.name === selectedApp.val
 </script>
 
 <template>
-  <PageHeader title="应用" :subtitle="nodes.current ?? undefined" />
+  <PageHeader :title="t('pages.applications.title')" :subtitle="nodes.current ?? undefined" />
   <NodeGuard>
     <div class="layout">
       <NCard size="small" class="list" content-style="padding: 0">
         <div class="search">
-          <NInput v-model:value="search" size="small" clearable placeholder="过滤应用">
+          <NInput v-model:value="search" size="small" clearable :placeholder="t('pages.applications.filter')">
             <template #prefix><NIcon :component="SearchOutline" /></template>
           </NInput>
         </div>
@@ -90,7 +92,7 @@ const current = computed(() => apps.value.find((a) => a.name === selectedApp.val
                :class="{ active: a.name === selectedApp, loaded: !a.running }"
                @click="selectedApp = a.name">
             <div class="app-name mono">{{ a.name }}</div>
-            <div class="app-vsn">{{ a.vsn }}<span v-if="!a.running"> · 已加载未运行</span></div>
+            <div class="app-vsn">{{ a.vsn }}<span v-if="!a.running"> · {{ t('pages.applications.loaded') }}</span></div>
           </div>
         </NScrollbar>
       </NCard>
@@ -108,14 +110,14 @@ const current = computed(() => apps.value.find((a) => a.name === selectedApp.val
         </template>
         <NAlert v-if="error" type="error">{{ error }}</NAlert>
         <NSpin v-else-if="loadingTree" style="width: 100%; padding: 80px 0" />
-        <NEmpty v-else-if="current && !current.running" description="该应用已加载但未运行" style="padding: 80px 0" />
-        <NEmpty v-else-if="tree && !tree.root" description="该应用没有监督树（库应用）" style="padding: 80px 0" />
+        <NEmpty v-else-if="current && !current.running" :description="t('pages.applications.not_running')" style="padding: 80px 0" />
+        <NEmpty v-else-if="tree && !tree.root" :description="t('pages.applications.no_tree')" style="padding: 80px 0" />
         <NScrollbar v-else-if="tree?.root" x-scrollable>
           <div style="min-width: 760px">
             <SupervisionTree :root="tree.root" @select="(p) => (selectedPid = p)" />
           </div>
         </NScrollbar>
-        <p v-if="tree?.root" class="note">实心圆是监督者，空心圆是工作进程，点击节点查看进程详情。</p>
+        <p v-if="tree?.root" class="note">{{ t('pages.applications.note') }}</p>
       </NCard>
     </div>
     <ProcessDrawer v-if="node" v-model:pid="selectedPid" :node="node" />

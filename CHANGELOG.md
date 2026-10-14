@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-10-14
+
 ### 新增
 
 - 诊断页：
@@ -143,7 +145,8 @@ First public release.
   Windows x64.
 - Light and dark themes.
 
-[Unreleased]: https://github.com/qinbaixi/EObserver/compare/v0.0.7...HEAD
+[Unreleased]: https://github.com/qinbaixi/EObserver/compare/v0.0.8...HEAD
+[0.0.8]: https://github.com/qinbaixi/EObserver/compare/v0.0.7...v0.0.8
 [0.0.7]: https://github.com/qinbaixi/EObserver/compare/v0.0.6...v0.0.7
 [0.0.6]: https://github.com/qinbaixi/EObserver/compare/v0.0.5...v0.0.6
 [0.0.5]: https://github.com/qinbaixi/EObserver/compare/v0.0.4...v0.0.5

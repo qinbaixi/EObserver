@@ -16,13 +16,15 @@
 -export([alloc_info/0, dist_info/0]).
 -export([trace_start/3, trace_stop/0, trace_events/2, trace_stats/2]).
 -export([diag_check/1, diag_window/2]).
+-export([recon_proc_count/3, recon_bin_leak/2, recon_inet_count/4, recon_port_types/0,
+         recon_alloc/0, recon_scheduler_usage/2]).
 -export([logs_events/2, logs_stop/0]).
 %% logger handler callback, called by logger in the logging process.
 -export([log/2]).
 
 %% Bump whenever the exported API or return shapes change, so the tool
 %% replaces an older copy that is still loaded on the target.
--define(VERSION, 12).
+-define(VERSION, 13).
 
 %% Long-lived helper process on the observed node. It keeps
 %% scheduler_wall_time enabled, builds process lists while holding the
@@ -2450,17 +2452,23 @@ scan_processes(MemWarn) ->
 %% many binaries that the helper hits the cap is itself a finding: it is
 %% recorded as such and a new helper carries on after it.
 bin_scan() ->
+    bin_scan(?DIAG_LIST, ?DIAG_BIN_WARN, []).
+
+%% The K processes referencing the most refc binary bytes, at least Min,
+%% leaving out the Own processes. Too-many-binaries entries come first,
+%% with the value too_many.
+bin_scan(K, Min, Own) ->
     Tab = ets:new(eobs_diag_bin, [public]),
-    Pids = [P || P <- lists:sort(erlang:processes()), P =/= self()],
-    Top = bin_scan(Pids, Tab, top_new(?DIAG_LIST), 0),
+    Pids = [P || P <- lists:sort(erlang:processes()), P =/= self(), not lists:member(P, Own)],
+    Top = bin_scan(Pids, Tab, {Min, top_new(K)}, 0),
     ets:delete(Tab),
     Top.
 
-bin_scan(Pids, Tab, Top, Restarts) ->
+bin_scan(Pids, Tab, {Min, Top}, Restarts) ->
     ets:insert(Tab, [{top, Top}, {at, none}]),
-    {H, Ref} = spawn_opt(fun() -> exit({shutdown, bin_scan_loop(Pids, Tab, Top)}) end,
+    {H, Ref} = spawn_opt(fun() -> exit({shutdown, bin_scan_loop(Pids, Tab, Min, Top)}) end,
                          [monitor, {priority, low},
-                          {max_heap_size, #{size => ?DIAG_BIN_HEAP_WORDS, kill => true,
+                          {max_heap_size, #{size => bin_heap_words(Pids), kill => true,
                                             error_logger => false}}]),
     receive
         {'DOWN', Ref, process, H, {shutdown, Done}} ->
@@ -2470,7 +2478,7 @@ bin_scan(Pids, Tab, Top, Restarts) ->
             case ets:lookup(Tab, at) of
                 [{at, P}] when is_pid(P) ->
                     Rest = lists:dropwhile(fun(X) -> X =< P end, Pids),
-                    bin_scan(Rest, Tab, top_add(1 bsl 60, P, too_many, Top1), Restarts + 1);
+                    bin_scan(Rest, Tab, {Min, top_add(1 bsl 60, P, too_many, Top1)}, Restarts + 1);
                 _ ->
                     Top1
             end;
@@ -2479,21 +2487,30 @@ bin_scan(Pids, Tab, Top, Restarts) ->
             Top1
     end.
 
-bin_scan_loop([], _Tab, Top) ->
+%% The helper also holds its copy of the pid list (a cons cell per pid),
+%% which must not count against the binaries it reads.
+bin_heap_words(Pids) ->
+    ?DIAG_BIN_HEAP_WORDS + 4 * length(Pids).
+
+bin_scan_loop([], _Tab, _Min, Top) ->
     Top;
-bin_scan_loop([P | Rest], Tab, Top) ->
+bin_scan_loop([P | Rest], Tab, Min, Top) ->
     ets:insert(Tab, {at, P}),
-    Held = case erlang:process_info(P, binary) of
-               {binary, L} -> lists:foldl(fun({_, Size, _}, A) -> A + Size end, 0, L);
-               _ -> 0
-           end,
-    case Held >= ?DIAG_BIN_WARN of
+    {Held, _} = bin_held(P),
+    case Held >= Min of
         true ->
             Top1 = top_add(Held, P, Held, Top),
             ets:insert(Tab, {top, Top1}),
-            bin_scan_loop(Rest, Tab, Top1);
+            bin_scan_loop(Rest, Tab, Min, Top1);
         false ->
-            bin_scan_loop(Rest, Tab, Top)
+            bin_scan_loop(Rest, Tab, Min, Top)
+    end.
+
+%% {Bytes, Count} of the refc binaries a process references.
+bin_held(P) ->
+    case erlang:process_info(P, binary) of
+        {binary, L} -> lists:foldl(fun({_, Size, _}, {B, N}) -> {B + Size, N + 1} end, {0, 0}, L);
+        _ -> {0, 0}
     end.
 
 %% Bounded best-K collection keyed on {Score, Pid}.
@@ -2690,6 +2707,522 @@ window_add(P, DR, DM, DQ, Now, New, {Reds, Mem, Queue}) ->
 window_item(Pid, {Delta, {R, M, Q}, New}) ->
     (proc_item(Pid, Delta))#{reductions => R, memory => M, message_queue_len => Q,
                              new => New, alive => is_process_alive(Pid)}.
+
+%%--------------------------------------------------------------------
+%% Recon toolbox
+%%
+%% Counterparts of recon's proc_count/2, bin_leak/1, inet_count/2 and
+%% inet_window/3, port_types/0, the recon_alloc fragmentation views and
+%% scheduler_usage/1, built into the agent so the target needs no recon.
+%% Everything that walks processes or sockets, or waits, goes through
+%% diag_run/4: one run per node (shared with the diagnosis), a low-priority
+%% worker with a heap cap, a timeout, and killed when the tool goes away.
+%% Only the best N (at most 50) are kept while walking.
+%%--------------------------------------------------------------------
+
+-define(RECON_MAX_N, 50).
+-define(RECON_SCAN_MS, 30000).
+%% bin_leak: refused above this many processes; the guard's timeout, and
+%% the earlier point where the run stops and reports what it has.
+-define(RECON_LEAK_MAX_PROCS, 200000).
+-define(RECON_LEAK_MS, 120000).
+-define(RECON_LEAK_DEADLINE_MS, 100000).
+%% Processes not garbage collected: a long queue (the collection would
+%% wait behind it) or a huge heap (one collection blocks a scheduler).
+-define(RECON_LEAK_QUEUE, 10000).
+-define(RECON_LEAK_MEMORY, (1024 * ?MB)).
+%% Pause after this many processes, and how long one collection may take.
+-define(RECON_LEAK_BATCH, 100).
+-define(RECON_LEAK_GC_MS, 5000).
+-define(RECON_LEAK_RESTARTS, 50).
+-define(RECON_SKIPPED, 20).
+-define(RECON_MAX_SOCKETS, 100000).
+-define(RECON_SOCKET_HEAP_WORDS, 16000000).
+-define(RECON_PORT_TYPES, 100).
+
+%% Top N processes by Attribute: memory | reductions | message_queue_len |
+%% total_heap_size (bytes) | binary_memory (refc binary bytes referenced;
+%% a process with too many binaries to read comes first, without a value).
+recon_proc_count(Owner, Attribute, N) ->
+    Attr = case lists:member(Attribute, [memory, reductions, message_queue_len,
+                                         total_heap_size, binary_memory]) of
+               true -> Attribute;
+               false -> memory
+           end,
+    K = clamp(N, 1, ?RECON_MAX_N),
+    diag_run(Owner, recon_heap_words(), ?RECON_SCAN_MS, fun() -> proc_count(Attr, K) end).
+
+%% Room for a few copies of the process list (two words per pid), on top
+%% of a fixed allowance.
+recon_heap_words() ->
+    ?DIAG_CHECK_HEAP_WORDS + 8 * erlang:system_info(process_count).
+
+proc_count(Attr, K) ->
+    case erlang:system_info(process_count) > ?DIAG_MAX_PROCS of
+        true ->
+            {error, too_many_processes};
+        false ->
+            T0 = erlang:monotonic_time(millisecond),
+            Own = [self(), whereis(?DIAG)],
+            Top = case Attr of
+                      binary_memory -> bin_scan(K, 1, Own);
+                      _ -> proc_scan(Attr, K, Own)
+                  end,
+            Word = erlang:system_info(wordsize),
+            {ok, #{attribute => Attr,
+                   n => K,
+                   process_count => erlang:system_info(process_count),
+                   took_ms => erlang:monotonic_time(millisecond) - T0,
+                   items => [proc_count_item(Attr, P, V, Word) || {P, V} <- top_list(Top)]}}
+    end.
+
+proc_scan(Attr, K, Own) ->
+    lists:foldl(
+      fun(Pid, Top) ->
+              case erlang:process_info(Pid, Attr) of
+                  {Attr, V} ->
+                      case lists:member(Pid, Own) of
+                          true -> Top;
+                          false -> top_add(V, Pid, V, Top)
+                      end;
+                  _ ->
+                      Top
+              end
+      end, top_new(K), erlang:processes()).
+
+proc_count_item(Attr, Pid, V, Word) ->
+    Value = case V of
+                too_many -> null;
+                _ when Attr =:= total_heap_size -> V * Word;
+                _ -> V
+            end,
+    Info = case erlang:process_info(Pid, [memory, reductions, message_queue_len, total_heap_size]) of
+               [{memory, M}, {reductions, R}, {message_queue_len, Q}, {total_heap_size, H}] ->
+                   #{memory => M, reductions => R, message_queue_len => Q, total_heap_size => H * Word};
+               undefined ->
+                   #{memory => null, reductions => null, message_queue_len => null,
+                     total_heap_size => null}
+           end,
+    maps:merge(proc_item(Pid, Value), Info#{too_many => V =:= too_many}).
+
+%% Garbage-collects the processes one at a time and reports the N whose
+%% collection freed the most refc binary bytes: a process keeping
+%% binaries alive only because it has not collected for a long time is
+%% the typical binary leak. Only processes referencing refc binaries are
+%% collected (others cannot free any); processes with a long queue or a
+%% huge heap are skipped and listed.
+recon_bin_leak(Owner, N) ->
+    K = clamp(N, 1, ?RECON_MAX_N),
+    diag_run(Owner, recon_heap_words(), ?RECON_LEAK_MS, fun() -> bin_leak(K) end).
+
+bin_leak(K) ->
+    case erlang:system_info(process_count) > ?RECON_LEAK_MAX_PROCS of
+        true ->
+            {error, too_many_processes};
+        false ->
+            T0 = erlang:monotonic_time(millisecond),
+            Before = erlang:memory(binary),
+            Own = [self() | [whereis(R) || R <- [?DIAG, ?HOLDER, ?TRACER, ?LOGS]]],
+            Pids = [P || P <- lists:sort(erlang:processes()), not lists:member(P, Own)],
+            Tab = ets:new(eobs_recon_leak, [public]),
+            ets:insert(Tab, [{top, top_new(K)}, {skipped, [], 0}, {gc, 0}]),
+            Complete = leak_run(Pids, Tab, T0 + ?RECON_LEAK_DEADLINE_MS, 0),
+            [{top, Top}] = ets:lookup(Tab, top),
+            [{skipped, Skipped, SkippedCount}] = ets:lookup(Tab, skipped),
+            [{gc, Gc}] = ets:lookup(Tab, gc),
+            ets:delete(Tab),
+            {ok, #{n => K,
+                   process_count => length(Pids),
+                   gc_count => Gc,
+                   skipped => SkippedCount,
+                   complete => Complete,
+                   took_ms => erlang:monotonic_time(millisecond) - T0,
+                   binary_before => Before,
+                   binary_after => erlang:memory(binary),
+                   items => [leak_item(P, V) || {P, V} <- top_list(Top)],
+                   skipped_items => [(proc_item(P, V))#{reason => R}
+                                     || {P, R, V} <- lists:reverse(Skipped)]}}
+    end.
+
+%% Like bin_scan/4: the reading runs in a capped helper that notes where
+%% it is, and a process with too many binaries to read is skipped. Returns
+%% whether every process was visited.
+leak_run(Pids, Tab, Deadline, Restarts) ->
+    ets:insert(Tab, {at, none}),
+    Parent = self(),
+    {H, Ref} = spawn_opt(fun() -> exit({shutdown, leak_loop(Pids, Tab, Parent, Deadline, 1)}) end,
+                         [monitor, {priority, low},
+                          {max_heap_size, #{size => bin_heap_words(Pids), kill => true,
+                                            error_logger => false}}]),
+    receive
+        {'DOWN', Ref, process, H, {shutdown, Done}} ->
+            Done;
+        {'DOWN', Ref, process, H, killed} when Restarts < ?RECON_LEAK_RESTARTS ->
+            case ets:lookup(Tab, at) of
+                [{at, P}] when is_pid(P) ->
+                    leak_skip(Tab, P, too_many_binaries, null),
+                    Rest = lists:dropwhile(fun(X) -> X =< P end, Pids),
+                    leak_run(Rest, Tab, Deadline, Restarts + 1);
+                _ ->
+                    false
+            end;
+        {'DOWN', Ref, process, H, _} ->
+            false
+    end.
+
+leak_loop([], _Tab, _Parent, _Deadline, _I) ->
+    true;
+leak_loop([P | Rest], Tab, Parent, Deadline, I) ->
+    %% The helper is not linked to the worker: it checks that the worker
+    %% (killed by the guard on timeout or when the tool leaves) is still
+    %% there, and pauses so the node's own work goes first.
+    Go = case I rem ?RECON_LEAK_BATCH of
+             0 ->
+                 timer:sleep(1),
+                 is_process_alive(Parent)
+                     andalso erlang:monotonic_time(millisecond) < Deadline;
+             _ ->
+                 true
+         end,
+    case Go of
+        false ->
+            false;
+        true ->
+            ets:insert(Tab, {at, P}),
+            leak_one(P, Tab),
+            leak_loop(Rest, Tab, Parent, Deadline, I + 1)
+    end.
+
+leak_one(P, Tab) ->
+    case erlang:process_info(P, [memory, message_queue_len]) of
+        [{memory, _}, {message_queue_len, Q}] when Q > ?RECON_LEAK_QUEUE ->
+            leak_skip(Tab, P, long_queue, Q);
+        [{memory, M}, _] when M > ?RECON_LEAK_MEMORY ->
+            leak_skip(Tab, P, big_heap, M);
+        [_, _] ->
+            case bin_held(P) of
+                {_, 0} ->
+                    ok;
+                {BB, BC} ->
+                    case leak_gc(P) of
+                        ok ->
+                            {AB, AC} = bin_held(P),
+                            ets:update_counter(Tab, gc, 1),
+                            case BB - AB of
+                                Freed when Freed > 0 ->
+                                    [{top, Top}] = ets:lookup(Tab, top),
+                                    ets:insert(Tab, {top, top_add(Freed, P, {BB, AB, BC, AC}, Top)});
+                                _ ->
+                                    ok
+                            end;
+                        timeout ->
+                            leak_skip(Tab, P, gc_timeout, null);
+                        gone ->
+                            ok
+                    end
+            end;
+        undefined ->
+            ok
+    end.
+
+%% A collection is a request the process serves when it gets to run, so
+%% one that is suspended or stuck in a long call must not hold up the run.
+leak_gc(P) ->
+    Ref = make_ref(),
+    case catch erlang:garbage_collect(P, [{async, Ref}]) of
+        async ->
+            receive
+                {garbage_collect, Ref, true} -> ok;
+                {garbage_collect, Ref, false} -> gone
+            after ?RECON_LEAK_GC_MS ->
+                timeout
+            end;
+        _ ->
+            gone
+    end.
+
+leak_skip(Tab, P, Reason, Value) ->
+    [{skipped, List, N}] = ets:lookup(Tab, skipped),
+    List1 = case N < ?RECON_SKIPPED of
+                true -> [{P, Reason, Value} | List];
+                false -> List
+            end,
+    ets:insert(Tab, {skipped, List1, N + 1}).
+
+leak_item(Pid, {BB, AB, BC, AC}) ->
+    (proc_item(Pid, BB - AB))#{before_bytes => BB, after_bytes => AB,
+                               before_count => BC, after_count => AC, freed => BB - AB}.
+
+%% Top N inet sockets by Attribute (recv_oct | send_oct | recv_cnt |
+%% send_cnt | oct | cnt): totals since each socket was opened, or with
+%% Seconds > 0 the growth during a window of that length.
+recon_inet_count(Owner, Attribute, N, Seconds) ->
+    Attr = case lists:member(Attribute, [recv_oct, send_oct, recv_cnt, send_cnt, oct, cnt]) of
+               true -> Attribute;
+               false -> oct
+           end,
+    K = clamp(N, 1, ?RECON_MAX_N),
+    S = clamp(Seconds, 0, 60),
+    diag_run(Owner, ?RECON_SOCKET_HEAP_WORDS, S * 1000 + ?RECON_SCAN_MS,
+             fun() -> inet_count(Attr, K, S) end).
+
+inet_count(Attr, K, Seconds) ->
+    T0 = erlang:monotonic_time(millisecond),
+    case inet_snapshot() of
+        {error, _} = Error ->
+            Error;
+        {ok, Start} when Seconds =:= 0 ->
+            Top = lists:foldl(fun({P, St}, T) -> inet_add(Attr, P, St, St, false, T) end,
+                              top_new(K), Start),
+            inet_result(Attr, K, 0.0, length(Start), Top);
+        {ok, Start} ->
+            timer:sleep(Seconds * 1000),
+            case inet_snapshot() of
+                {error, _} = Error ->
+                    Error;
+                {ok, End} ->
+                    Elapsed = (erlang:monotonic_time(millisecond) - T0) / 1000,
+                    Prev = maps:from_list(Start),
+                    Top = lists:foldl(
+                            fun({P, St}, T) ->
+                                    case Prev of
+                                        #{P := St0} -> inet_add(Attr, P, inet_delta(St, St0), St, false, T);
+                                        _ -> inet_add(Attr, P, St, St, true, T)
+                                    end
+                            end, top_new(K), End),
+                    inet_result(Attr, K, Elapsed, length(End), Top)
+            end
+    end.
+
+inet_result(Attr, K, Elapsed, Count, Top) ->
+    {ok, #{attribute => Attr, n => K, seconds => Elapsed, socket_count => Count,
+           items => [inet_item(P, V) || {P, V} <- top_list(Top)]}}.
+
+%% [{Port, {RecvOct, SendOct, RecvCnt, SendCnt}}] of every inet socket.
+inet_snapshot() ->
+    Ports = [P || P <- erlang:ports(), inet_port(P)],
+    case length(Ports) > ?RECON_MAX_SOCKETS of
+        true -> {error, too_many_sockets};
+        false -> {ok, [{P, St} || P <- Ports, {ok, St} <- [inet_stats(P)]]}
+    end.
+
+inet_port(Port) ->
+    case erlang:port_info(Port, name) of
+        {name, Name} -> inet_port_name(Name);
+        undefined -> false
+    end.
+
+inet_stats(Port) ->
+    case catch inet:getstat(Port, [recv_oct, send_oct, recv_cnt, send_cnt]) of
+        {ok, L} ->
+            Get = fun(K) -> proplists:get_value(K, L, 0) end,
+            {ok, {Get(recv_oct), Get(send_oct), Get(recv_cnt), Get(send_cnt)}};
+        _ ->
+            error
+    end.
+
+%% Counters are unsigned and may wrap on 32-bit platforms.
+inet_delta({A1, B1, C1, D1}, {A0, B0, C0, D0}) ->
+    {max(0, A1 - A0), max(0, B1 - B0), max(0, C1 - C0), max(0, D1 - D0)}.
+
+inet_add(Attr, Port, Delta, Now, New, Top) ->
+    top_add(inet_value(Attr, Delta), Port, {inet_value(Attr, Delta), Now, New}, Top).
+
+inet_value(recv_oct, {RO, _, _, _}) -> RO;
+inet_value(send_oct, {_, SO, _, _}) -> SO;
+inet_value(recv_cnt, {_, _, RC, _}) -> RC;
+inet_value(send_cnt, {_, _, _, SC}) -> SC;
+inet_value(oct, {RO, SO, _, _}) -> RO + SO;
+inet_value(cnt, {_, _, RC, SC}) -> RC + SC.
+
+%% The four counters are the socket's current totals; value is the
+%% attribute's total or growth.
+inet_item(Port, {Value, {RO, SO, RC, SC}, New}) ->
+    Owner = case erlang:port_info(Port, connected) of
+                {connected, O} -> O;
+                undefined -> undefined
+            end,
+    #{port => ref_bin(Port),
+      type => case erlang:port_info(Port, name) of
+                  {name, "tcp_inet"} -> tcp;
+                  {name, "udp_inet"} -> udp;
+                  {name, "sctp_inet"} -> sctp;
+                  _ -> null
+              end,
+      owner => ref_bin(Owner),
+      owner_name => case is_pid(Owner) of
+                        true -> registered_name(Owner);
+                        false -> null
+                    end,
+      local => addr(catch inet:sockname(Port)),
+      remote => addr(catch inet:peername(Port)),
+      recv_oct => RO, send_oct => SO, recv_cnt => RC, send_cnt => SC,
+      value => Value,
+      new => New}.
+
+%% Number of ports per driver name. One cheap port_info per port.
+recon_port_types() ->
+    Counts = lists:foldl(
+               fun(P, Acc) ->
+                       case erlang:port_info(P, name) of
+                           {name, Name} -> maps:update_with(Name, fun(C) -> C + 1 end, 1, Acc);
+                           undefined -> Acc
+                       end
+               end, #{}, erlang:ports()),
+    Sorted = lists:reverse(lists:keysort(2, maps:to_list(Counts))),
+    {Shown, Rest} = case length(Sorted) > ?RECON_PORT_TYPES of
+                        true -> lists:split(?RECON_PORT_TYPES, Sorted);
+                        false -> {Sorted, []}
+                    end,
+    Other = case Rest of
+                [] -> [];
+                _ -> [#{name => <<"other">>, count => lists:sum([C || {_, C} <- Rest])}]
+            end,
+    #{total => lists:sum([C || {_, C} <- Sorted]),
+      types => [#{name => port_type_name(N), count => C} || {N, C} <- Shown] ++ Other}.
+
+%% Spawned ports are named after their command, which need not be valid
+%% Unicode.
+port_type_name(Name) ->
+    case catch unicode:characters_to_binary(Name) of
+        B when is_binary(B) -> B;
+        _ -> fmt(Name)
+    end.
+
+%% Per allocator instance: block (used) and carrier (reserved) bytes and
+%% counts of the multiblock and singleblock carriers, usage (blocks /
+%% carriers), average block size and the sbcs/mbcs carrier ratio; plus
+%% the segment cache hit rate of each mseg_alloc instance. Current values.
+recon_alloc() ->
+    Allocs = try erlang:system_info(alloc_util_allocators) catch _:_ -> [] end,
+    #{allocators => lists:append([alloc_instances(T) || T <- Allocs]),
+      cache_hit_rates => cache_hit_rates(),
+      memory_total => erlang:memory(total)}.
+
+alloc_instances(Type) ->
+    case catch erlang:system_info({allocator, Type}) of
+        Instances when is_list(Instances) ->
+            [alloc_frag(Type, N, Sections) || {instance, N, Sections} <- Instances, is_list(Sections)];
+        _ ->
+            []
+    end.
+
+alloc_frag(Type, N, Sections) ->
+    %% The carrier pool's carriers are multiblock carriers, as in alloc_info/0.
+    {MB, MBC, MC, MCC} = carrier_stats([mbcs, mbcs_pool], Sections),
+    {SB, SBC, SC, SCC} = carrier_stats([sbcs], Sections),
+    #{type => Type, instance => N,
+      mbcs_blocks => MB, mbcs_carriers => MC, sbcs_blocks => SB, sbcs_carriers => SC,
+      mbcs_block_count => MBC, sbcs_block_count => SBC,
+      mbcs_carrier_count => MCC, sbcs_carrier_count => SCC,
+      mbcs_usage => ratio(MB, MC), sbcs_usage => ratio(SB, SC),
+      mbcs_avg_block => ratio(MB, MBC), sbcs_avg_block => ratio(SB, SBC),
+      sbcs_to_mbcs => ratio(SCC, MCC)}.
+
+%% {BlocksSize, BlockCount, CarriersSize, CarrierCount} summed over the
+%% given sections.
+carrier_stats(Kinds, Sections) ->
+    lists:foldl(
+      fun({Kind, Data}, {BS, BC, CS, CC} = Acc) when is_list(Data) ->
+              case lists:member(Kind, Kinds) of
+                  true -> {BS + blocks_size(Data), BC + blocks_count(Data),
+                           CS + current(carriers_size, Data), CC + current(carriers, Data)};
+                  false -> Acc
+              end;
+         (_, Acc) ->
+              Acc
+      end, {0, 0, 0, 0}, Sections).
+
+%% OTP 22: {blocks, Cur, LastMax, Max}; OTP 23+: {blocks, [{Type, [{count, ...}, ...]}]}.
+blocks_count(Data) ->
+    case lists:keyfind(blocks, 1, Data) of
+        {blocks, Typed} when is_list(Typed) ->
+            lists:sum([typed_count(Info) || {_, Info} <- Typed]);
+        {blocks, C} when is_integer(C) -> C;
+        {blocks, C, _, _} when is_integer(C) -> C;
+        _ -> 0
+    end.
+
+typed_count(Info) when is_list(Info) ->
+    current(count, Info);
+typed_count(_) ->
+    0.
+
+current(Key, Data) ->
+    case lists:keyfind(Key, 1, Data) of
+        {Key, V, _, _} when is_integer(V) -> V;
+        {Key, V} when is_integer(V) -> V;
+        _ -> 0
+    end.
+
+ratio(_, 0) -> null;
+ratio(A, B) -> A / B.
+
+%% A segment allocation not served by creating a new segment came from
+%% the cache (recon_alloc:cache_hit_rates/0).
+cache_hit_rates() ->
+    case catch erlang:system_info({allocator, mseg_alloc}) of
+        Instances when is_list(Instances) ->
+            [cache_hit_rate(N, Props) || {instance, N, Props} <- Instances, is_list(Props)];
+        _ ->
+            []
+    end.
+
+cache_hit_rate(N, Props) ->
+    Calls = case lists:keyfind(calls, 1, Props) of
+                {calls, C} -> C;
+                false ->
+                    case lists:keyfind(memkind, 1, Props) of
+                        {memkind, MK} when is_list(MK) ->
+                            case lists:keyfind(calls, 1, MK) of
+                                {calls, C} -> C;
+                                false -> []
+                            end;
+                        _ -> []
+                    end
+            end,
+    Alloc = call_count(mseg_alloc, Calls),
+    Hits = max(0, Alloc - call_count(mseg_create, Calls)),
+    #{instance => N, hits => Hits, calls => Alloc, ratio => ratio(Hits, Alloc)}.
+
+call_count(Name, Calls) ->
+    case lists:keyfind(Name, 1, Calls) of
+        {Name, Giga, Count} -> Giga * 1000000000 + Count;
+        _ -> 0
+    end.
+
+%% Utilisation of each scheduler over Seconds (1..30). The holder keeps
+%% scheduler_wall_time enabled, and turns it off with the tool's leaving.
+recon_scheduler_usage(Owner, Seconds) ->
+    S = clamp(Seconds, 1, 30),
+    ensure_holder(Owner),
+    diag_run(Owner, ?DIAG_CHECK_HEAP_WORDS, S * 1000 + 10000, fun() -> scheduler_usage(S) end).
+
+scheduler_usage(Seconds) ->
+    T0 = erlang:monotonic_time(millisecond),
+    W0 = swt(),
+    timer:sleep(Seconds * 1000),
+    W1 = swt(),
+    Elapsed = (erlang:monotonic_time(millisecond) - T0) / 1000,
+    case is_list(W0) andalso is_list(W1) of
+        false ->
+            {error, {failed, <<"scheduler_wall_time is not available">>}};
+        true ->
+            Normal = erlang:system_info(schedulers),
+            DirtyCpu = erlang:system_info(dirty_cpu_schedulers),
+            Type = fun(Id) when Id =< Normal -> normal;
+                      (Id) when Id =< Normal + DirtyCpu -> dirty_cpu;
+                      (_) -> dirty_io
+                   end,
+            {ok, #{seconds => Elapsed,
+                   schedulers => [#{id => Id, type => Type(Id),
+                                    usage => case T1 - T00 of
+                                                 0 -> 0.0;
+                                                 DT -> min(1.0, max(0.0, (A1 - A0) / DT))
+                                             end}
+                                  || {Id, A1, T1} <- W1,
+                                     {_, A0, T00} <- [lists:keyfind(Id, 1, W0)]]}}
+    end.
 
 %%--------------------------------------------------------------------
 %% Distribution

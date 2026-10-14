@@ -52,7 +52,7 @@ export default {
   },
   diag: {
     title: '诊断',
-    tabs: { health: '健康体检', window: '区间 Top N' },
+    tabs: { health: '健康体检' },
     level: { crit: '严重', warn: '警告', ok: '正常', skip: '跳过' },
     health: {
       intro: '检查进程、内存、上限和调度等常见问题，大约需要 3 秒。只读取信息，不会改变节点。',
@@ -137,21 +137,8 @@ export default {
       },
       skipped: '目标节点的 OTP 版本不支持这项检查',
     },
-    window: {
-      intro: '比较一段时间开始和结束时每个进程的数值，找出这段时间里增长最快的进程。只读取信息，不会改变节点。',
-      seconds: '{n} 秒',
-      continuous: '连续',
-      continuous_tip: '每个窗口结束后自动开始下一轮',
-      running: '正在采样，还剩 {n} 秒…',
-      summary: '{seconds} 秒内新建 {created} 个进程，退出 {exited} 个，现在共 {count} 个',
-      reductions: '最忙（reductions 增长）',
-      memory: '内存增长',
-      message_queue_len: '消息队列增长',
-      growth: '增长',
-      now: '当前值',
-      empty: '这段时间里没有进程增长',
-      note: '「新建」表示进程是在窗口期间创建的，增长从 0 算起。点击一行查看进程详情。',
-    },
+    window_hint: '要找出一段时间内增长最快的进程，请用',
+    window_link: 'Recon 工具箱 · 区间排行',
   },
   overview: {
     title: '总览墙',

@@ -12,7 +12,8 @@
 
 %% Requests that change the observed node; refused in read-only mode.
 -define(MUTATING, [<<"process.kill">>, <<"process.send">>, <<"port.close">>,
-                   <<"table.delete">>, <<"table.write">>, <<"trace.start">>]).
+                   <<"table.delete">>, <<"table.write">>, <<"trace.start">>,
+                   <<"recon.bin_leak">>]).
 
 request(Method, Params) ->
     case lists:member(Method, ?MUTATING) andalso read_only() of
@@ -129,8 +130,35 @@ handle(<<"diag.check">>, #{<<"node">> := Node}) ->
 handle(<<"diag.window">>, #{<<"node">> := Node} = Params) ->
     Seconds = max(1, min(60, int(maps:get(<<"seconds">>, Params, 10), 10))),
     unwrap(eobs_node:call(to_node(Node), diag_window, [node(), Seconds], Seconds * 1000 + 45000));
+%% recon toolbox; runs that walk processes or sockets or wait are bounded
+%% by the agent like the diagnosis (and share its one-at-a-time lock), the
+%% tool waits 15 s longer than the agent's own limit.
+handle(<<"recon.proc_count">>, #{<<"node">> := Node} = Params) ->
+    Attr = enum(maps:get(<<"attribute">>, Params, <<"memory">>),
+                [memory, reductions, message_queue_len, total_heap_size, binary_memory], memory),
+    unwrap(eobs_node:call(to_node(Node), recon_proc_count, [node(), Attr, recon_n(Params)], 45000));
+handle(<<"recon.bin_leak">>, #{<<"node">> := Node} = Params) ->
+    unwrap(eobs_node:call(to_node(Node), recon_bin_leak, [node(), recon_n(Params)], 135000));
+handle(<<"recon.inet_count">>, #{<<"node">> := Node} = Params) ->
+    Attr = enum(maps:get(<<"attribute">>, Params, <<"oct">>),
+                [recv_oct, send_oct, recv_cnt, send_cnt, oct, cnt], oct),
+    Seconds = min(60, int(maps:get(<<"seconds">>, Params, 0), 0)),
+    unwrap(eobs_node:call(to_node(Node), recon_inet_count,
+                          [node(), Attr, recon_n(Params), Seconds], Seconds * 1000 + 45000));
+handle(<<"recon.port_types">>, #{<<"node">> := Node}) ->
+    eobs_node:call(to_node(Node), recon_port_types, [], ?TIMEOUT);
+handle(<<"recon.alloc">>, #{<<"node">> := Node}) ->
+    eobs_node:call(to_node(Node), recon_alloc, [], ?TIMEOUT);
+handle(<<"recon.scheduler_usage">>, #{<<"node">> := Node} = Params) ->
+    Seconds = max(1, min(30, int(maps:get(<<"seconds">>, Params, 5), 5))),
+    unwrap(eobs_node:call(to_node(Node), recon_scheduler_usage, [node(), Seconds],
+                          Seconds * 1000 + 25000));
 handle(Method, _Params) ->
     {error, {unknown_method, Method}}.
+
+%% Top N size, 1..50 (default 20).
+recon_n(Params) ->
+    max(1, min(50, int(maps:get(<<"n">>, Params, 20), 20))).
 
 table_kind(Params) -> enum(maps:get(<<"kind">>, Params, <<"ets">>), [ets, mnesia], ets).
 

@@ -3,7 +3,7 @@ import type { Component } from 'vue'
 import {
   SpeedometerOutline, PulseOutline, HardwareChipOutline, AppsOutline,
   GitNetworkOutline, SwapHorizontalOutline, WifiOutline, GridOutline, ShareSocialOutline,
-  ChatbubblesOutline, MedkitOutline, AlbumsOutline, DocumentTextOutline,
+  ChatbubblesOutline, MedkitOutline, AlbumsOutline, DocumentTextOutline, ConstructOutline,
 } from '@vicons/ionicons5'
 import OverviewPage from './pages/OverviewPage.vue'
 import SystemPage from './pages/SystemPage.vue'
@@ -12,6 +12,7 @@ import LoadPage from './pages/LoadPage.vue'
 import ProcessesPage from './pages/ProcessesPage.vue'
 import TracePage from './pages/TracePage.vue'
 import DiagnosisPage from './pages/DiagnosisPage.vue'
+import ReconPage from './pages/ReconPage.vue'
 import LogsPage from './pages/LogsPage.vue'
 import ApplicationsPage from './pages/ApplicationsPage.vue'
 import PortsPage from './pages/PortsPage.vue'
@@ -46,6 +47,7 @@ export const pages: { path: string; name: string; meta: PageMeta }[] = [
   { path: '/allocators', name: 'allocators', meta: meta('allocators', HardwareChipOutline) },
   { path: '/applications', name: 'applications', meta: meta('applications', AppsOutline) },
   { path: '/diagnosis', name: 'diagnosis', meta: meta('diagnosis', MedkitOutline) },
+  { path: '/recon', name: 'recon', meta: meta('recon', ConstructOutline) },
   { path: '/logs', name: 'logs', meta: meta('logs', DocumentTextOutline) },
   { path: '/processes', name: 'processes', meta: meta('processes', GitNetworkOutline) },
   { path: '/trace', name: 'trace', meta: meta('trace', ChatbubblesOutline) },
@@ -56,7 +58,7 @@ export const pages: { path: string; name: string; meta: PageMeta }[] = [
 ]
 
 const components: Record<string, Component> = {
-  overview: OverviewPage, system: SystemPage, load: LoadPage, processes: ProcessesPage, trace: TracePage, diagnosis: DiagnosisPage, logs: LogsPage, applications: ApplicationsPage,
+  overview: OverviewPage, system: SystemPage, load: LoadPage, processes: ProcessesPage, trace: TracePage, diagnosis: DiagnosisPage, recon: ReconPage, logs: LogsPage, applications: ApplicationsPage,
   ports: PortsPage, sockets: SocketsPage, tables: TablesPage, allocators: AllocatorsPage, cluster: ClusterPage,
 }
 

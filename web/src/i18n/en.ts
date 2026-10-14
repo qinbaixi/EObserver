@@ -53,7 +53,7 @@ const en: typeof zh = {
   },
   diag: {
     title: 'Diagnosis',
-    tabs: { health: 'Health check', window: 'Window Top N' },
+    tabs: { health: 'Health check' },
     level: { crit: 'Critical', warn: 'Warning', ok: 'OK', skip: 'Skipped' },
     health: {
       intro: 'Checks processes, memory, system limits and scheduling for common problems. Takes about 3 seconds and only reads information.',
@@ -138,21 +138,8 @@ const en: typeof zh = {
       },
       skipped: 'Not supported by the OTP version of this node',
     },
-    window: {
-      intro: 'Compares every process at the start and end of a window to find the ones that grew most. Only reads information.',
-      seconds: '{n} s',
-      continuous: 'Continuous',
-      continuous_tip: 'Start the next window as soon as one ends',
-      running: 'Sampling, {n} s left…',
-      summary: 'In {seconds} s: created {created}, exited {exited}, {count} running now',
-      reductions: 'Busiest (reductions)',
-      memory: 'Memory growth',
-      message_queue_len: 'Queue growth',
-      growth: 'Growth',
-      now: 'Now',
-      empty: 'No process grew during the window',
-      note: '"New" means the process was created during the window and grows from zero. Click a row for process details.',
-    },
+    window_hint: 'To find the processes that grew most over a window, use',
+    window_link: 'Recon toolbox · Window top',
   },
   overview: {
     title: 'Overview',

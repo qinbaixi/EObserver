@@ -24,7 +24,7 @@ OTP's `observer` is indispensable but built on wxWidgets: it needs a desktop ses
 
 | | OTP `observer` | EObserver |
 |---|---|---|
-| UI | wxWidgets desktop window | Any browser, light and dark themes |
+| UI | wxWidgets desktop window | Any browser or the desktop app, light and dark themes, English and Chinese |
 | Requirements on the target | `runtime_tools` | Nothing; a small collector is loaded on connect and removed on disconnect |
 | Large process tables | The whole table is pulled to your machine | Sorting, filtering and paging run on the target; only one page is sent |
 | Visibility | Connects as a normal node | Connects as a **hidden** node, never in the target's `nodes()` |
@@ -32,30 +32,53 @@ OTP's `observer` is indispensable but built on wxWidgets: it needs a desktop ses
 
 ## Features
 
-- **Local nodes**: lists every node registered with this machine's epmd; tick the ones you want and connect them in one go. Cookies you have used are remembered (in your user config directory, readable only by you), so you pick one from a list instead of pasting it again.
+- **Local nodes**: lists every node registered with this machine's epmd; tick the ones you want and connect them in one go. Cookies you have used are remembered (in your user config directory, readable only by you), so you pick one from a list instead of pasting it again; rename or delete them from the cookie picker.
+- **Node management**: nodes added with a saved cookie reconnect automatically the next time EObserver starts. Remove one node, all disconnected nodes or all of them from the node menu; removing unloads the agent and really drops the distribution connection.
+- **Overview wall**: every connected node on one screen with memory, process count, run queue and a 10-minute trend; nodes with a problem turn yellow or red and say why.
 - **System**: OTP/ERTS versions, schedulers and threads, memory breakdown, usage of process, port, atom and ETS limits, runtime statistics.
-- **Load charts**: scheduler utilisation (average plus a per-scheduler heatmap that stays readable with 64+ cores), stacked memory, IO throughput, run queue and reductions. History survives page switches.
-- **Processes**: sortable, searchable, paged process table with *Reds* (reductions since the last refresh) to spot busy processes. The detail drawer shows links and monitors (click to follow), messages, process dictionary, stack trace and `sys:get_state`, and can send a message or kill the process.
+- **Load charts**: scheduler utilisation (average plus a per-scheduler heatmap that stays readable with 64+ cores), stacked memory, IO throughput, run queue and reductions. History survives page switches. *Compare* mode draws the same metric for several nodes on one chart.
+- **Diagnosis**: a one-click health check of limit usage (processes, ports, atoms, ETS), message queue build-up, memory hogs, large ETS tables, binary memory, run queue, processes that look stuck, processes holding many binaries and distribution send queues, shown green/yellow/red with advice.
+- **Recon toolbox**: [recon](https://github.com/ferd/recon)-style tools built into the agent, so the observed node does not need the recon library: process ranking (top N by memory, reductions, queue, heap or binary), interval ranking (biggest growth over N seconds), binary leak check (garbage-collect every process and see who frees the most refc binaries), network ranking (top sockets by bytes or packets, snapshot or over a window), port types, allocator fragmentation (usage per instance, cache hit rates, average block sizes, sbcs/mbcs) and scheduler usage over N seconds. Every tool runs on demand, is bounded, and only one runs at a time per node.
+- **Logs**: crash records (identical crashes merged with a count, supervisor restart statistics) and live logs with level filter, module and keyword search and export. Only collected while the page is open; removed 60 seconds after you leave it or on disconnect.
+- **Processes**: sortable, searchable, paged process table with *Reds* (reductions since the last refresh) to spot busy processes. The detail drawer shows links and monitors (click to follow), messages, process dictionary, stack trace and `sys:get_state`, and can send a message or kill the process; kill is also on each row and in the right-click menu.
 - **Message trace**: pick up to 10 processes and watch the messages they receive and send, labelled business (gen calls, casts, replies, plain messages), system (EXIT, DOWN, sys, io, timers, ...) or network, with each gen call paired with its reply and its latency. Hard caps on rate, count, duration and memory stop the trace automatically, so tracing cannot take the node down.
+  - **Call statistics**: `gen_server:call` latency per request type (count, average, P95, max, unanswered), counted on the target so they stay exact even if the UI drops messages.
+  - **Sequence diagram**: the messages between chosen processes in time order.
+  - **Trace files**: save a trace to a file and open it later without connecting to the node.
 - **Applications**: every running application with its supervision tree; click any node to inspect the process.
 - **Ports and sockets**: all ports with owner, IO and queue size; `gen_tcp`/`gen_udp` sockets with addresses and statistics; sockets of the `socket` module.
-- **Tables**: ETS and Mnesia tables, and a row viewer that pages and searches on the observed node, so huge tables stay cheap to browse.
+- **Tables**: ETS and Mnesia tables, and a row viewer that pages and searches on the observed node, so huge tables stay cheap to browse. Open a row to see it in full, edit, add or delete rows (Mnesia changes run in a transaction; rows with pids, references or funs can only be viewed and deleted).
 - **Memory allocators**: blocks versus carriers per allocator, utilisation and history, to spot fragmentation.
 - **Cluster topology**: how every observed node is connected; click a neighbour to observe it too.
+- **Command palette**: <kbd>Ctrl</kbd>+<kbd>K</kbd> / <kbd>⌘</kbd>+<kbd>K</kbd> jumps to any page, node, process, table or application, and can start a health check, connect a node or switch theme and language.
+- **English and Chinese**: follows the system language by default; switch in the top bar. The theme can follow the system or be fixed to light or dark.
 - **Shareable links**: the node and the open process, port, table or application are part of the URL.
+- **In-app updates**: checks GitHub for new releases; the Windows installer and Linux AppImage download and install the update in place, other builds link to the download page.
 
 <table>
+  <tr>
+    <td><img src="docs/images/overview-wall.png" alt="Overview wall of all connected nodes" /></td>
+    <td><img src="docs/images/diagnosis.png" alt="Diagnosis health check" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/recon.png" alt="Recon toolbox" /></td>
+    <td><img src="docs/images/trace-sequence.png" alt="Message trace sequence diagram" /></td>
+  </tr>
   <tr>
     <td><img src="docs/images/processes.png" alt="Processes" /></td>
     <td><img src="docs/images/process-detail.png" alt="Process details" /></td>
   </tr>
   <tr>
+    <td><img src="docs/images/logs.png" alt="Crash records and live logs" /></td>
     <td><img src="docs/images/system.png" alt="System overview" /></td>
-    <td><img src="docs/images/applications-dark.png" alt="Supervision tree" /></td>
   </tr>
   <tr>
+    <td><img src="docs/images/applications-dark.png" alt="Supervision tree" /></td>
     <td><img src="docs/images/table-rows.png" alt="Mnesia table rows" /></td>
+  </tr>
+  <tr>
     <td><img src="docs/images/allocators-dark.png" alt="Memory allocators" /></td>
+    <td><img src="docs/images/command-palette.png" alt="Command palette" /></td>
   </tr>
   <tr>
     <td colspan="2" align="center"><img src="docs/images/connect-local.png" alt="Local nodes" width="60%" /></td>
@@ -93,7 +116,7 @@ Your browser opens at <http://localhost:8090/>. You can also start without `--no
 | `--port 8090` | HTTP port |
 | `--listen 127.0.0.1` | Listen address. Localhost by default because the UI can kill processes on the target |
 | `--password PASS` | Ask for this password (HTTP Basic auth, any user name). Also read from `EOBS_PASSWORD`. Use it with `--listen` |
-| `--read-only` | Disable killing processes, sending messages, closing ports, editing table rows and message tracing |
+| `--read-only` | Disable killing processes, sending messages, closing ports, editing table rows, message tracing and the binary leak check |
 | `--no-browser` | Do not open a browser |
 
 Short names (`app@host`) and long names (`app@host.example.com`) are detected automatically, but one EObserver instance uses one kind at a time.
@@ -162,8 +185,14 @@ The WebSocket protocol is described in [docs/protocol.md](docs/protocol.md).
 - [x] Memory allocators
 - [x] Cluster topology, shareable URLs, access control, prebuilt agents per OTP release
 - [x] Release archives and desktop apps for Linux, macOS and Windows
-- [ ] Signed desktop builds, macOS Intel and Linux arm64 builds
+- [x] In-app updates of the desktop app
+- [x] Node management and editing ETS/Mnesia rows
 - [x] Message trace (sent and received messages, classified as business or system)
+- [x] Call latency statistics, sequence diagram and trace files
+- [x] Diagnosis (health check) and logs (crash records and live logs)
+- [x] Overview wall, cross-node comparison charts, command palette, English UI
+- [x] Recon toolbox built into the agent
+- [ ] Signed desktop builds, macOS Intel and Linux arm64 builds
 
 ## Contributing
 

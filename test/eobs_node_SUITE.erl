@@ -3,7 +3,7 @@
 -include_lib("stdlib/include/assert.hrl").
 
 -export([busy_loop/1, sink/0, hold/1, grow/1, hold_binaries/1, hold_many_binaries/1,
-         start_crash_sup/0, log_flood/2, call_kinds/3]).
+         start_crash_sup/0, log_flood/2, call_kinds/3, drop_binaries/2, tcp_pair/0]).
 %% A tiny gen_server for the message trace test, run on the peer; init/1
 %% also serves as the supervisor of the logs test.
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
@@ -18,7 +18,8 @@
          message_trace/1, message_trace_limits/1,
          trace_call_stats/1, trace_call_stats_limits/1,
          diagnosis/1, diagnosis_many_processes/1,
-         logs_and_crashes/1, logs_flood/1, logs_removed_with_tool/1]).
+         logs_and_crashes/1, logs_flood/1, logs_removed_with_tool/1,
+         recon_toolbox/1, recon_many_processes/1]).
 
 all() ->
     [connect_loads_agent, tool_is_hidden, disconnect_unloads_agent,
@@ -28,7 +29,8 @@ all() ->
      http_password_and_origin, local_discovery, saved_cookies, saved_nodes,
      message_trace, message_trace_limits, trace_call_stats, trace_call_stats_limits,
      diagnosis, diagnosis_many_processes,
-     logs_and_crashes, logs_flood, logs_removed_with_tool].
+     logs_and_crashes, logs_flood, logs_removed_with_tool,
+     recon_toolbox, recon_many_processes].
 
 init_per_suite(Config) ->
     application:load(eobserver),
@@ -1021,3 +1023,174 @@ wait_registered(Peer, Name) ->
 garbage_collect_all(Peer) ->
     peer:call(Peer, erlang, apply,
               [fun() -> [erlang:garbage_collect(P) || P <- erlang:processes()], ok end, []]).
+
+%% Builds N refc binaries of Size bytes and drops them: they stay
+%% referenced from the heap until the next garbage collection, which a
+%% process waiting in receive does not do on its own.
+drop_binaries(N, Size) ->
+    Len = length([binary:copy(<<I>>, Size) || I <- lists:seq(1, N)]),
+    receive stop -> Len end.
+
+%% A connected TCP pair on loopback; one end sends 1000 bytes every 100 ms.
+tcp_pair() ->
+    {ok, L} = gen_tcp:listen(0, [binary, {ip, {127, 0, 0, 1}}, {active, false}]),
+    {ok, Port} = inet:port(L),
+    {ok, C} = gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}]),
+    {ok, S} = gen_tcp:accept(L),
+    tcp_pair_loop(S, C).
+
+tcp_pair_loop(S, C) ->
+    ok = gen_tcp:send(S, <<0:8000>>),
+    receive stop -> ok
+    after 100 -> tcp_pair_loop(S, C)
+    end.
+
+recon_toolbox(Config) ->
+    Node = ?config(target, Config),
+    Peer = ?config(peer, Config),
+    connect(Node),
+    Req = #{<<"node">> => atom_to_binary(Node)},
+    Pids = fun(Items) -> [P || #{pid := P} <- Items] end,
+    Big = peer:call(Peer, erlang, spawn, [?MODULE, hold, [1000000]]),
+    Leak = peer:call(Peer, erlang, spawn, [?MODULE, drop_binaries, [20, 1024 * 1024]]),
+    Queue = peer:call(Peer, erlang, spawn, [timer, sleep, [infinity]]),
+    peer:call(Peer, erlang, apply, [fun() -> [Queue ! {msg, N} || N <- lists:seq(1, 10001)], ok end, []]),
+    [wait_waiting(Peer, P) || P <- [Big, Leak]],
+    [BigBin, LeakBin, QueueBin] = [target_pid(Peer, P) || P <- [Big, Leak, Queue]],
+    %% Process ranking, by every attribute.
+    {ok, #{items := [#{pid := BigBin, value := BigMem, too_many := false} | _], n := 5} = ByMem} =
+        eobs_api:request(<<"recon.proc_count">>, Req#{<<"n">> => 5}),
+    ?assert(is_binary(eobs_json:encode(ByMem))),
+    ?assertEqual(5, length(maps:get(items, ByMem))),
+    ?assert(BigMem > 8000000),
+    {ok, #{items := [#{pid := QueueBin, value := 10001} | _]}} =
+        eobs_api:request(<<"recon.proc_count">>, Req#{<<"attribute">> => <<"message_queue_len">>}),
+    {ok, #{items := [#{pid := BigBin, value := Heap, total_heap_size := Heap} | _]}} =
+        eobs_api:request(<<"recon.proc_count">>, Req#{<<"attribute">> => <<"total_heap_size">>}),
+    ?assert(Heap > 8000000),
+    {ok, #{attribute := reductions, items := [_ | _]}} =
+        eobs_api:request(<<"recon.proc_count">>, Req#{<<"attribute">> => <<"reductions">>}),
+    {ok, #{items := [#{pid := LeakBin, value := LeakHeld} | _]}} =
+        eobs_api:request(<<"recon.proc_count">>, Req#{<<"attribute">> => <<"binary_memory">>}),
+    ?assert(LeakHeld >= 20 * 1024 * 1024),
+    %% A process with too many binaries to read comes first, without a value.
+    Many = peer:call(Peer, erlang, spawn, [?MODULE, hold_many_binaries, [500000]]),
+    wait_waiting(Peer, Many),
+    ManyBin = target_pid(Peer, Many),
+    {ok, #{items := [#{pid := ManyBin, value := null, too_many := true},
+                     #{pid := LeakBin} | _]}} =
+        eobs_api:request(<<"recon.proc_count">>, Req#{<<"attribute">> => <<"binary_memory">>}),
+    %% Binary leak: the dropped binaries are freed, the long queue and the
+    %% too-many-binaries process are skipped (not collected).
+    {ok, #{items := [#{pid := LeakBin, freed := Freed, before_count := 20, after_count := 0} | _],
+           skipped_items := Skipped, complete := true,
+           binary_before := BinBefore, binary_after := BinAfter} = Leaked} =
+        eobs_api:request(<<"recon.bin_leak">>, Req),
+    ?assert(is_binary(eobs_json:encode(Leaked))),
+    ?assert(Freed >= 20 * 1024 * 1024),
+    %% Node-wide, other binaries come and go meanwhile.
+    ct:pal("binary memory before ~p after ~p, freed by the leaking process ~p",
+           [BinBefore, BinAfter, Freed]),
+    ?assert(BinBefore - BinAfter >= 10 * 1024 * 1024),
+    ?assertEqual(lists:sort([{QueueBin, long_queue}, {ManyBin, too_many_binaries}]),
+                 lists:sort([{P, R} || #{pid := P, reason := R} <- Skipped])),
+    ?assertNot(lists:member(QueueBin, Pids(maps:get(items, Leaked)))),
+    peer:call(Peer, erlang, exit, [Many, kill]),
+    %% Changes the node: refused in read-only mode.
+    application:set_env(eobserver, read_only, true),
+    ?assertEqual({error, read_only}, eobs_api:request(<<"recon.bin_leak">>, Req)),
+    ?assertMatch({ok, _}, eobs_api:request(<<"recon.proc_count">>, Req)),
+    application:set_env(eobserver, read_only, false),
+    %% Sockets: totals and growth during a window. The peer also has its
+    %% distribution sockets, so only the pair's own are looked at.
+    Tcp = peer:call(Peer, erlang, spawn, [?MODULE, tcp_pair, []]),
+    TcpBin = target_pid(Peer, Tcp),
+    timer:sleep(300),
+    Pair = fun(Items) -> [I || #{owner := O} = I <- Items, O =:= TcpBin] end,
+    {ok, #{items := Totals, socket_count := Sockets}} =
+        eobs_api:request(<<"recon.inet_count">>, Req#{<<"attribute">> => <<"send_oct">>}),
+    ?assert(Sockets >= 3),
+    [#{type := tcp, value := Total, send_oct := Total, new := false,
+       local := <<"127.0.0.1:", _/binary>>, remote := <<"127.0.0.1:", _/binary>>} | _] = Pair(Totals),
+    ?assert(Total >= 1000),
+    {ok, #{items := Grown, seconds := Secs} = Window} =
+        eobs_api:request(<<"recon.inet_count">>, Req#{<<"attribute">> => <<"oct">>, <<"seconds">> => 1}),
+    ?assert(is_binary(eobs_json:encode(Window))),
+    ?assert(Secs >= 1.0),
+    [#{value := Growth} | _] = Pair(Grown),
+    ?assert(Growth >= 5000 andalso Growth =< 30000),
+    %% Port types.
+    {ok, #{total := PortTotal, types := Types}} = eobs_api:request(<<"recon.port_types">>, Req),
+    [TcpCount] = [C || #{name := <<"tcp_inet">>, count := C} <- Types],
+    ?assert(TcpCount >= 3 andalso PortTotal >= TcpCount),
+    %% Allocators.
+    {ok, #{allocators := Allocs, cache_hit_rates := Rates} = Alloc} =
+        eobs_api:request(<<"recon.alloc">>, Req),
+    ?assert(is_binary(eobs_json:encode(Alloc))),
+    [_ | _] = Eheaps = [A || A = #{type := eheap_alloc} <- Allocs],
+    ?assert(lists:any(fun(#{mbcs_usage := U, mbcs_avg_block := Avg, mbcs_carrier_count := C}) ->
+                              C > 0 andalso U > 0 andalso U =< 1 andalso Avg > 0
+                      end, Eheaps)),
+    ?assert(lists:all(fun(#{ratio := null}) -> true;
+                         (#{ratio := R, hits := H, calls := C}) -> R >= 0 andalso R =< 1 andalso H =< C
+                      end, Rates)),
+    %% Scheduler usage; the guard allows one run at a time.
+    Self = self(),
+    spawn(fun() -> Self ! {sched, eobs_api:request(<<"recon.scheduler_usage">>, Req#{<<"seconds">> => 1})} end),
+    timer:sleep(200),
+    {error, busy} = eobs_api:request(<<"recon.proc_count">>, Req),
+    {ok, #{schedulers := Scheds, seconds := SchedSecs}} = receive {sched, S} -> S after 30000 -> error(sched_timeout) end,
+    ?assert(SchedSecs >= 1.0),
+    ?assertEqual(peer:call(Peer, erlang, system_info, [schedulers]),
+                 length([X || X = #{type := normal} <- Scheds])),
+    ?assert(lists:all(fun(#{usage := U}) -> U >= 0 andalso U =< 1 end, Scheds)),
+    peer:call(Peer, erlang, exit, [Tcp, kill]).
+
+%% 50k processes, a tenth of them holding dropped refc binaries: the
+%% process ranking, the binary leak run and a socket window all finish,
+%% the node keeps answering quickly throughout and its memory goes down.
+recon_many_processes(Config) ->
+    Node = ?config(target, Config),
+    Peer = ?config(peer, Config),
+    peer:call(Peer, erlang, apply,
+              [fun() ->
+                       [case I rem 10 of
+                            0 -> spawn(?MODULE, drop_binaries, [5, 2048]);
+                            _ -> spawn(timer, sleep, [infinity])
+                        end || I <- lists:seq(1, 50000)],
+                       ok
+               end, []]),
+    Tcp = peer:call(Peer, erlang, spawn, [?MODULE, tcp_pair, []]),
+    connect(Node),
+    Req = #{<<"node">> => atom_to_binary(Node)},
+    Before = peer:call(Peer, erlang, memory, [total]),
+    Self = self(),
+    Run = fun(Tag, Method, Params) ->
+                  spawn(fun() -> Self ! {Tag, eobs_api:request(Method, maps:merge(Req, Params))} end),
+                  Pings = ping_while(Peer, Tag),
+                  receive {Tag, R} -> {R, lists:max(Pings)} end
+          end,
+    {{ok, #{process_count := Count, items := BinItems, took_ms := CountMs}}, P1} =
+        Run(count, <<"recon.proc_count">>, #{<<"attribute">> => <<"binary_memory">>, <<"n">> => 50}),
+    ?assert(Count > 50000),
+    ?assertEqual(50, length(BinItems)),
+    {{ok, #{gc_count := Gc, process_count := Leaked, took_ms := LeakMs, complete := true,
+            binary_before := BinBefore, binary_after := BinAfter}}, P2} =
+        Run(leak, <<"recon.bin_leak">>, #{}),
+    ?assert(Leaked > 50000),
+    ?assert(Gc >= 5000),
+    ?assert(BinBefore - BinAfter >= 5000 * 5 * 2048),
+    {{ok, #{socket_count := Sockets, items := [#{value := Grown} | _]}}, P3} =
+        Run(inet, <<"recon.inet_count">>, #{<<"seconds">> => 2}),
+    ?assert(Sockets >= 3 andalso Grown > 0),
+    ct:pal("proc_count ~p ms, bin_leak ~p ms over ~p processes (~p collected); "
+           "slowest ping ~p / ~p / ~p us",
+           [CountMs, LeakMs, Leaked, Gc, P1, P2, P3]),
+    ?assert(lists:max([P1, P2, P3]) < 500000),
+    ?assertEqual(Node, peer:call(Peer, erlang, node, [])),
+    ?assertEqual(undefined, peer:call(Peer, erlang, whereis, [eobs_agent_diag])),
+    peer:call(Peer, erlang, exit, [Tcp, kill]),
+    timer:sleep(500),
+    After = peer:call(Peer, erlang, memory, [total]),
+    ct:pal("memory before ~p after ~p", [Before, After]),
+    ?assert(After - Before < 32 * 1024 * 1024).

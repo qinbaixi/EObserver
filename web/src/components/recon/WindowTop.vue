@@ -11,7 +11,7 @@ import { client } from '../../api/ws'
 import { errorText } from '../../api/errors'
 import { formatBytes, formatNumber } from '../../api/format'
 import type { WindowItem, WindowReport } from '../../api/types'
-import { useDiag } from '../../stores/diag'
+import { useRecon } from '../../stores/recon'
 import { useSettings } from '../../stores/settings'
 
 const props = defineProps<{ node: string }>()
@@ -19,7 +19,7 @@ const emit = defineEmits<{ open: [pid: string] }>()
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
-const diag = useDiag()
+const recon = useRecon()
 const settings = useSettings()
 
 const seconds = ref(10)
@@ -27,7 +27,7 @@ const continuous = ref(false)
 const running = ref(false)
 const left = ref(0)
 const error = ref<string | null>(null)
-const last = computed(() => diag.window[props.node] ?? null)
+const last = computed(() => recon.window[props.node] ?? null)
 let ticker: number | undefined
 let stopped = false
 
@@ -42,7 +42,7 @@ async function run() {
     try {
       const report = await client.request<WindowReport>('diag.window',
         { node: props.node, seconds: seconds.value }, seconds.value * 1000 + 60000)
-      diag.window[props.node] = { report, at: Date.now() }
+      recon.window[props.node] = { report, at: Date.now() }
     } catch (e) {
       error.value = errorText(e)
       stopped = true
@@ -78,11 +78,11 @@ function columns(m: Metric): DataTableColumns<WindowItem> {
       ]),
     },
     {
-      key: 'value', title: t('diag.window.growth'), width: 150, align: 'right',
+      key: 'value', title: t('recon.window.growth'), width: 150, align: 'right',
       render: (i) => h('span', { class: 'mono grow' }, `+${fmt(m, i.value)}`),
     },
     {
-      key: 'now', title: t('diag.window.now'), width: 150, align: 'right',
+      key: 'now', title: t('recon.window.now'), width: 150, align: 'right',
       render: (i) => h('span', { class: 'mono muted' }, fmt(m, i[m])),
     },
     ...(settings.readOnly ? [] : [{
@@ -107,13 +107,13 @@ const rowProps = (i: WindowItem) => ({ style: 'cursor: pointer', onClick: () => 
 <template>
   <div class="bar">
     <NRadioGroup v-model:value="seconds" size="small" :disabled="running">
-      <NRadioButton v-for="s in [5, 10, 30, 60]" :key="s" :value="s">{{ t('diag.window.seconds', { n: s }) }}</NRadioButton>
+      <NRadioButton v-for="s in [5, 10, 30, 60]" :key="s" :value="s">{{ t('recon.window.seconds', { n: s }) }}</NRadioButton>
     </NRadioGroup>
     <NTooltip>
       <template #trigger>
-        <span class="switch"><NSwitch v-model:value="continuous" size="small" /> {{ t('diag.window.continuous') }}</span>
+        <span class="switch"><NSwitch v-model:value="continuous" size="small" /> {{ t('recon.window.continuous') }}</span>
       </template>
-      {{ t('diag.window.continuous_tip') }}
+      {{ t('recon.window.continuous_tip') }}
     </NTooltip>
     <NButton v-if="!running || !continuous" type="primary" :loading="running" @click="run">
       <template #icon><NIcon :component="PlayOutline" /></template>
@@ -123,27 +123,27 @@ const rowProps = (i: WindowItem) => ({ style: 'cursor: pointer', onClick: () => 
       <template #icon><NIcon :component="StopOutline" /></template>
       {{ t('common.stop') }}
     </NButton>
-    <span v-if="running" class="muted">{{ t('diag.window.running', { n: left }) }}</span>
+    <span v-if="running" class="muted">{{ t('recon.window.running', { n: left }) }}</span>
     <span v-else-if="last" class="muted">
-      {{ t('diag.window.summary', { seconds: last.report.seconds.toFixed(1), created: formatNumber(last.report.created),
+      {{ t('recon.window.summary', { seconds: last.report.seconds.toFixed(1), created: formatNumber(last.report.created),
                                      exited: formatNumber(last.report.exited), count: formatNumber(last.report.process_count) }) }}
     </span>
-    <span v-else class="muted">{{ t('diag.window.intro') }}</span>
+    <span v-else class="muted">{{ t('recon.window.intro') }}</span>
   </div>
   <NProgress v-if="running" type="line" :percentage="Math.round(((seconds - left) * 100) / seconds)"
              :show-indicator="false" :height="3" style="margin-bottom: 12px" />
   <NAlert v-if="error" type="error" style="margin-bottom: 12px">{{ error }}</NAlert>
   <NGrid v-if="last" :cols="1" :x-gap="12" :y-gap="12">
     <NGi v-for="m in METRICS" :key="m">
-      <NCard :title="t(`diag.window.${m}`)" size="small">
+      <NCard :title="t(`recon.window.${m}`)" size="small">
         <NDataTable :columns="columns(m)" :data="last.report[m]" size="small" :bordered="false"
                     :row-props="rowProps" :row-key="(i: WindowItem) => i.pid" max-height="360">
-          <template #empty><span class="muted">{{ t('diag.window.empty') }}</span></template>
+          <template #empty><span class="muted">{{ t('recon.window.empty') }}</span></template>
         </NDataTable>
       </NCard>
     </NGi>
   </NGrid>
-  <p v-if="last" class="note">{{ t('diag.window.note') }}</p>
+  <p v-if="last" class="note">{{ t('recon.window.note') }}</p>
 </template>
 
 <style scoped>

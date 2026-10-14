@@ -416,6 +416,135 @@ export interface WindowReport {
   message_queue_len: WindowItem[]
 }
 
+// Recon toolbox (recon.*). Process items carry the same fields as the
+// diagnosis items; `value` is the ranked attribute.
+export interface ReconProcBase {
+  pid: string
+  name: string | null
+  initial_call: string
+  current_function: string | null
+}
+
+export type ReconProcAttr = 'memory' | 'reductions' | 'message_queue_len' | 'total_heap_size' | 'binary_memory'
+
+export interface ReconProcItem extends ReconProcBase {
+  // null with too_many: the binary list was too big to read.
+  value: number | null
+  too_many: boolean
+  memory: number
+  reductions: number
+  message_queue_len: number
+  total_heap_size: number
+}
+
+export interface ReconProcReport {
+  attribute: ReconProcAttr
+  n: number
+  process_count: number
+  took_ms: number
+  items: ReconProcItem[]
+}
+
+export interface BinLeakItem extends ReconProcBase {
+  value: number
+  before_bytes: number
+  after_bytes: number
+  before_count: number
+  after_count: number
+  freed: number
+}
+
+export type BinLeakSkipReason = 'big_heap' | 'long_queue' | 'too_many_binaries' | 'gc_timeout'
+
+export interface BinLeakSkipped extends ReconProcBase {
+  // Memory bytes for big_heap, queue length for long_queue, else null.
+  value: number | null
+  reason: BinLeakSkipReason
+}
+
+export interface BinLeakReport {
+  n: number
+  process_count: number
+  gc_count: number
+  skipped: number
+  took_ms: number
+  binary_before: number
+  binary_after: number
+  // false when the node's deadline stopped the run: the result is partial.
+  complete: boolean
+  items: BinLeakItem[]
+  skipped_items: BinLeakSkipped[]
+}
+
+export type InetAttr = 'recv_oct' | 'send_oct' | 'recv_cnt' | 'send_cnt' | 'oct' | 'cnt'
+
+export interface InetItem {
+  port: string
+  type: 'tcp' | 'udp' | 'sctp'
+  owner: string | null
+  owner_name: string | null
+  local: string | null
+  remote: string | null
+  recv_oct: number
+  send_oct: number
+  recv_cnt: number
+  send_cnt: number
+  // The four counters are current totals; value is the growth in window mode.
+  value: number
+  new: boolean
+}
+
+export interface InetReport {
+  attribute: InetAttr
+  n: number
+  seconds: number
+  socket_count: number
+  items: InetItem[]
+}
+
+export interface PortTypesReport {
+  total: number
+  types: { name: string; count: number }[]
+}
+
+export interface ReconAllocRow {
+  type: string
+  instance: number
+  mbcs_blocks: number
+  mbcs_carriers: number
+  sbcs_blocks: number
+  sbcs_carriers: number
+  mbcs_block_count: number
+  sbcs_block_count: number
+  mbcs_carrier_count: number
+  sbcs_carrier_count: number
+  mbcs_usage: number | null
+  sbcs_usage: number | null
+  mbcs_avg_block: number | null
+  sbcs_avg_block: number | null
+  sbcs_to_mbcs: number | null
+}
+
+export interface CacheHitRate {
+  instance: number
+  hits: number
+  calls: number
+  ratio: number | null
+}
+
+export interface ReconAllocReport {
+  allocators: ReconAllocRow[]
+  cache_hit_rates: CacheHitRate[]
+  memory_total: number
+}
+
+export type SchedulerType = 'normal' | 'dirty_cpu' | 'dirty_io'
+
+export interface SchedUsageReport {
+  seconds: number
+  schedulers: { id: number; type: SchedulerType; usage: number }[]
+}
+
 export type LogLevel = 'emergency' | 'alert' | 'critical' | 'error' | 'warning' | 'notice' | 'info' | 'debug'
 
 export interface LogLine {

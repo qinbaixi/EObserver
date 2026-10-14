@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useQueryRef } from '../composables/useQueryRef'
 import { computed, h, ref, toRef } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { NDataTable, NInput, NIcon, NAlert, NTag, type DataTableColumns } from 'naive-ui'
 import { SearchOutline } from '@vicons/ionicons5'
 import { useNodes } from '../stores/nodes'
@@ -15,6 +16,7 @@ import ProcessDrawer from '../components/ProcessDrawer.vue'
 import { term } from '../api/term'
 import { useResizableTable } from '../api/table'
 
+const { t } = useI18n()
 const nodes = useNodes()
 const node = computed(() =>
   nodes.currentInfo?.status === 'connected' ? nodes.currentInfo.node : null)
@@ -28,36 +30,36 @@ const rows = computed(() => {
   const q = search.value.trim().toLowerCase()
   const all = data.value ?? []
   return q ? all.filter((p) => [p.id, p.name, p.connected ?? '', p.registered_name ?? '']
-    .some((t) => t.toLowerCase().includes(q))) : all
+    .some((s) => s.toLowerCase().includes(q))) : all
 })
 
 const num = (a: number, b: number) => a - b
 
-const columns: DataTableColumns<PortRow> = [
-  { key: 'id', title: '端口', width: 130, sorter: (a, b) => portNo(a.id) - portNo(b.id),
+const columns = computed<DataTableColumns<PortRow>>(() => [
+  { key: 'id', title: t('pages.ports.cols.id'), width: 130, sorter: (a, b) => portNo(a.id) - portNo(b.id),
     render: (r) => h('span', { class: 'mono' }, r.id) },
-  { key: 'name', title: '名称', minWidth: 240, ellipsis: { tooltip: true },
+  { key: 'name', title: t('pages.ports.cols.name'), minWidth: 240, ellipsis: { tooltip: true },
     sorter: (a, b) => a.name.localeCompare(b.name),
     render: (r) => h('span', { class: 'mono' }, [
       r.registered_name ? h('b', null, `${r.registered_name} `) : null,
       h('span', { class: r.registered_name ? 'muted' : '' }, r.name),
     ]) },
-  { key: 'type', title: '类型', width: 90,
+  { key: 'type', title: t('pages.ports.cols.type'), width: 90,
     render: (r) => h(NTag, { size: 'small', bordered: false, type: r.inet ? 'info' : r.os_pid ? 'warning' : 'default' },
-      { default: () => (r.inet ? 'socket' : r.os_pid ? '外部程序' : '驱动') }) },
+      { default: () => (r.inet ? 'socket' : t(r.os_pid ? 'pages.ports.types.external' : 'pages.ports.types.driver')) }) },
   { key: 'connected', title: term('所属进程'), width: 130,
     render: (r) => r.connected
       ? h('a', { class: 'mono link', onClick: (e: Event) => { e.stopPropagation(); selectedPid.value = r.connected } }, r.connected)
       : '-' },
   { key: 'os_pid', title: term('OS pid'), width: 90, align: 'right',
     render: (r) => h('span', { class: 'mono muted' }, r.os_pid ?? '-') },
-  { key: 'input', title: '输入', width: 110, align: 'right', sorter: (a, b) => num(a.input, b.input),
+  { key: 'input', title: t('pages.ports.cols.input'), width: 110, align: 'right', sorter: (a, b) => num(a.input, b.input),
     render: (r) => h('span', { class: 'mono' }, formatBytes(r.input)) },
-  { key: 'output', title: '输出', width: 110, align: 'right', sorter: (a, b) => num(a.output, b.output),
+  { key: 'output', title: t('pages.ports.cols.output'), width: 110, align: 'right', sorter: (a, b) => num(a.output, b.output),
     render: (r) => h('span', { class: 'mono' }, formatBytes(r.output)) },
   { key: 'queue_size', title: term('队列'), width: 100, align: 'right', sorter: (a, b) => num(a.queue_size, b.queue_size),
     render: (r) => h('span', { class: ['mono', r.queue_size > 0 ? 'q-warn' : 'muted'] }, formatBytes(r.queue_size)) },
-]
+])
 
 function portNo(id: string) {
   const m = /\.(\d+)>/.exec(id)
@@ -69,8 +71,9 @@ const portTable = useResizableTable(columns)
 </script>
 
 <template>
-  <PageHeader title="端口" :subtitle="data ? `${formatNumber(data.length)} 个端口` : nodes.current ?? undefined">
-    <NInput v-model:value="search" clearable placeholder="按端口、名称或进程过滤" style="width: 280px">
+  <PageHeader :title="t('pages.ports.title')"
+              :subtitle="data ? t('pages.ports.count', { n: formatNumber(data.length) }, data.length) : nodes.current ?? undefined">
+    <NInput v-model:value="search" clearable :placeholder="t('pages.ports.filter')" style="width: 280px">
       <template #prefix><NIcon :component="SearchOutline" /></template>
     </NInput>
     <RefreshControl v-model:paused="paused" v-model:interval="interval" @refresh="refresh" />

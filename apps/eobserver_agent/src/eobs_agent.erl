@@ -14,11 +14,15 @@
 -export([ets_list/0, ets_rows/2, mnesia_list/0, mnesia_rows/2]).
 -export([table_object/3, table_delete/3, table_write/4]).
 -export([alloc_info/0, dist_info/0]).
--export([trace_start/3, trace_stop/0, trace_events/2]).
+-export([trace_start/3, trace_stop/0, trace_events/2, trace_stats/2]).
+-export([diag_check/1, diag_window/2]).
+-export([logs_events/2, logs_stop/0]).
+%% logger handler callback, called by logger in the logging process.
+-export([log/2]).
 
 %% Bump whenever the exported API or return shapes change, so the tool
 %% replaces an older copy that is still loaded on the target.
--define(VERSION, 9).
+-define(VERSION, 12).
 
 %% Long-lived helper process on the observed node. It keeps
 %% scheduler_wall_time enabled, builds process lists while holding the
@@ -1017,7 +1021,11 @@ bin(Chars) -> unicode:characters_to_binary(Chars).
 %%   - formatted events go to a bounded ETS ring the tool pulls from, so
 %%     nothing accumulates when the tool or the network is slow;
 %%   - the keeper process stops everything when the tool node goes away and
-%%     exits after a while without being read.
+%%     exits after a while without being read;
+%%   - gen calls are timed in the worker into a fixed-size table (at most
+%%     TRACE_KINDS request kinds, a histogram instead of every latency, the
+%%     TRACE_SLOWEST slowest samples) with at most TRACE_PENDING calls
+%%     waiting for a reply.
 %%--------------------------------------------------------------------
 
 -define(TRACER, eobs_agent_tracer).
@@ -1030,6 +1038,27 @@ bin(Chars) -> unicode:characters_to_binary(Chars).
 -define(TRACE_SUMMARY_CHARS, 240).
 -define(TRACE_PAGE, 1000).
 -define(TRACE_FLAGS, [send, 'receive', monotonic_timestamp]).
+%% Call statistics: distinct (process, direction, request kind) rows, the
+%% rest is merged into one "other" row per process and direction; calls
+%% waiting for a reply, and how long before one counts as unanswered;
+%% slowest samples kept per row; histogram buckets per doubling of the
+%% latency (about 9% wide) and their number (up to 2^30 us, 18 minutes).
+-define(TRACE_KINDS, 200).
+-define(TRACE_PENDING, 1000).
+-define(TRACE_CALL_EXPIRE_MS, 60000).
+-define(TRACE_SLOWEST, 10).
+-define(TRACE_HIST_STEPS, 8).
+-define(TRACE_HIST_SIZE, 241).
+%% Positions in a statistics row: {Key, RowNo, Calls, Answered, SumUs,
+%% MaxUs, Pending, Unanswered, Bucket0, Bucket1, ...}.
+-define(S_ROW, 2).
+-define(S_CALLS, 3).
+-define(S_ANSWERED, 4).
+-define(S_SUM, 5).
+-define(S_MAX, 6).
+-define(S_PENDING, 7).
+-define(S_UNANSWERED, 8).
+-define(S_HIST, 9).
 
 %% Targets: pids or registered names (binaries). Opts: max_events,
 %% max_seconds, max_rate (per second). Replaces a running trace.
@@ -1061,6 +1090,15 @@ trace_events(Id, Since) ->
     case whereis(?TRACER) of
         undefined -> {error, not_running};
         Pid -> tracer_call(Pid, {events, Id, Since})
+    end.
+
+%% Call statistics of trace Id (null: whichever trace is current). Which:
+%% rows (the table only), all (with each row's histogram and slowest
+%% calls) or a row number (that row with its details).
+trace_stats(Id, Which) ->
+    case whereis(?TRACER) of
+        undefined -> {error, not_running};
+        Pid -> tracer_call(Pid, {stats, Id, Which})
     end.
 
 %% Stops the current keeper (if any) and waits until it is gone.
@@ -1111,12 +1149,13 @@ keeper_init(Parent, Owner, Resolved, Limits) ->
     erlang:monitor_node(Owner, true),
     Tab = ets:new(eobs_trace, [ordered_set, public]),
     ets:insert(Tab, {seq, 0}),
+    Stats = ets:new(eobs_trace_stats, [set, public]),
     Keeper = self(),
-    {Worker, WRef} = spawn_monitor(fun() -> worker_init(Keeper, Tab, Limits) end),
+    {Worker, WRef} = spawn_monitor(fun() -> worker_init(Keeper, Tab, Stats, Limits) end),
     Results = [{T, start_one(R, Worker)} || {T, R} <- Resolved],
     Traced = [P || {_, {ok, P}} <- Results],
     Id = erlang:unique_integer([positive]),
-    St0 = #{id => Id, owner => Owner, tab => Tab, worker => Worker, wref => WRef,
+    St0 = #{id => Id, owner => Owner, tab => Tab, stats => Stats, worker => Worker, wref => WRef,
             traced => Traced, limits => Limits, status => running, reason => null,
             started => erlang:system_time(millisecond),
             last_read => erlang:monotonic_time(millisecond)},
@@ -1163,6 +1202,13 @@ keeper_loop(#{last_read := LastRead} = St) ->
             St1 = St#{last_read := erlang:monotonic_time(millisecond)},
             case Id =:= null orelse Id =:= maps:get(id, St1) of
                 true -> From ! {Ref, {ok, events_since(Since, St1)}};
+                false -> From ! {Ref, {error, not_found}}
+            end,
+            keeper_loop(St1);
+        {From, Ref, {stats, Id, Which}} ->
+            St1 = St#{last_read := erlang:monotonic_time(millisecond)},
+            case Id =:= null orelse Id =:= maps:get(id, St1) of
+                true -> From ! {Ref, {ok, stats_read(Which, St1)}};
                 false -> From ! {Ref, {error, not_found}}
             end,
             keeper_loop(St1);
@@ -1234,7 +1280,7 @@ events_since(Since0, #{id := Id, tab := Tab, status := Status, reason := Reason,
 
 %% The worker receives the trace messages, enforces the limits and writes
 %% formatted events into the keeper's table.
-worker_init(Keeper, Tab, Limits) ->
+worker_init(Keeper, Tab, Stats, Limits) ->
     process_flag(max_heap_size, #{size => ?TRACE_HEAP_WORDS, kill => true,
                                   error_logger => false}),
     receive
@@ -1244,7 +1290,8 @@ worker_init(Keeper, Tab, Limits) ->
     worker_loop(#{keeper => Keeper, tab => Tab, limits => Limits, count => 0,
                   deadline => Now + maps:get(max_seconds, Limits) * 1000,
                   window => {Now div 1000, 0}, names => #{},
-                  offset => erlang:time_offset()}).
+                  offset => erlang:time_offset(),
+                  stats => Stats, rows => #{}, pending => #{}, swept => Now}).
 
 worker_loop(#{deadline := Deadline} = St) ->
     Timeout = max(0, Deadline - erlang:monotonic_time(millisecond)),
@@ -1280,7 +1327,7 @@ trace_event(Pid, Dir, Msg, To, Ts, #{count := Count, limits := Limits, window :=
         false ->
             {Event, St1} = make_event(Pid, Dir, Msg, To, Ts, St),
             store_event(Event, St1),
-            St2 = St1#{count := Count + 1, window := Window},
+            St2 = call_stats(Pid, Dir, Msg, Ts, Event, St1#{count := Count + 1, window := Window}),
             case Count + 1 >= MaxEvents of
                 true -> worker_done(max_events, St2);
                 false -> St2
@@ -1318,6 +1365,199 @@ make_event(Pid, Dir, Msg, To, Ts, #{offset := Offset} = St) ->
               summary => one_line(Text, ?TRACE_SUMMARY_CHARS),
               text => Text},
     {Event, St1}.
+
+%% Times gen calls of the traced processes: a call (received: the process
+%% serves it; sent: the process waits for it) waits in `pending` until the
+%% same process sends or receives the reply with its reference. Counts go
+%% straight into the statistics table, so they stay exact when the event
+%% ring drops events and survive the worker being killed at stop.
+call_stats(Pid, Dir, Msg, Ts, Event, St) ->
+    St1 = expire_calls(St),
+    case call_part(Msg) of
+        {call, Ref, Req} ->
+            {Key, St2} = stats_row(Pid, Dir, req_kind(Req), St1),
+            ets:update_counter(maps:get(stats, St2), Key, [{?S_CALLS, 1}, {?S_PENDING, 1}]),
+            #{pending := Pending} = St3 = make_room(St2),
+            Peer = case Event of
+                       #{peer_name := Name} when Name =/= null -> Name;
+                       #{peer := P} -> P
+                   end,
+            Call = {Key, Ts, maps:get(t, Event), Peer, maps:get(summary, Event),
+                    erlang:monotonic_time(millisecond)},
+            St3#{pending := Pending#{{Pid, Ref} => Call}};
+        {reply, Ref} ->
+            #{pending := Pending, stats := Tab} = St1,
+            case maps:take({Pid, Ref}, Pending) of
+                {{Key, CallTs, T, Peer, Summary, _}, Pending1} ->
+                    Us = max(0, erlang:convert_time_unit(Ts - CallTs, native, microsecond)),
+                    ets:update_counter(Tab, Key, [{?S_ANSWERED, 1}, {?S_SUM, Us}, {?S_PENDING, -1},
+                                                  {?S_HIST + hist_bucket(Us), 1}]),
+                    case ets:lookup_element(Tab, Key, ?S_MAX) < Us of
+                        true -> ets:update_element(Tab, Key, {?S_MAX, Us});
+                        false -> ok
+                    end,
+                    slowest(Tab, Key, {Us, T, Peer, Summary}),
+                    St1#{pending := Pending1};
+                error ->
+                    St1
+            end;
+        none ->
+            St1
+    end.
+
+call_part({'$gen_call', {_, Tag}, Req}) ->
+    case call_ref(Tag) of
+        undefined -> none;
+        Ref -> {call, Ref, Req}
+    end;
+call_part({Ref, _}) when is_reference(Ref) -> {reply, Ref};
+call_part({[alias | Ref], _}) when is_reference(Ref) -> {reply, Ref};
+call_part(_) -> none.
+
+%% get_info -> get_info, {buy, 1, 2} -> buy, anything else -> {other}.
+req_kind(Req) when is_atom(Req) -> Req;
+req_kind(Req) when is_tuple(Req), tuple_size(Req) > 0, is_atom(element(1, Req)) -> element(1, Req);
+req_kind(_) -> {other}.
+
+%% The row of a (process, direction, kind); past TRACE_KINDS rows new kinds
+%% go to that process and direction's {overflow} row.
+stats_row(Pid, Dir0, Kind, #{rows := Rows, stats := Tab} = St) ->
+    Dir = case Dir0 of out_dead -> out; _ -> Dir0 end,
+    Key0 = {Pid, Dir, Kind},
+    case Rows of
+        #{Key0 := _} ->
+            {Key0, St};
+        _ ->
+            Key = case map_size(Rows) >= ?TRACE_KINDS of
+                      true -> {Pid, Dir, {overflow}};
+                      false -> Key0
+                  end,
+            case ets:member(Tab, Key) of
+                true -> ok;
+                false ->
+                    Row = ets:update_counter(Tab, rows, 1, {rows, 0}),
+                    ets:insert(Tab, list_to_tuple([Key, Row, 0, 0, 0, 0, 0, 0
+                                                   | lists:duplicate(?TRACE_HIST_SIZE, 0)]))
+            end,
+            case Key of
+                Key0 -> {Key, St#{rows := Rows#{Key => true}}};
+                _ -> {Key, St}
+            end
+    end.
+
+hist_bucket(Us) when Us < 2 -> 0;
+hist_bucket(Us) -> min(?TRACE_HIST_SIZE - 1, trunc(math:log2(Us) * ?TRACE_HIST_STEPS)).
+
+hist_low(0) -> 0;
+hist_low(I) -> round(math:pow(2, I / ?TRACE_HIST_STEPS)).
+
+hist_high(I) -> round(math:pow(2, (I + 1) / ?TRACE_HIST_STEPS)).
+
+slowest(Tab, Key, {Us, _, _, _} = Sample) ->
+    SKey = {slowest, Key},
+    case ets:lookup(Tab, SKey) of
+        [] ->
+            ets:insert(Tab, {SKey, [Sample]});
+        [{_, List}] when length(List) < ?TRACE_SLOWEST ->
+            ets:insert(Tab, {SKey, lists:reverse(lists:sort([Sample | List]))});
+        [{_, List}] ->
+            case Us > element(1, lists:last(List)) of
+                true ->
+                    New = lists:sublist(lists:reverse(lists:sort([Sample | List])), ?TRACE_SLOWEST),
+                    ets:insert(Tab, {SKey, New});
+                false ->
+                    ok
+            end
+    end.
+
+%% Calls waiting longer than TRACE_CALL_EXPIRE_MS count as unanswered;
+%% checked at most once a second.
+expire_calls(#{swept := Swept} = St) ->
+    Now = erlang:monotonic_time(millisecond),
+    case Now - Swept >= 1000 of
+        true ->
+            #{pending := Pending} = St,
+            Old = [K || {K, {_, _, _, _, _, At}} <- maps:to_list(Pending),
+                        At < Now - ?TRACE_CALL_EXPIRE_MS],
+            unanswered(Old, St#{swept := Now});
+        false ->
+            St
+    end.
+
+%% At TRACE_PENDING waiting calls the older half counts as unanswered.
+make_room(#{pending := Pending} = St) when map_size(Pending) >= ?TRACE_PENDING ->
+    ByAge = lists:keysort(2, [{K, At} || {K, {_, _, _, _, _, At}} <- maps:to_list(Pending)]),
+    unanswered([K || {K, _} <- lists:sublist(ByAge, ?TRACE_PENDING div 2)], St);
+make_room(St) ->
+    St.
+
+unanswered(Keys, #{stats := Tab} = St) ->
+    lists:foldl(
+      fun(K, #{pending := P} = Acc) ->
+              {{Key, _, _, _, _, _}, P1} = maps:take(K, P),
+              ets:update_counter(Tab, Key, [{?S_PENDING, -1}, {?S_UNANSWERED, 1}]),
+              Acc#{pending := P1}
+      end, St, Keys).
+
+%% The statistics as plain maps, read by the keeper. Once the trace has
+%% stopped, calls still waiting for a reply count as unanswered.
+stats_read(Which, #{id := Id, stats := Tab, status := Status}) ->
+    Rows = [R || R <- ets:tab2list(Tab), tuple_size(R) > 3],
+    Stopped = Status =:= stopped,
+    Maps = [stats_map(R, Tab, Stopped, Which) || R <- Rows,
+                                                 Which =:= rows orelse Which =:= all
+                                                     orelse element(?S_ROW, R) =:= Which],
+    #{id => Id, status => Status, max_kinds => ?TRACE_KINDS,
+      kinds => length([R || R <- Rows, element(3, element(1, R)) =/= {overflow}]),
+      rows => lists:sort(fun(#{row := A}, #{row := B}) -> A =< B end, Maps)}.
+
+stats_map(R, Tab, Stopped, Which) ->
+    {Pid, Dir, Kind} = Key = element(1, R),
+    Answered = element(?S_ANSWERED, R),
+    Pending = element(?S_PENDING, R),
+    Max = element(?S_MAX, R),
+    Hist = [{I, element(?S_HIST + I, R)} || I <- lists:seq(0, ?TRACE_HIST_SIZE - 1),
+                                            element(?S_HIST + I, R) > 0],
+    {KindBin, Group} = case Kind of
+                           {other} -> {null, other};
+                           {overflow} -> {null, overflow};
+                           _ -> {atom_to_binary(Kind, utf8), named}
+                       end,
+    Base = #{row => element(?S_ROW, R), pid => ref_bin(Pid), dir => Dir,
+             kind => KindBin, group => Group,
+             calls => element(?S_CALLS, R), answered => Answered,
+             pending => case Stopped of true -> 0; false -> Pending end,
+             unanswered => element(?S_UNANSWERED, R) + case Stopped of true -> Pending; false -> 0 end,
+             avg => case Answered of 0 -> null; _ -> element(?S_SUM, R) div Answered end,
+             p95 => percentile(Hist, Answered, 0.95, Max),
+             max => case Answered of 0 -> null; _ -> Max end},
+    case Which of
+        rows -> Base;
+        _ ->
+            Slowest = case ets:lookup(Tab, {slowest, Key}) of
+                          [{_, L}] -> L;
+                          [] -> []
+                      end,
+            %% maps, not lists: the JSON encoder would print [72, 79, 8] as text
+            Base#{hist => [#{low => hist_low(I), high => min(Max, hist_high(I)), count => N}
+                           || {I, N} <- Hist],
+                  slowest => [#{latency => Us, t => T, peer => Peer, summary => S}
+                              || {Us, T, Peer, S} <- Slowest]}
+    end.
+
+%% Upper bound of the bucket holding the percentile (never above the max).
+percentile(_Hist, 0, _P, _Max) ->
+    null;
+percentile(Hist, Total, P, Max) ->
+    percentile_walk(Hist, max(1, ceil(Total * P)), Max).
+
+percentile_walk([{I, N} | Rest], Target, Max) ->
+    case N >= Target of
+        true -> min(Max, hist_high(I));
+        false -> percentile_walk(Rest, Target - N, Max)
+    end;
+percentile_walk([], _Target, Max) ->
+    Max.
 
 %% {Category, Kind, Peer, ShownTerm, CallRef} from the message's shape.
 classify({'$gen_call', {From, Tag}, Req}) ->
@@ -1433,6 +1673,548 @@ one_line(Bin, Max) ->
     end.
 
 %%--------------------------------------------------------------------
+%% Logs and crashes
+%%
+%% Nothing is installed when the tool connects. The first logs_events/2
+%% call (the tool's Logs page) starts a keeper that adds a logger handler;
+%% both the live log and the crash records come from it. Built so that it
+%% cannot take the node down:
+%%   - the handler (log/2) runs inside every process that logs, so it only
+%%     compares the level with a limit and does one non-blocking send of
+%%     the raw event to a collector; no formatting, no calls;
+%%   - at most LOG_BACKLOG events may be on their way to the collector (an
+%%     atomics counter the handler bumps before sending); beyond that the
+%%     handler drops and counts;
+%%   - above LOG_RATE events a second only warning and worse are kept for
+%%     the rest of that second, above LOG_HARD_RATE nothing; the collector
+%%     sets the limit the handler compares with;
+%%   - the collector has a heap limit and formats with depth and length
+%%     caps into fixed-size ETS rings the tool pulls from;
+%%   - the keeper removes the handler and stops when the tool node goes
+%%     away or after LOG_IDLE_MS without being read; logger itself removes
+%%     a handler that crashes.
+%%--------------------------------------------------------------------
+
+%% Registered name of the keeper, and the handler id.
+-define(LOGS, eobs_agent_logs).
+-define(LOG_RING, 2000).
+-define(LOG_GROUPS, 500).
+-define(LOG_BACKLOG, 1000).
+-define(LOG_RATE, 2000).
+-define(LOG_HARD_RATE, 5000).
+-define(LOG_IDLE_MS, 60000).
+-define(LOG_HEAP_WORDS, 2000000).
+-define(LOG_TEXT_CHARS, 2000).
+-define(LOG_REASON_CHARS, 4000).
+-define(LOG_DEPTH, 20).
+-define(LOG_STACK, 30).
+-define(LOG_PAGE, 1000).
+-define(LOG_TIMES, 10).
+%% A collector killed by its heap limit is replaced after this long.
+-define(LOG_RESTART_MS, 10000).
+%% Slots of the atomics array shared by the handler and the collector.
+-define(A_INFLIGHT, 1).
+-define(A_MAXSEV, 2).
+-define(A_DROPPED, 3).
+-define(A_LIMITED, 4).
+-define(SEV_ALL, 7).
+-define(SEV_WARNING, 4).
+-define(SEV_NONE, -1).
+
+%% New log lines, crash groups and restart counters since Cursor (null, or
+%% the `cursor` of the previous reply). Starts collecting on first use;
+%% Owner is the tool node, collection stops when it goes away.
+logs_events(Owner, Cursor) ->
+    case logs_keeper(Owner, 3) of
+        {ok, Pid} -> tracer_call(Pid, {logs, Owner, Cursor});
+        {error, _} = Error -> Error
+    end.
+
+%% Stops collecting and removes the handler. Called before the agent is
+%% unloaded, since logger would otherwise call a module that is gone.
+logs_stop() ->
+    case whereis(?LOGS) of
+        undefined ->
+            ok;
+        Pid ->
+            Ref = erlang:monitor(process, Pid),
+            Pid ! quit,
+            receive {'DOWN', Ref, process, Pid, _} -> ok
+            after 5000 -> exit(Pid, kill), receive {'DOWN', Ref, process, Pid, _} -> ok end
+            end
+    end,
+    remove_log_handler().
+
+logs_keeper(_Owner, 0) ->
+    {error, logs_failed};
+logs_keeper(Owner, Tries) ->
+    case whereis(?LOGS) of
+        undefined ->
+            Parent = self(),
+            {Pid, Ref} = spawn_monitor(fun() -> logs_init(Parent, Owner) end),
+            receive
+                {Pid, ok} -> erlang:demonitor(Ref, [flush]), {ok, Pid};
+                {Pid, busy} -> erlang:demonitor(Ref, [flush]), logs_keeper(Owner, Tries - 1);
+                {'DOWN', Ref, process, Pid, Reason} -> {error, {logs_failed, fmt(Reason)}}
+            after 10000 ->
+                exit(Pid, kill),
+                erlang:demonitor(Ref, [flush]),
+                {error, timeout}
+            end;
+        Pid ->
+            {ok, Pid}
+    end.
+
+%% The logger handler. Runs in the process that logs: keep it tiny.
+log(#{level := Level} = Event, #{config := #{ref := Ref, collector := Pid}}) ->
+    MaxSev = atomics:get(Ref, ?A_MAXSEV),
+    case severity(Level) =< MaxSev of
+        true ->
+            case atomics:add_get(Ref, ?A_INFLIGHT, 1) > ?LOG_BACKLOG of
+                false ->
+                    Pid ! {?LOGS, Event},
+                    ok;
+                true ->
+                    atomics:sub(Ref, ?A_INFLIGHT, 1),
+                    log_dropped(Ref, ?A_DROPPED, Pid)
+            end;
+        false when MaxSev =:= ?SEV_NONE ->
+            log_dropped(Ref, ?A_DROPPED, Pid);
+        false ->
+            log_dropped(Ref, ?A_LIMITED, Pid)
+    end;
+log(_Event, _Config) ->
+    ok.
+
+%% Every 1024th drop checks that the collector is still there: one that
+%% was killed with its keeper leaves nobody to remove the handler, and
+%% the error makes logger remove it.
+log_dropped(Ref, Slot, Pid) ->
+    case atomics:add_get(Ref, Slot, 1) band 1023 of
+        0 -> is_process_alive(Pid) orelse erlang:error(eobs_collector_gone), ok;
+        _ -> ok
+    end.
+
+severity(emergency) -> 0;
+severity(alert) -> 1;
+severity(critical) -> 2;
+severity(error) -> 3;
+severity(warning) -> 4;
+severity(notice) -> 5;
+severity(info) -> 6;
+severity(_) -> 7.
+
+%% Only removes the handler if it is ours.
+remove_log_handler() ->
+    case catch logger:get_handler_config(?LOGS) of
+        {ok, #{module := ?MODULE}} -> _ = logger:remove_handler(?LOGS), ok;
+        _ -> ok
+    end.
+
+%% The keeper owns the rings and the handler, and answers the tool. It
+%% never receives log events itself.
+logs_init(Parent, Owner) ->
+    try register(?LOGS, self())
+    catch error:badarg -> Parent ! {self(), busy}, exit(normal)
+    end,
+    process_flag(trap_exit, true),
+    %% A handler left behind by a keeper that was killed.
+    remove_log_handler(),
+    erlang:monitor_node(Owner, true),
+    Tabs = #{logs => ets:new(eobs_logs, [ordered_set, public]),
+             crashes => group_store(),
+             restarts => group_store()},
+    ets:insert(maps:get(logs, Tabs), {seq, 0}),
+    St0 = #{id => erlang:unique_integer([positive]), owners => [Owner], tabs => Tabs,
+            ref => atomics:new(4, [{signed, true}]), worker => undefined,
+            status => stopped, reason => null, stopped_at => 0, collector_restarts => 0,
+            started => erlang:system_time(millisecond), last_read => now_ms()},
+    St = logs_start(St0),
+    Parent ! {self(), ok},
+    try logs_loop(St)
+    after remove_log_handler()
+    end.
+
+%% Crash groups and restart counters: Key -> {Key, Seq, Group}, plus an
+%% index Seq -> Key so changes since a sequence number (and the group
+%% changed longest ago, evicted when full) are cheap to find.
+group_store() ->
+    Idx = ets:new(eobs_log_index, [ordered_set, public]),
+    ets:insert(Idx, {seq, 0}),
+    #{tab => ets:new(eobs_log_groups, [set, public]), idx => Idx}.
+
+logs_start(#{ref := Ref, tabs := Tabs} = St) ->
+    atomics:put(Ref, ?A_INFLIGHT, 0),
+    atomics:put(Ref, ?A_MAXSEV, ?SEV_ALL),
+    Worker = spawn_opt(fun() -> collector_init(Tabs, Ref) end,
+                       [link, {max_heap_size, #{size => ?LOG_HEAP_WORDS, kill => true,
+                                                error_logger => false}}]),
+    Config = #{level => all, filter_default => log, filters => [],
+               config => #{ref => Ref, collector => Worker}},
+    case logger:add_handler(?LOGS, ?MODULE, Config) of
+        ok ->
+            St#{worker := Worker, status := running, reason := null};
+        {error, Reason} ->
+            unlink(Worker),
+            exit(Worker, kill),
+            St#{worker := undefined, status := stopped, reason := fmt(Reason),
+                stopped_at := now_ms()}
+    end.
+
+logs_loop(#{last_read := LastRead} = St) ->
+    Idle = max(0, LastRead + ?LOG_IDLE_MS - now_ms()),
+    receive
+        {From, Ref, {logs, Owner, Cursor}} ->
+            St1 = logs_owner(Owner, logs_check(St#{last_read := now_ms()})),
+            From ! {Ref, {ok, logs_read(Cursor, St1)}},
+            logs_loop(St1);
+        {'EXIT', Worker, Reason} when Worker =:= map_get(worker, St) ->
+            %% killed: heap limit reached (a flood of large events)
+            Why = case Reason of
+                      killed -> overload;
+                      _ -> crashed
+                  end,
+            logs_loop(logs_halt(Why, St#{worker := undefined}));
+        {nodedown, Owner} ->
+            case lists:delete(Owner, maps:get(owners, St)) of
+                [] -> logs_halt(owner_down, St);
+                Rest -> logs_loop(St#{owners := Rest})
+            end;
+        quit ->
+            logs_halt(stopped, St);
+        _ ->
+            logs_loop(St)
+    after Idle ->
+        logs_halt(idle, St)
+    end.
+
+%% Every tool node reading the logs keeps them alive.
+logs_owner(Owner, #{owners := Owners} = St) ->
+    case lists:member(Owner, Owners) of
+        true -> St;
+        false -> erlang:monitor_node(Owner, true), St#{owners := [Owner | Owners]}
+    end.
+
+%% Notices a handler logger removed (it crashed), and replaces a collector
+%% that was killed for using too much memory once things calmed down.
+logs_check(#{status := running} = St) ->
+    case lists:member(?LOGS, logger:get_handler_ids()) of
+        true -> St;
+        false -> logs_halt(handler_removed, St)
+    end;
+logs_check(#{status := stopped, reason := Reason, stopped_at := At} = St)
+  when Reason =:= overload; Reason =:= crashed; Reason =:= handler_removed ->
+    case now_ms() - At >= ?LOG_RESTART_MS of
+        true -> logs_start(St#{collector_restarts := maps:get(collector_restarts, St) + 1});
+        false -> St
+    end;
+logs_check(St) ->
+    St.
+
+logs_halt(Reason, #{worker := Worker} = St) ->
+    remove_log_handler(),
+    case Worker of
+        undefined -> ok;
+        _ -> unlink(Worker), exit(Worker, kill)
+    end,
+    St#{worker := undefined, status := stopped, reason := Reason, stopped_at := now_ms()}.
+
+%% Cursor: {Id, LogSeq, CrashSeq, RestartSeq}. A cursor of an earlier
+%% collection (or null) reads everything there is.
+logs_read(Cursor, #{id := Id, tabs := #{logs := Logs, crashes := Crashes, restarts := Restarts},
+                    ref := Ref} = St) ->
+    {Reset, LogSince, CrashSince, RestartSince} =
+        case Cursor of
+            {Id, L, C, R} when is_integer(L), is_integer(C), is_integer(R) -> {false, L, C, R};
+            null -> {false, 0, 0, 0};
+            _ -> {true, 0, 0, 0}
+        end,
+    [{seq, Seq}] = ets:lookup(Logs, seq),
+    Lines = case ets:select(Logs, [{{'$1', '$2'}, [{is_integer, '$1'}, {'>', '$1', LogSince}], ['$2']}],
+                            ?LOG_PAGE) of
+                {Ls, _} -> Ls;
+                '$end_of_table' -> []
+            end,
+    LogNext = case Lines of
+                  [] -> Seq;
+                  _ -> maps:get(seq, lists:last(Lines))
+              end,
+    {CrashList, CrashNext} = group_changes(Crashes, CrashSince),
+    {RestartList, RestartNext} = group_changes(Restarts, RestartSince),
+    #{id => Id,
+      reset => Reset,
+      cursor => {Id, LogNext, CrashNext, RestartNext},
+      status => maps:get(status, St),
+      reason => maps:get(reason, St),
+      started => maps:get(started, St),
+      now => erlang:system_time(millisecond),
+      primary_level => primary_level(),
+      received => Seq,
+      lost => max(0, Seq - ?LOG_RING - LogSince),
+      dropped => atomics:get(Ref, ?A_DROPPED),
+      limited => atomics:get(Ref, ?A_LIMITED),
+      collector_restarts => maps:get(collector_restarts, St),
+      logs => Lines,
+      crashes => CrashList,
+      restarts => RestartList}.
+
+primary_level() ->
+    case catch logger:get_primary_config() of
+        #{level := L} -> L;
+        _ -> null
+    end.
+
+group_changes(#{tab := Tab, idx := Idx}, Since) ->
+    [{seq, Seq}] = ets:lookup(Idx, seq),
+    Keys = ets:select(Idx, [{{'$1', '$2'}, [{is_integer, '$1'}, {'>', '$1', Since}], ['$2']}]),
+    {[G || K <- Keys, {_, _, G} <- ets:lookup(Tab, K)], Seq}.
+
+%% The collector formats events and fills the rings.
+collector_init(Tabs, Ref) ->
+    collector_loop(#{tabs => Tabs, ref => Ref, sec => 0, n => 0, limited_sec => undefined}).
+
+collector_loop(#{ref := Ref} = St) ->
+    receive
+        {?LOGS, Event} ->
+            atomics:sub(Ref, ?A_INFLIGHT, 1),
+            collector_loop(collect_event(Event, St));
+        {rate_reset, Sec} when Sec =:= map_get(limited_sec, St) ->
+            atomics:put(Ref, ?A_MAXSEV, ?SEV_ALL),
+            collector_loop(St#{limited_sec := undefined});
+        _ ->
+            collector_loop(St)
+    end.
+
+collect_event(#{level := Level} = Event, #{sec := Sec, n := N, ref := Ref} = St) ->
+    NowMs = erlang:monotonic_time(millisecond),
+    Now = floor_div(NowMs, 1000),
+    N1 = case Now of
+             Sec -> N + 1;
+             _ -> 1
+         end,
+    St1 = St#{sec := Now, n := N1},
+    Sev = severity(Level),
+    if
+        N1 > ?LOG_HARD_RATE ->
+            atomics:add(Ref, ?A_DROPPED, 1),
+            rate_limit(?SEV_NONE, Now, NowMs, St1);
+        N1 > ?LOG_RATE, Sev > ?SEV_WARNING ->
+            atomics:add(Ref, ?A_LIMITED, 1),
+            rate_limit(?SEV_WARNING, Now, NowMs, St1);
+        true ->
+            try store_log(Event, St1)
+            catch _:_ -> ok
+            end,
+            St1
+    end.
+
+%% Lowers the level the handler lets through until the second is over.
+rate_limit(MaxSev, Now, NowMs, #{ref := Ref} = St) ->
+    case atomics:get(Ref, ?A_MAXSEV) > MaxSev of
+        true ->
+            atomics:put(Ref, ?A_MAXSEV, MaxSev),
+            erlang:send_after(1000 - (NowMs - Now * 1000), self(), {rate_reset, Now}),
+            St#{limited_sec := Now};
+        false ->
+            St
+    end.
+
+floor_div(A, B) when A >= 0 -> A div B;
+floor_div(A, B) -> -((-A + B - 1) div B).
+
+store_log(#{level := Level, msg := Msg, meta := Meta} = Event, #{tabs := Tabs}) ->
+    Time = case Meta of
+               #{time := T} when is_integer(T) -> T;
+               _ -> erlang:system_time(microsecond)
+           end,
+    Logs = maps:get(logs, Tabs),
+    Seq = ets:update_counter(Logs, seq, 1),
+    ets:insert(Logs, {Seq, #{seq => Seq,
+                             t => Time,
+                             level => Level,
+                             module => case Meta of
+                                           #{mfa := {M, _, _}} when is_atom(M) -> M;
+                                           _ -> null
+                                       end,
+                             pid => case Meta of
+                                        #{pid := P} when is_pid(P) -> ref_bin(P);
+                                        _ -> null
+                                    end,
+                             text => log_text(Event)}}),
+    case Seq > ?LOG_RING of
+        true -> ets:delete(Logs, Seq - ?LOG_RING);
+        false -> ok
+    end,
+    case crash_info(Msg, Meta) of
+        none -> ok;
+        {crash, Who, Pid, Class, Reason, Stack} -> store_crash(Who, Pid, Class, Reason, Stack, Time, Tabs);
+        {restart, Ctx, Sup, Child, Reason} -> store_restart(Ctx, Sup, Child, Reason, Time, Tabs)
+    end.
+
+%% The message as the node's own logger would print it, within limits.
+log_text(Event) ->
+    Config = #{template => [msg], single_line => false, legacy_header => false,
+               chars_limit => ?LOG_TEXT_CHARS, depth => ?LOG_DEPTH},
+    try logger_formatter:format(Event, Config) of
+        Chars -> clip(string:trim(unicode:characters_to_list(Chars), trailing), ?LOG_TEXT_CHARS)
+    catch _:_ ->
+        limited(maps:get(msg, Event, undefined), ?LOG_TEXT_CHARS)
+    end.
+
+clip(Chars, Max) ->
+    case length(Chars) > Max of
+        true -> unicode:characters_to_binary(lists:sublist(Chars, Max) ++ " ...");
+        false -> unicode:characters_to_binary(Chars)
+    end.
+
+%% Crashes and supervisor reports among the events:
+%%   - proc_lib crash reports (gen_server, gen_statem, proc_lib processes),
+%%   - "Error in process" errors of plain processes, from the emulator,
+%%   - supervisor reports on children that terminated or failed to start.
+crash_info({report, #{label := {proc_lib, crash}, report := [Crasher | _]}}, _Meta)
+  when is_list(Crasher) ->
+    {Class, Reason, Stack} = case proplists:get_value(error_info, Crasher) of
+                                 {C, R, S} -> {C, R, S};
+                                 Other -> {exit, Other, []}
+                             end,
+    Who = case proplists:get_value(registered_name, Crasher, []) of
+              Name when is_atom(Name), Name =/= [] -> atom_to_binary(Name, utf8);
+              _ -> case proplists:get_value(initial_call, Crasher) of
+                       {M, F, Args} when is_list(Args) -> bin(mfa({M, F, length(Args)}));
+                       {M, F, A} -> bin(mfa({M, F, A}));
+                       _ -> null
+                   end
+          end,
+    {crash, Who, proplists:get_value(pid, Crasher), Class, Reason, Stack};
+crash_info({report, #{label := {supervisor, Ctx}, report := Report}}, _Meta)
+  when Ctx =:= child_terminated; Ctx =:= start_error; Ctx =:= shutdown;
+       Ctx =:= shutdown_error ->
+    Offender = case proplists:get_value(offender, Report) of
+                   O when is_list(O) -> O;
+                   _ -> []
+               end,
+    {restart, Ctx, proplists:get_value(supervisor, Report), Offender,
+     proplists:get_value(reason, Report)};
+crash_info({Format, [Pid | Rest]}, #{error_logger := #{emulator := true}})
+  when is_list(Format), is_pid(Pid) ->
+    %% [Pid, Reason], or [Pid, Node, Reason] on a distributed node
+    case {lists:prefix("Error in process", Format), Rest} of
+        {true, [_Node, Reason]} -> {crash, null, Pid, error, Reason, []};
+        {true, [Reason]} -> {crash, null, Pid, error, Reason, []};
+        _ -> none
+    end;
+crash_info(_Msg, _Meta) ->
+    none.
+
+%% Crashes with the same process (name or initial call) and the same
+%% reason, pids and refs aside, are one group with a count.
+store_crash(Who, Pid, Class, Reason0, Stack0, Time, #{crashes := Store}) ->
+    {Reason, Stack} = split_stack(Reason0, Stack0),
+    Line = one_line(limited(Reason, 600), 300),
+    Key = {Who, re:replace(Line, "<\\d+\\.\\d+\\.\\d+>|#Ref<[\\d.]+>|#Port<[\\d.]+>", "_",
+                           [global, {return, binary}])},
+    group_put(Store, Key, fun(Old) ->
+        Base = case Old of
+                   undefined -> #{id => erlang:unique_integer([positive]), who => Who, count => 0,
+                                  first => Time};
+                   _ -> Old
+               end,
+        Base#{count := maps:get(count, Base) + 1,
+              last => Time,
+              pid => case is_pid(Pid) of true -> ref_bin(Pid); false -> null end,
+              class => Class,
+              reason => Line,
+              text => limited(Reason, ?LOG_REASON_CHARS),
+              stack => [format_frame(F) || F <- lists:sublist(Stack, ?LOG_STACK), is_frame(F)]}
+    end).
+
+%% gen_server and friends exit with {Reason, Stacktrace}; plain processes
+%% that call erlang:error/1 directly have an empty one.
+split_stack({Reason, []}, []) ->
+    {Reason, []};
+split_stack({Reason, [F | _] = Stack}, _) when is_list(Stack) ->
+    case is_frame(F) of
+        true -> {Reason, Stack};
+        false -> {{Reason, Stack}, []}
+    end;
+split_stack(Reason, Stack) when is_list(Stack) ->
+    {Reason, Stack};
+split_stack(Reason, _) ->
+    {Reason, []}.
+
+is_frame({M, F, A, L}) -> is_atom(M) andalso is_atom(F) andalso (is_integer(A) orelse is_list(A))
+                              andalso is_list(L);
+is_frame(_) -> false.
+
+%% Per supervisor and child id: terminations (each one a restart unless
+%% the child is temporary), failed starts, and whether the supervisor gave
+%% up (reached its restart intensity).
+store_restart(Ctx, Sup, Offender, Reason0, Time, #{restarts := Store}) ->
+    {Reason, _} = split_stack(Reason0, []),
+    Child = proplists:get_value(id, Offender),
+    Key = {Sup, Child},
+    group_put(Store, Key, fun(Old) ->
+        Base = case Old of
+                   undefined -> #{id => erlang:unique_integer([positive]),
+                                  supervisor => sup_name(Sup), child => fmt(Child),
+                                  count => 0, failed_starts => 0, gave_up => false, times => []};
+                   _ -> Old
+               end,
+        #{count := Count, failed_starts := Failed, times := Times} = Base,
+        Counted = Ctx =:= child_terminated orelse Ctx =:= start_error,
+        Base#{count := Count + case Ctx of child_terminated -> 1; _ -> 0 end,
+              failed_starts := Failed + case Ctx of start_error -> 1; _ -> 0 end,
+              gave_up := maps:get(gave_up, Base) orelse Ctx =:= shutdown,
+              times := case Counted of
+                           true -> lists:sublist([Time | Times], ?LOG_TIMES);
+                           false -> Times
+                       end,
+              last => Time,
+              context => Ctx,
+              restart_type => case proplists:get_value(restart_type, Offender) of
+                                  undefined -> null;
+                                  RT -> RT
+                              end,
+              pid => case proplists:get_value(pid, Offender) of
+                         P when is_pid(P) -> ref_bin(P);
+                         _ -> null
+                     end,
+              reason => one_line(limited(Reason, 600), 300)}
+    end).
+
+sup_name({local, Name}) -> atom_to_binary(Name, utf8);
+sup_name({global, Name}) -> fmt(Name);
+sup_name({via, _, Name}) -> fmt(Name);
+sup_name({Pid, Mod}) when is_pid(Pid), is_atom(Mod) -> bin(io_lib:format("~s ~s", [Mod, pid_to_list(Pid)]));
+sup_name(Other) -> fmt(Other).
+
+%% Inserts or updates the group under Key with Fun(Old | undefined); when
+%% the store is full the group changed longest ago makes room.
+group_put(#{tab := Tab, idx := Idx}, Key, Fun) ->
+    Seq = ets:update_counter(Idx, seq, 1),
+    Old = case ets:lookup(Tab, Key) of
+              [{_, OldSeq, G}] ->
+                  ets:delete(Idx, OldSeq),
+                  G;
+              [] ->
+                  case ets:info(Tab, size) >= ?LOG_GROUPS of
+                      true ->
+                          First = ets:first(Idx),
+                          [{_, K}] = ets:lookup(Idx, First),
+                          ets:delete(Idx, First),
+                          ets:delete(Tab, K);
+                      false ->
+                          ok
+                  end,
+                  undefined
+          end,
+    ets:insert(Tab, {Key, Seq, Fun(Old)}),
+    ets:insert(Idx, {Seq, Key}).
+
+now_ms() ->
+    erlang:monotonic_time(millisecond).
+
+%%--------------------------------------------------------------------
 %% Memory allocators
 %%--------------------------------------------------------------------
 
@@ -1510,6 +2292,404 @@ typed_size(Info) when is_list(Info) ->
     end;
 typed_size(_) ->
     0.
+
+%%--------------------------------------------------------------------
+%% Diagnosis: health check and window Top N
+%%
+%% Both run only when the user asks, one at a time per node, in a
+%% low-priority worker with a heap cap. A guard process kills the worker
+%% when it takes too long, when the caller goes away (the tool timed out)
+%% or when the tool node disconnects, so the worst outcome is a failed
+%% check. Only bounded results are kept, and the per-binary `binary` list
+%% is read in a separate capped helper.
+%%--------------------------------------------------------------------
+
+-define(DIAG, eobs_agent_diag).
+-define(DIAG_CHECK_HEAP_WORDS, 4000000).
+-define(DIAG_CHECK_MS, 30000).
+%% The window keeps every process's start values; refuse beyond this.
+-define(DIAG_MAX_PROCS, 500000).
+-define(DIAG_WINDOW_HEAP_WORDS, 16000000).
+-define(DIAG_TOP, 20).
+-define(DIAG_LIST, 10).
+%% How long the health check watches the run queue and stuck processes.
+-define(DIAG_SAMPLES, 5).
+-define(DIAG_SAMPLE_MS, 400).
+-define(DIAG_STUCK_CANDIDATES, 5000).
+-define(DIAG_STUCK_REDS, 100).
+%% Fewer waiting messages than this is not reported as stuck.
+-define(DIAG_STUCK_QUEUE, 10).
+-define(DIAG_BIN_WARN, (50 * ?MB)).
+-define(DIAG_BIN_CRIT, (200 * ?MB)).
+%% Heap cap of the binary scan helper (one list entry per binary read),
+%% and how many over-the-cap processes it skips before giving up.
+-define(DIAG_BIN_HEAP_WORDS, 2000000).
+-define(DIAG_BIN_RESTARTS, 3).
+-define(MB, (1024 * 1024)).
+
+%% Health check: a list of findings, each with a level (ok | warn | crit |
+%% skip), the thresholds used and the processes or tables involved. The
+%% tool turns ids and numbers into readable text.
+diag_check(Owner) ->
+    diag_run(Owner, ?DIAG_CHECK_HEAP_WORDS, ?DIAG_CHECK_MS, fun check/0).
+
+%% Top N of processes by growth of reductions, memory and message queue
+%% over a window of Seconds (1..60).
+diag_window(Owner, Seconds) ->
+    S = clamp(Seconds, 1, 60),
+    diag_run(Owner, ?DIAG_WINDOW_HEAP_WORDS, S * 1000 + 30000, fun() -> window(S) end).
+
+diag_run(Owner, HeapWords, Timeout, Fun) ->
+    Caller = self(),
+    {Guard, Ref} = spawn_monitor(fun() -> diag_guard(Caller, Owner, HeapWords, Timeout, Fun) end),
+    receive
+        {'DOWN', Ref, process, Guard, {shutdown, Reply}} -> Reply;
+        {'DOWN', Ref, process, Guard, Reason} -> {error, {failed, fmt(Reason)}}
+    end.
+
+diag_guard(Caller, Owner, HeapWords, Timeout, Fun) ->
+    try register(?DIAG, self())
+    catch error:badarg -> exit({shutdown, {error, busy}})
+    end,
+    CRef = erlang:monitor(process, Caller),
+    erlang:monitor_node(Owner, true),
+    {Worker, WRef} = spawn_opt(fun() -> exit({shutdown, Fun()}) end,
+                               [monitor, {priority, low},
+                                {max_heap_size, #{size => HeapWords, kill => true,
+                                                  error_logger => false}}]),
+    receive
+        {'DOWN', WRef, process, Worker, {shutdown, Result}} -> exit({shutdown, Result});
+        {'DOWN', WRef, process, Worker, killed} -> exit({shutdown, {error, too_big}});
+        {'DOWN', WRef, process, Worker, Reason} -> exit({shutdown, {error, {failed, fmt(Reason)}}});
+        {'DOWN', CRef, process, Caller, _} -> exit(Worker, kill), exit(normal);
+        {nodedown, Owner} -> exit(Worker, kill), exit(normal)
+    after Timeout ->
+        exit(Worker, kill),
+        exit({shutdown, {error, timeout}})
+    end.
+
+check() ->
+    Started = erlang:monotonic_time(millisecond),
+    Total = erlang:memory(total),
+    WordSize = erlang:system_info(wordsize),
+    Scheds = erlang:system_info(schedulers_online),
+    MemWarn = min(Total div 20, 100 * ?MB),
+    MemCrit = Total div 5,
+    Dist0 = dist_queues(),
+    {Queues, Mems, Candidates, Backlogged} = scan_processes(MemWarn),
+    BinHolders = bin_scan(),
+    RunQueues = sample_run_queue(?DIAG_SAMPLES, []),
+    Stuck = stuck(Candidates),
+    Dist1 = dist_queues(),
+    Checks =
+        [limit_check(process_count, erlang:system_info(process_count),
+                     erlang:system_info(process_limit)),
+         limit_check(port_count, erlang:system_info(port_count), erlang:system_info(port_limit)),
+         limit_check(atom_count, safe(fun() -> erlang:system_info(atom_count) end),
+                     safe(fun() -> erlang:system_info(atom_limit) end)),
+         limit_check(ets_count, length(ets:all()), safe(fun() -> erlang:system_info(ets_limit) end)),
+         queue_check(Queues, Backlogged),
+         memory_check(Mems, Total, MemWarn, MemCrit),
+         ets_check(Total, WordSize),
+         binary_check(Total),
+         run_queue_check(RunQueues, Scheds),
+         stuck_check(Stuck),
+         bin_holder_check(BinHolders),
+         dist_check(Dist0, Dist1)],
+    {ok, #{checks => Checks,
+           memory_total => Total,
+           process_count => erlang:system_info(process_count),
+           took_ms => erlang:monotonic_time(millisecond) - Started}}.
+
+finding(Id, Level, Fields) ->
+    maps:merge(#{id => Id, level => Level, value => null, warn => null, crit => null,
+                 items => []}, Fields).
+
+level(V, _W, C) when V >= C -> crit;
+level(V, W, _C) when V >= W -> warn;
+level(_, _, _) -> ok.
+
+%% Count against limit; thresholds are percentages.
+limit_check(Id, Count, Limit) when is_integer(Count), is_integer(Limit), Limit > 0 ->
+    finding(Id, level(Count * 100 div Limit, 70, 90),
+            #{value => Count, limit => Limit, warn => 70, crit => 90});
+limit_check(Id, _, _) ->
+    finding(Id, skip, #{}).
+
+%% One pass over all processes reading only cheap items. Keeps the longest
+%% queues, the biggest processes over the warn threshold and the
+%% processes with a backlog (stuck candidates), all bounded.
+scan_processes(MemWarn) ->
+    lists:foldl(
+      fun(Pid, {Qs, Ms, Cand, Backlogged} = Acc) ->
+              case erlang:process_info(Pid, [memory, message_queue_len, reductions]) of
+                  [{memory, M}, {message_queue_len, Q}, {reductions, R}] ->
+                      Qs1 = case Q >= 1000 of
+                                true -> top_add(Q, Pid, Q, Qs);
+                                false -> Qs
+                            end,
+                      Ms1 = case M >= MemWarn of
+                                true -> top_add(M, Pid, M, Ms);
+                                false -> Ms
+                            end,
+                      Cand1 = case Q >= ?DIAG_STUCK_QUEUE of
+                                  true -> top_add(Q, Pid, {R, Q}, Cand);
+                                  false -> Cand
+                              end,
+                      {Qs1, Ms1, Cand1, Backlogged + (if Q >= 1000 -> 1; true -> 0 end)};
+                  _ ->
+                      Acc
+              end
+      end,
+      {top_new(?DIAG_LIST), top_new(?DIAG_LIST), top_new(?DIAG_STUCK_CANDIDATES), 0},
+      erlang:processes()).
+
+%% Refc binary bytes referenced by each process. Reading `binary` copies
+%% one list entry per binary into the reader, so the scan runs in a helper
+%% with a heap cap that notes where it is in a table. A process holding so
+%% many binaries that the helper hits the cap is itself a finding: it is
+%% recorded as such and a new helper carries on after it.
+bin_scan() ->
+    Tab = ets:new(eobs_diag_bin, [public]),
+    Pids = [P || P <- lists:sort(erlang:processes()), P =/= self()],
+    Top = bin_scan(Pids, Tab, top_new(?DIAG_LIST), 0),
+    ets:delete(Tab),
+    Top.
+
+bin_scan(Pids, Tab, Top, Restarts) ->
+    ets:insert(Tab, [{top, Top}, {at, none}]),
+    {H, Ref} = spawn_opt(fun() -> exit({shutdown, bin_scan_loop(Pids, Tab, Top)}) end,
+                         [monitor, {priority, low},
+                          {max_heap_size, #{size => ?DIAG_BIN_HEAP_WORDS, kill => true,
+                                            error_logger => false}}]),
+    receive
+        {'DOWN', Ref, process, H, {shutdown, Done}} ->
+            Done;
+        {'DOWN', Ref, process, H, killed} when Restarts < ?DIAG_BIN_RESTARTS ->
+            [{top, Top1}] = ets:lookup(Tab, top),
+            case ets:lookup(Tab, at) of
+                [{at, P}] when is_pid(P) ->
+                    Rest = lists:dropwhile(fun(X) -> X =< P end, Pids),
+                    bin_scan(Rest, Tab, top_add(1 bsl 60, P, too_many, Top1), Restarts + 1);
+                _ ->
+                    Top1
+            end;
+        {'DOWN', Ref, process, H, _} ->
+            [{top, Top1}] = ets:lookup(Tab, top),
+            Top1
+    end.
+
+bin_scan_loop([], _Tab, Top) ->
+    Top;
+bin_scan_loop([P | Rest], Tab, Top) ->
+    ets:insert(Tab, {at, P}),
+    Held = case erlang:process_info(P, binary) of
+               {binary, L} -> lists:foldl(fun({_, Size, _}, A) -> A + Size end, 0, L);
+               _ -> 0
+           end,
+    case Held >= ?DIAG_BIN_WARN of
+        true ->
+            Top1 = top_add(Held, P, Held, Top),
+            ets:insert(Tab, {top, Top1}),
+            bin_scan_loop(Rest, Tab, Top1);
+        false ->
+            bin_scan_loop(Rest, Tab, Top)
+    end.
+
+%% Bounded best-K collection keyed on {Score, Pid}.
+top_new(K) -> {K, gb_trees:empty()}.
+
+top_add(Score, Pid, Val, {K, T} = Top) ->
+    Key = {Score, Pid},
+    case gb_trees:size(T) < K of
+        true -> {K, gb_trees:insert(Key, Val, T)};
+        false ->
+            {Worst, _} = gb_trees:smallest(T),
+            case Key > Worst of
+                true -> {_, _, T1} = gb_trees:take_smallest(T), {K, gb_trees:insert(Key, Val, T1)};
+                false -> Top
+            end
+    end.
+
+%% [{Pid, Val}], best first.
+top_list({_, T}) -> [{Pid, Val} || {{_, Pid}, Val} <- lists:reverse(gb_trees:to_list(T))].
+
+%% Waits between samples, so this is also the window stuck() looks at.
+sample_run_queue(0, Acc) ->
+    Acc;
+sample_run_queue(N, Acc) ->
+    timer:sleep(?DIAG_SAMPLE_MS),
+    sample_run_queue(N - 1, [erlang:statistics(run_queue) | Acc]).
+
+%% Processes that had messages waiting at the scan and did not get to
+%% handle any since then. Reading some process_info items costs the target
+%% a reduction or so (and other viewers may be reading too), hence the
+%% small allowance.
+stuck(Candidates) ->
+    lists:filtermap(
+      fun({Pid, {R0, Q0}}) ->
+              case erlang:process_info(Pid, [reductions, message_queue_len]) of
+                  [{reductions, R}, {message_queue_len, Q}] when R - R0 < ?DIAG_STUCK_REDS, Q >= Q0 ->
+                      {true, {Pid, Q}};
+                  _ -> false
+              end
+      end, top_list(Candidates)).
+
+proc_item(Pid, Value) ->
+    CF = case erlang:process_info(Pid, current_function) of
+             {current_function, C} -> bin(mfa(C));
+             _ -> null
+         end,
+    #{pid => ref_bin(Pid), name => registered_name(Pid),
+      initial_call => bin(initial_call(Pid)), current_function => CF, value => Value}.
+
+queue_check(Queues, Backlogged) ->
+    Items = [proc_item(P, Q) || {P, Q} <- top_list(Queues)],
+    Max = lists:max([0 | [Q || {_, Q} <- top_list(Queues)]]),
+    finding(message_queue, level(Max, 1000, 10000),
+            #{value => Backlogged, warn => 1000, crit => 10000, items => Items}).
+
+memory_check(Mems, Total, Warn, Crit) ->
+    List = top_list(Mems),
+    Max = lists:max([0 | [M || {_, M} <- List]]),
+    finding(process_memory, level(Max, Warn, Crit),
+            #{value => Max, total => Total, warn => Warn, crit => Crit,
+              items => [proc_item(P, M) || {P, M} <- List]}).
+
+ets_check(Total, WordSize) ->
+    Warn = Total div 10,
+    Crit = Total * 3 div 10,
+    Sizes = lists:filtermap(
+              fun(T) ->
+                      case ets:info(T, memory) of
+                          W when is_integer(W), W * WordSize >= Warn -> {true, {W * WordSize, T}};
+                          _ -> false
+                      end
+              end, ets:all()),
+    Big = lists:sublist(lists:reverse(lists:sort(Sizes)), ?DIAG_LIST),
+    Max = lists:max([0 | [B || {B, _} <- Big]]),
+    finding(ets_memory, level(Max, Warn, Crit),
+            #{value => Max, total => Total, warn => Warn, crit => Crit,
+              items => [#{table => table_id(T), name => ets:info(T, name),
+                          owner => ref_bin(ets:info(T, owner)), value => B}
+                        || {B, T} <- Big]}).
+
+binary_check(Total) ->
+    Binary = erlang:memory(binary),
+    Pct = Binary * 100 div max(1, Total),
+    finding(binary_memory, level(Pct, 40, 60),
+            #{value => Pct, bytes => Binary, total => Total, warn => 40, crit => 60}).
+
+run_queue_check(Samples, Scheds) ->
+    Min = lists:min(Samples),
+    finding(run_queue, level(Min, Scheds + 1, Scheds * 4 + 1),
+            #{value => Min, max => lists:max(Samples), schedulers => Scheds,
+              warn => Scheds + 1, crit => Scheds * 4 + 1}).
+
+stuck_check(Stuck) ->
+    Sorted = lists:reverse(lists:keysort(2, Stuck)),
+    Max = lists:max([0 | [Q || {_, Q} <- Sorted]]),
+    Level = case Sorted of
+                [] -> ok;
+                _ when Max >= 1000 -> crit;
+                _ -> warn
+            end,
+    finding(stuck, Level,
+            #{value => length(Sorted), seconds => ?DIAG_SAMPLES * ?DIAG_SAMPLE_MS / 1000,
+              items => [proc_item(P, Q) || {P, Q} <- lists:sublist(Sorted, ?DIAG_LIST)]}).
+
+%% Processes referencing a lot of refc binary data: typical of a binary
+%% leak, where a long-lived process keeps slices of big binaries alive.
+bin_holder_check(Holders) ->
+    List = top_list(Holders),
+    Level = case [B || {_, B} <- List] of
+                [too_many | _] -> crit;
+                [B | _] -> level(B, ?DIAG_BIN_WARN, ?DIAG_BIN_CRIT);
+                [] -> ok
+            end,
+    finding(binary_holders, Level,
+            #{value => length(List), warn => ?DIAG_BIN_WARN, crit => ?DIAG_BIN_CRIT,
+              items => [proc_item(P, case B of too_many -> null; _ -> B end) || {P, B} <- List]}).
+
+%% Bytes waiting in each distribution port's output queue.
+dist_queues() ->
+    Ctrl = try erlang:system_info(dist_ctrl) catch _:_ -> [] end,
+    [{N, Q} || {N, P} <- Ctrl, is_port(P), {queue_size, Q} <- [erlang:port_info(P, queue_size)]].
+
+%% A connection counts when its queue was over the threshold at both ends
+%% of the check.
+dist_check(Before, After) ->
+    Warn = ?MB,
+    Crit = 64 * ?MB,
+    Busy = [{N, Q} || {N, Q} <- After, Q >= Warn,
+                      case lists:keyfind(N, 1, Before) of
+                          {_, Q0} -> Q0 >= Warn;
+                          false -> false
+                      end],
+    Max = lists:max([0 | [Q || {_, Q} <- Busy]]),
+    finding(dist_queue, level(Max, Warn, Crit),
+            #{value => length(Busy), warn => Warn, crit => Crit,
+              items => [#{node => N, value => Q} || {N, Q} <- lists:reverse(lists:keysort(2, Busy))]}).
+
+window(Seconds) ->
+    case erlang:system_info(process_count) > ?DIAG_MAX_PROCS of
+        true ->
+            {error, too_many_processes};
+        false ->
+            T0 = erlang:monotonic_time(millisecond),
+            Start = lists:sort(snapshot()),
+            timer:sleep(Seconds * 1000),
+            End = lists:sort(snapshot()),
+            Elapsed = erlang:monotonic_time(millisecond) - T0,
+            Tops0 = {top_new(?DIAG_TOP), top_new(?DIAG_TOP), top_new(?DIAG_TOP)},
+            {{Reds, Mem, Queue}, New, Gone} = window_merge(Start, End, Tops0, 0, 0),
+            Items = fun(Top) -> [window_item(P, D) || {P, D} <- top_list(Top)] end,
+            {ok, #{seconds => Elapsed / 1000,
+                   process_count => length(End),
+                   created => New,
+                   exited => Gone,
+                   reductions => Items(Reds),
+                   memory => Items(Mem),
+                   message_queue_len => Items(Queue)}}
+    end.
+
+%% Our own diagnosis processes are left out.
+snapshot() ->
+    Own = [self(), whereis(?DIAG)],
+    lists:foldl(
+      fun(Pid, Acc) ->
+              case lists:member(Pid, Own) of
+                  true -> Acc;
+                  false ->
+                      case erlang:process_info(Pid, [reductions, memory, message_queue_len]) of
+                          [{reductions, R}, {memory, M}, {message_queue_len, Q}] -> [{Pid, R, M, Q} | Acc];
+                          _ -> Acc
+                      end
+              end
+      end, [], erlang:processes()).
+
+%% Walks both pid-sorted snapshots together. A process created during the
+%% window grows from zero.
+window_merge([{P, R0, M0, Q0} | S], [{P, R1, M1, Q1} | E], Tops, New, Gone) ->
+    window_merge(S, E, window_add(P, R1 - R0, M1 - M0, Q1 - Q0, {R1, M1, Q1}, false, Tops), New, Gone);
+window_merge([{P0, _, _, _} | S], [{P1, _, _, _} | _] = E, Tops, New, Gone) when P0 < P1 ->
+    window_merge(S, E, Tops, New, Gone + 1);
+window_merge(S, [{P, R1, M1, Q1} | E], Tops, New, Gone) ->
+    window_merge(S, E, window_add(P, R1, M1, Q1, {R1, M1, Q1}, true, Tops), New + 1, Gone);
+window_merge(S, [], Tops, New, Gone) ->
+    {Tops, New, Gone + length(S)}.
+
+%% Reading process_info costs a process a reduction or so, which is not
+%% growth worth showing.
+window_add(P, DR, DM, DQ, Now, New, {Reds, Mem, Queue}) ->
+    Add = fun(D, Min, Top) when D >= Min -> top_add(D, P, {D, Now, New}, Top);
+             (_, _, Top) -> Top
+          end,
+    {Add(DR, ?DIAG_STUCK_REDS, Reds), Add(DM, 1, Mem), Add(DQ, 1, Queue)}.
+
+window_item(Pid, {Delta, {R, M, Q}, New}) ->
+    (proc_item(Pid, Delta))#{reductions => R, memory => M, message_queue_len => Q,
+                             new => New, alive => is_process_alive(Pid)}.
 
 %%--------------------------------------------------------------------
 %% Distribution

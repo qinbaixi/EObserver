@@ -2,12 +2,16 @@
 import { computed } from 'vue'
 import {
   NConfigProvider, NMessageProvider, NDialogProvider, NGlobalStyle,
-  darkTheme, zhCN, dateZhCN, type GlobalThemeOverrides,
+  darkTheme, zhCN, dateZhCN, enUS, dateEnUS, type GlobalThemeOverrides,
 } from 'naive-ui'
 import { useTheme } from './stores/theme'
+import { useLocale } from './stores/locale'
 import AppLayout from './components/AppLayout.vue'
 
 const theme = useTheme()
+const lang = useLocale()
+const naiveLocale = computed(() => (lang.locale === 'zh' ? zhCN : enUS))
+const naiveDateLocale = computed(() => (lang.locale === 'zh' ? dateZhCN : dateEnUS))
 
 // Softer than naive-ui's defaults on both ends: the light theme drops the
 // pure white surfaces, the dark theme lifts its near-black ones.
@@ -45,7 +49,7 @@ const overrides = computed<GlobalThemeOverrides>(() => {
 
 <template>
   <NConfigProvider :theme="theme.isDark ? darkTheme : null" :theme-overrides="overrides"
-                   :locale="zhCN" :date-locale="dateZhCN">
+                   :locale="naiveLocale" :date-locale="naiveDateLocale">
     <NGlobalStyle />
     <NMessageProvider>
       <NDialogProvider>

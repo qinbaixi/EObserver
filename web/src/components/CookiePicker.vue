@@ -4,6 +4,7 @@ import {
   NSelect, NInput, NCheckbox, NButton, NIcon, NSpace, NPopconfirm, useMessage, type SelectOption,
 } from 'naive-ui'
 import { TrashOutline, SettingsOutline } from '@vicons/ionicons5'
+import { useI18n } from 'vue-i18n'
 import { useCookies, type CookieChoice } from '../stores/cookies'
 import { errorText } from '../api/errors'
 import CookieManager from './CookieManager.vue'
@@ -14,6 +15,7 @@ const choice = defineModel<CookieChoice>({ required: true })
 const cookies = useCookies()
 const message = useMessage()
 const managing = ref(false)
+const { t } = useI18n()
 
 // A saved cookie deleted elsewhere (e.g. in the manager) can't stay selected.
 watch(() => cookies.saved, (list) => {
@@ -31,10 +33,10 @@ onMounted(async () => {
 const options = computed<SelectOption[]>(() => [
   ...cookies.saved.map((c) => ({
     value: `saved:${c.id}`,
-    label: c.label ? `${c.label}（${c.hint}）` : c.hint,
+    label: c.label ? t('shell.cookie.saved_option', { label: c.label, hint: c.hint }) : c.hint,
   })),
-  { value: 'new', label: '输入新的 cookie…' },
-  { value: 'default', label: '默认（~/.erlang.cookie）' },
+  { value: 'new', label: t('shell.cookie.new') },
+  { value: 'default', label: t('shell.cookie.default') },
 ])
 
 const selected = computed({
@@ -66,13 +68,13 @@ async function removeSelected() {
       <NSelect v-model:value="selected" :options="options" />
       <NPopconfirm v-if="choice.kind === 'saved'" @positive-click="removeSelected">
         <template #trigger>
-          <NButton quaternary circle title="从历史中删除这个 cookie">
+          <NButton quaternary circle :title="t('shell.cookie.forget_title')">
             <template #icon><NIcon :component="TrashOutline" /></template>
           </NButton>
         </template>
-        从历史中删除这个 cookie？
+        {{ t('shell.cookie.forget_confirm') }}
       </NPopconfirm>
-      <NButton quaternary circle title="管理已保存的 cookie" @click="managing = true">
+      <NButton quaternary circle :title="t('shell.cookie.manage')" @click="managing = true">
         <template #icon><NIcon :component="SettingsOutline" /></template>
       </NButton>
     </div>
@@ -81,9 +83,9 @@ async function removeSelected() {
       <NInput v-model:value="fresh.cookie" type="password" show-password-on="click"
               placeholder="Cookie" class="mono" />
       <div class="row">
-        <NInput v-model:value="fresh.label" placeholder="备注（可选），如：本地开发服"
+        <NInput v-model:value="fresh.label" :placeholder="t('shell.cookie.label_placeholder')"
                 :disabled="!fresh.remember" />
-        <NCheckbox v-model:checked="fresh.remember" style="white-space: nowrap">记住</NCheckbox>
+        <NCheckbox v-model:checked="fresh.remember" style="white-space: nowrap">{{ t('shell.cookie.remember') }}</NCheckbox>
       </div>
     </template>
   </NSpace>

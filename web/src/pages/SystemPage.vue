@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, toRef } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { NGrid, NGi, NCard, NTag, NSpace, NSkeleton } from 'naive-ui'
 import { useNodes } from '../stores/nodes'
 import { useTopic } from '../composables/useTopic'
@@ -11,20 +12,22 @@ import NodeGuard from '../components/NodeGuard.vue'
 import StatCard from '../components/StatCard.vue'
 import UsageBar from '../components/UsageBar.vue'
 
+const { t } = useI18n()
 const nodes = useNodes()
 const connectedNode = computed(() =>
   nodes.currentInfo?.status === 'connected' ? nodes.currentInfo.node : null)
 const { data, error, paused, interval, refresh } = useTopic<NodeSummary>('node.summary', toRef(connectedNode), 2000)
 const s = computed(() => data.value ?? nodes.currentInfo?.summary ?? null)
 
-const yesNo = (b: boolean) => (b ? '是' : '否')
+const yesNo = (b: boolean) => t(b ? 'pages.yes' : 'pages.no')
 
+// Labels are glossary ids (see Term.vue); the glossary translates them.
 const systemRows = computed(() => s.value ? [
   { label: 'OTP 版本', value: s.value.otp_release },
   { label: 'ERTS 版本', value: s.value.erts_version },
-  { label: '系统架构', value: s.value.system_architecture },
+  { label: t('pages.system.arch'), value: s.value.system_architecture },
   { label: '模拟器', value: s.value.emu_flavor ?? '-' },
-  { label: '字长', value: `${s.value.word_size * 8} 位` },
+  { label: '字长', value: t('pages.system.bits', { n: s.value.word_size * 8 }) },
   { label: 'Kernel poll', value: yesNo(s.value.kernel_poll) },
 ] : [])
 
@@ -62,7 +65,7 @@ const statRows = computed(() => s.value ? [
 </script>
 
 <template>
-  <PageHeader title="系统概览" :subtitle="nodes.current ?? undefined">
+  <PageHeader :title="t('pages.system.title')" :subtitle="nodes.current ?? undefined">
     <NSpace align="center">
       <NTag v-if="s?.features.socket" size="small" round :bordered="false">socket</NTag>
       <NTag v-if="s?.features.mnesia" size="small" round :bordered="false">mnesia</NTag>
@@ -72,19 +75,19 @@ const statRows = computed(() => s.value ? [
   <NodeGuard>
     <div v-if="error" class="err">{{ error }}</div>
     <NGrid v-if="s" cols="1 m:2 l:3" responsive="screen" :x-gap="16" :y-gap="16">
-      <NGi><StatCard title="系统与架构" :rows="systemRows" /></NGi>
-      <NGi><StatCard title="CPU 与线程" :rows="cpuRows" /></NGi>
+      <NGi><StatCard :title="t('pages.system.cards.system')" :rows="systemRows" /></NGi>
+      <NGi><StatCard :title="t('pages.system.cards.cpu')" :rows="cpuRows" /></NGi>
       <NGi>
-        <NCard title="资源使用" size="small">
-          <UsageBar label="进程" tip="当前进程数 / 进程数上限（+P 参数）。达到上限后无法再创建进程。" :used="s.process_count" :limit="s.process_limit" />
-          <UsageBar label="端口" tip="当前端口数 / 端口数上限（+Q 参数）。socket、文件、外部程序都占用端口。" :used="s.port_count" :limit="s.port_limit" />
-          <UsageBar label="原子" tip="当前原子数 / 原子表上限（+t 参数）。原子不会被回收，达到上限节点会崩溃。" :used="s.atom_count" :limit="s.atom_limit" />
+        <NCard :title="t('pages.system.cards.usage')" size="small">
+          <UsageBar label="进程" :tip="t('pages.system.tips.process')" :used="s.process_count" :limit="s.process_limit" />
+          <UsageBar label="端口" :tip="t('pages.system.tips.port')" :used="s.port_count" :limit="s.port_limit" />
+          <UsageBar label="原子" :tip="t('pages.system.tips.atom')" :used="s.atom_count" :limit="s.atom_limit" />
           <UsageBar v-if="s.ets_limit" label="ETS 表" :used="s.ets_count" :limit="s.ets_limit" />
-          <div v-else class="ets">ETS 表 <span class="mono">{{ s.ets_count }}</span></div>
+          <div v-else class="ets">{{ t('pages.system.ets') }} <span class="mono">{{ s.ets_count }}</span></div>
         </NCard>
       </NGi>
-      <NGi><StatCard title="内存分布" :rows="memoryRows" /></NGi>
-      <NGi span="1 l:2"><StatCard title="统计" :rows="statRows" class="two-col" /></NGi>
+      <NGi><StatCard :title="t('pages.system.cards.memory')" :rows="memoryRows" /></NGi>
+      <NGi span="1 l:2"><StatCard :title="t('pages.system.cards.stats')" :rows="statRows" class="two-col" /></NGi>
     </NGrid>
     <NSkeleton v-else text :repeat="6" />
   </NodeGuard>

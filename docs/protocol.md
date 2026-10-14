@@ -25,6 +25,15 @@ collection for the same subscription is still running.
 
 Sending `sub` again with the same `id` replaces the subscription.
 
+The server closes a socket it has not heard from for 120 seconds, so the
+browser sends `{"type": "ping"}` every 30 seconds; frames of an unknown
+type are ignored.
+
+The overview wall and the compare mode of the load charts subscribe
+`node.load` every 2 seconds for each node they show (at most 50 at a time),
+and the wall also `node.summary` every 5 seconds for the limits; the history
+is kept in the browser only, and the subscriptions end when the view closes.
+
 ## Events
 
 ```json
@@ -71,6 +80,9 @@ Sending `sub` again with the same `id` replaces the subscription.
 | `table.delete` | `node`, `kind`, `table`, `ref` | `ok` |
 | `trace.start` | `node`, `targets` (pids or registered names, at most 10), `max_events`, `max_seconds` (optional) | `id`, traced `processes`, `refused` targets with a reason, `limits`; replaces a running trace |
 | `trace.stop` | `node` | `ok` |
+| `trace.stats` | `node`, `id` (trace, optional), `row` (optional) | call statistics of the trace, as the `trace.stats` topic, where each row also has `hist` (`low`, `high` in microseconds and `count` per non-empty latency bucket, about 9% wide) and `slowest` (the 10 slowest calls: `latency`, `t`, `peer`, `summary`); only row `row` when given, else every row (used to save a trace) |
+| `diag.check` | `node` | health check: `checks` (each `id`, `level` = `ok` / `warn` / `crit` / `skip`, `value`, `warn` / `crit` thresholds, `items`), `memory_total`, `process_count`, `took_ms`; takes about 2 s; one diagnosis at a time per node (`busy`) |
+| `diag.window` | `node`, `seconds` (1–60, default 10) | processes that grew most during the window: `reductions`, `memory`, `message_queue_len` (top 20 each, with `value` = growth), `created`, `exited`, `process_count`; refused with `too_many_processes` above 500 000 processes |
 
 ## Topics
 
@@ -83,6 +95,8 @@ Sending `sub` again with the same `id` replaces the subscription.
 | `node.ets` / `node.mnesia` | `node` | table lists |
 | `node.allocators` | `node` | block and carrier sizes per allocator |
 | `trace.events` | `node` | the node's message trace: `status` (`running` / `stopped` / `none`), stop `reason`, `count`, `dropped`, `processes`, and the `events` since the previous push (direction, category, kind, peer, call/reply `ref`, summary, text) |
+| `logs.events` | `node` | the node's live log and crash records, collected only while someone pulls this topic (a logger handler is added on the first pull and removed 60 s after the last one, or when the tool disconnects); allowed in read-only mode. `status` (`running` / `stopped`), stop `reason`, `started`, target clock `now` (ms), `primary_level` (the node's logger level: less severe events are never produced), `received`, `lost` (overwritten in the 2000-line ring before this read), `dropped` (overload), `limited` (below warning, over 2000 events/s), `reset` (the collection restarted), and since the previous push: `logs` (`seq`, `t` in µs, `level`, `module`, `pid`, `text`), changed `crashes` (one per process and reason: `id`, `who`, `pid`, `class`, `reason`, `text`, `stack`, `count`, `first`, `last`) and changed `restarts` (one per supervisor and child: `id`, `supervisor`, `child`, `count`, `failed_starts`, `gave_up`, `restart_type`, `reason`, `last`, recent `times`) |
+| `trace.stats` | `node` | gen call statistics of the message trace, counted on the node so they stay exact when events are dropped: `id`, `status`, `kinds` (distinct request kinds, at most `max_kinds` = 200), `rows`, one per traced process, direction (`in`: calls it served, `out`: calls it made) and request kind (a tuple's first element or an atom; `group` = `named`, `other` for any other shape, or `overflow` for kinds beyond the cap), each with `row` (number), `pid`, `dir`, `kind`, `calls`, `answered`, `pending` (waiting for a reply), `unanswered` (no reply within 60 s, pushed out by the cap of 1000 waiting calls, or still waiting when the trace stopped), and `avg` / `p95` / `max` latency in microseconds (`p95` is the upper bound of its histogram bucket) |
 | `cluster` | | distribution links of every observed node |
 
 The handlers live in

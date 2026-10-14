@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="{{lang}}">
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
@@ -18,10 +18,10 @@
 </head>
 <body>
 <main>
-  <h1>EObserver 无法启动</h1>
+  <h1>{{title}}</h1>
   <p>{{message}}</p>
   <pre>{{log}}</pre>
-  <p>请把以上输出附在 <a href="https://github.com/qinbaixi/EObserver/issues">GitHub issue</a> 中。</p>
+  <p>{{report}}</p>
 </main>
 </body>
 </html>

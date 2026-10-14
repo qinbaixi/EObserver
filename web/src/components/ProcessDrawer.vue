@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import {
   NDrawer, NDrawerContent, NTabs, NTabPane, NDescriptions, NDescriptionsItem, NTag,
   NButton, NSpace, NEmpty, NSpin, NInput, NCode, NAlert, NIcon, useDialog, useMessage,
@@ -16,6 +17,7 @@ import Term from './Term.vue'
 const props = defineProps<{ node: string; pid: string | null }>()
 const emit = defineEmits<{ 'update:pid': [string | null]; killed: [] }>()
 
+const { t } = useI18n()
 const settings = useSettings()
 const route = useRoute()
 const router = useRouter()
@@ -79,7 +81,7 @@ async function readState() {
   try {
     state.value = await client.request<string>('process.state', { node: props.node, pid: props.pid })
   } catch (e) {
-    message.error(`读取状态失败：${errorText(e)}`)
+    message.error(t('procs.drawer.state_failed', { err: errorText(e) }))
   } finally {
     stateLoading.value = false
   }
@@ -88,14 +90,14 @@ async function readState() {
 function kill() {
   const pid = props.pid
   dialog.error({
-    title: '杀死进程',
-    content: `向 ${pid} 发送 kill 退出信号？这会影响目标节点上正在运行的系统。`,
-    positiveText: '杀死',
-    negativeText: '取消',
+    title: t('procs.kill.title'),
+    content: t('procs.kill.content', { pid }),
+    positiveText: t('procs.kill.ok'),
+    negativeText: t('procs.cancel'),
     onPositiveClick: async () => {
       try {
         await client.request('process.kill', { node: props.node, pid })
-        message.success(`已杀死 ${pid}`)
+        message.success(t('procs.kill.done', { pid }))
         emit('killed')
         await load()
       } catch (e) {
@@ -109,18 +111,18 @@ function send() {
   const text = sendText.value.trim()
   if (!text) return
   dialog.warning({
-    title: '发送消息',
-    content: `向 ${props.pid} 发送 ${text}？`,
-    positiveText: '发送',
-    negativeText: '取消',
+    title: t('procs.drawer.send_title'),
+    content: t('procs.drawer.send_confirm', { pid: props.pid, text }),
+    positiveText: t('procs.drawer.send'),
+    negativeText: t('procs.cancel'),
     onPositiveClick: async () => {
       try {
         await client.request('process.send', { node: props.node, pid: props.pid, message: text })
-        message.success('已发送')
+        message.success(t('procs.drawer.sent'))
         sendText.value = ''
         await load()
       } catch (e) {
-        message.error(`发送失败：${errorText(e)}`)
+        message.error(t('procs.drawer.send_failed', { err: errorText(e) }))
       }
     },
   })
@@ -134,7 +136,7 @@ const bytes = (words: number) => formatBytes(words * (detail.value?.word_size ??
     <NDrawerContent :native-scrollbar="false" closable>
       <template #header>
         <NSpace align="center" :size="8">
-          <NButton v-if="history.length" size="tiny" quaternary @click="back">← 返回</NButton>
+          <NButton v-if="history.length" size="tiny" quaternary @click="back">{{ t('procs.drawer.back') }}</NButton>
           <span class="mono">{{ pid }}</span>
           <NTag v-if="detail?.name" size="small" type="primary" :bordered="false">{{ detail.name }}</NTag>
           <NTag v-if="detail" size="small" :bordered="false">{{ detail.status }}</NTag>
@@ -145,10 +147,10 @@ const bytes = (words: number) => formatBytes(words * (detail.value?.word_size ??
       </template>
 
       <NSpin v-if="loading && !detail" style="width: 100%; padding: 60px 0" />
-      <NEmpty v-else-if="error === 'not_found'" description="进程已退出" style="padding: 60px 0" />
+      <NEmpty v-else-if="error === 'not_found'" :description="t('procs.drawer.exited')" style="padding: 60px 0" />
       <NAlert v-else-if="error" type="error">{{ error }}</NAlert>
       <NTabs v-else-if="detail" type="line" animated>
-        <NTabPane name="overview" tab="概览">
+        <NTabPane name="overview" :tab="t('procs.drawer.tabs.overview')">
           <NDescriptions :column="2" label-placement="left" size="small" bordered>
             <NDescriptionsItem><template #label><Term label="初始调用" /></template><span class="mono">{{ detail.initial_call }}</span></NDescriptionsItem>
             <NDescriptionsItem><template #label><Term label="当前函数" /></template><span class="mono">{{ detail.current_function }}</span></NDescriptionsItem>
@@ -158,7 +160,7 @@ const bytes = (words: number) => formatBytes(words * (detail.value?.word_size ??
             <NDescriptionsItem><template #label><Term label="堆 / 总堆" /></template>{{ bytes(detail.heap_size) }} / {{ bytes(detail.total_heap_size) }}</NDescriptionsItem>
             <NDescriptionsItem><template #label><Term label="栈" /></template>{{ bytes(detail.stack_size) }}</NDescriptionsItem>
             <NDescriptionsItem><template #label><Term label="优先级" /></template>{{ detail.priority }}</NDescriptionsItem>
-            <NDescriptionsItem><template #label><Term label="trap_exit" /></template>{{ detail.trap_exit ? '是' : '否' }}</NDescriptionsItem>
+            <NDescriptionsItem><template #label><Term label="trap_exit" /></template>{{ t(detail.trap_exit ? 'procs.drawer.yes' : 'procs.drawer.no') }}</NDescriptionsItem>
             <NDescriptionsItem><template #label><Term label="Group leader" /></template>
               <a class="mono link" @click="open(detail.group_leader)">{{ detail.group_leader }}</a>
             </NDescriptionsItem>
@@ -173,10 +175,10 @@ const bytes = (words: number) => formatBytes(words * (detail.value?.word_size ??
               <NTag v-for="r in g.items" :key="r" size="small" class="mono"
                     :class="{ clickable: r.startsWith('<') || r.startsWith('#Port') }" @click="open(r)">{{ r }}</NTag>
             </NSpace>
-            <div v-else class="none">无</div>
+            <div v-else class="none">{{ t('procs.drawer.none') }}</div>
           </div>
           <div class="group">
-            <div class="group-title">垃圾回收</div>
+            <div class="group-title">{{ t('procs.drawer.gc') }}</div>
             <table class="kv">
               <tr v-for="g in detail.garbage_collection" :key="g.key">
                 <td class="k">{{ g.key }}</td>
@@ -186,18 +188,18 @@ const bytes = (words: number) => formatBytes(words * (detail.value?.word_size ??
           </div>
         </NTabPane>
 
-        <NTabPane name="messages" :tab="`消息 (${detail.message_queue_len})`">
+        <NTabPane name="messages" :tab="t('procs.drawer.tabs.messages', { n: detail.message_queue_len })">
           <NAlert v-if="detail.messages === 'truncated'" type="warning">
-            队列中有 {{ formatNumber(detail.message_queue_len) }} 条消息，超过 100 条时不读取内容，以免复制整个队列。
+            {{ t('procs.drawer.truncated', { n: formatNumber(detail.message_queue_len) }) }}
           </NAlert>
-          <NEmpty v-else-if="!detail.messages.length" description="消息队列为空" />
+          <NEmpty v-else-if="!detail.messages.length" :description="t('procs.drawer.queue_empty')" />
           <div v-else class="terms">
             <NCode v-for="(m, i) in detail.messages" :key="i" :code="m" word-wrap class="term" />
           </div>
         </NTabPane>
 
-        <NTabPane name="dictionary" :tab="`进程字典 (${detail.dictionary.length})`">
-          <NEmpty v-if="!detail.dictionary.length" description="进程字典为空" />
+        <NTabPane name="dictionary" :tab="t('procs.drawer.tabs.dictionary', { n: detail.dictionary.length })">
+          <NEmpty v-if="!detail.dictionary.length" :description="t('procs.drawer.dict_empty')" />
           <table v-else class="kv">
             <tr v-for="(d, i) in detail.dictionary" :key="i">
               <td class="mono k">{{ d.key }}</td>
@@ -206,7 +208,7 @@ const bytes = (words: number) => formatBytes(words * (detail.value?.word_size ??
           </table>
         </NTabPane>
 
-        <NTabPane name="stack" tab="调用栈">
+        <NTabPane name="stack" :tab="t('procs.drawer.tabs.stack')">
           <table class="kv">
             <tr v-for="(f, i) in detail.stacktrace" :key="i">
               <td class="mono">{{ f.mfa }}</td>
@@ -215,27 +217,29 @@ const bytes = (words: number) => formatBytes(words * (detail.value?.word_size ??
           </table>
         </NTabPane>
 
-        <NTabPane name="state" tab="状态">
-          <p class="hint">通过 <code>sys:get_state/2</code> 读取（超时 5 秒），只对 OTP 行为进程有效，会短暂占用该进程。</p>
-          <NButton :loading="stateLoading" @click="readState">读取状态</NButton>
+        <NTabPane name="state" :tab="t('procs.drawer.tabs.state')">
+          <i18n-t keypath="procs.drawer.state_hint" tag="p" class="hint" scope="global">
+            <template #fn><code>sys:get_state/2</code></template>
+          </i18n-t>
+          <NButton :loading="stateLoading" @click="readState">{{ t('procs.drawer.read_state') }}</NButton>
           <NCode v-if="state" :code="state" word-wrap class="term" style="margin-top: 12px" />
         </NTabPane>
 
-        <NTabPane v-if="!settings.readOnly" name="actions" tab="操作">
-          <div class="group-title">跟踪消息</div>
-          <p class="none" style="margin: 0 0 8px">实时查看这个进程收发了哪些消息，按业务 / 系统分类。</p>
+        <NTabPane v-if="!settings.readOnly" name="actions" :tab="t('procs.drawer.tabs.actions')">
+          <div class="group-title">{{ t('common.trace') }}</div>
+          <p class="none" style="margin: 0 0 8px">{{ t('procs.drawer.trace_intro') }}</p>
           <NButton @click="traceIt">
             <template #icon><NIcon :component="ChatbubblesOutline" /></template>
-            跟踪这个进程的消息
+            {{ t('procs.drawer.trace_button') }}
           </NButton>
-          <div class="group-title" style="margin-top: 24px">发送消息</div>
+          <div class="group-title" style="margin-top: 24px">{{ t('procs.drawer.send_title') }}</div>
           <NInput v-model:value="sendText" type="textarea" class="mono"
-                  placeholder="Erlang 项，例如 {hello, world}" :autosize="{ minRows: 2, maxRows: 6 }" />
+                  :placeholder="t('procs.drawer.send_placeholder')" :autosize="{ minRows: 2, maxRows: 6 }" />
           <NButton style="margin-top: 8px" :disabled="!sendText.trim()" @click="send">
             <template #icon><NIcon :component="SendOutline" /></template>
-            发送
+            {{ t('procs.drawer.send') }}
           </NButton>
-          <div class="group-title" style="margin-top: 24px">杀死进程</div>
+          <div class="group-title" style="margin-top: 24px">{{ t('procs.drawer.kill_title') }}</div>
           <NButton type="error" secondary @click="kill">
             <template #icon><NIcon :component="SkullOutline" /></template>
             exit(Pid, kill)

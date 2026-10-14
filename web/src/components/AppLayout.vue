@@ -3,18 +3,24 @@ import { computed, h, ref } from 'vue'
 import { useRoute, useRouter, RouterView } from 'vue-router'
 import {
   NLayout, NLayoutSider, NLayoutHeader, NLayoutContent, NMenu, NIcon, NButton,
-  NTooltip, NSpace, NDropdown, useMessage, type MenuOption,
+  NTooltip, NSpace, NDropdown, useMessage, useThemeVars, type MenuOption,
 } from 'naive-ui'
-import { MoonOutline, SunnyOutline, LinkOutline, ContrastOutline } from '@vicons/ionicons5'
-import { pages } from '../router'
+import { MoonOutline, SunnyOutline, LinkOutline, ContrastOutline, SearchOutline, LanguageOutline } from '@vicons/ionicons5'
+import { useI18n } from 'vue-i18n'
+import { pages, pageTitle } from '../router'
 import { useTheme, type Mode } from '../stores/theme'
+import { useLocale } from '../stores/locale'
+import { LOCALES, type Locale } from '../i18n'
 import { useNodes } from '../stores/nodes'
 import { useSettings } from '../stores/settings'
+import { useTrace } from '../stores/trace'
 import { client } from '../api/ws'
 import NodeSwitcher from './NodeSwitcher.vue'
 import WelcomePanel from './WelcomePanel.vue'
 import ConnectDialog from './ConnectDialog.vue'
 import UpdateChecker from './UpdateChecker.vue'
+import CommandPalette from './CommandPalette.vue'
+import { useUi } from '../stores/ui'
 import { useUrlSync } from '../composables/useUrlSync'
 
 const route = useRoute()
@@ -22,22 +28,36 @@ const router = useRouter()
 const theme = useTheme()
 const nodes = useNodes()
 const settings = useSettings()
+const trace = useTrace()
 const collapsed = ref(false)
 const message = useMessage()
+const ui = useUi()
+const { t } = useI18n()
+const themeVars = useThemeVars()
+const lang = useLocale()
+const paletteKey = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl K'
 useUrlSync()
 
 const themeOptions = computed(() => ([
-  ['system', '跟随系统', ContrastOutline], ['light', '浅色', SunnyOutline], ['dark', '深色', MoonOutline],
+  ['system', t('shell.layout.theme_system'), ContrastOutline],
+  ['light', t('shell.layout.theme_light'), SunnyOutline],
+  ['dark', t('shell.layout.theme_dark'), MoonOutline],
 ] as const).map(([key, label, icon]) => ({
   key,
   label: theme.mode === key ? `${label} ✓` : label,
   icon: () => h(NIcon, { component: icon }),
 })))
 
+// Each language is named in itself, so it can be found from either one.
+const localeOptions = computed(() => LOCALES.map((key) => {
+  const label = t(`shell.locale.${key}`)
+  return { key, label: lang.locale === key ? `${label} ✓` : label }
+}))
+
 async function copyLink() {
   try {
     await navigator.clipboard.writeText(window.location.href)
-    message.success('已复制当前页面链接')
+    message.success(t('shell.layout.copied'))
   } catch {
     message.info(window.location.href)
   }
@@ -47,18 +67,14 @@ const menuOptions = computed<MenuOption[]>(() =>
   pages.map((p) => ({
     key: p.name,
     label: () => h('span', { class: 'menu-label' }, [
-      p.meta.title,
+      pageTitle(p.meta),
       p.meta.milestone ? h('span', { class: 'menu-soon' }, p.meta.milestone) : null,
     ]),
     icon: () => h(NIcon, null, { default: () => h(p.meta.icon) }),
   })),
 )
 
-const socketText = computed(() => ({
-  open: '服务已连接',
-  connecting: '正在连接服务…',
-  closed: '服务连接已断开，正在重试',
-}[client.state.value]))
+const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`))
 </script>
 
 <template>
@@ -77,16 +93,21 @@ const socketText = computed(() => ({
       <UpdateChecker v-if="settings.version" :collapsed="collapsed" />
     </NLayoutSider>
     <NLayout>
-      <NLayoutHeader bordered class="header">
+      <NLayoutHeader bordered class="header" :style="{ '--search-border': themeVars.borderColor }">
         <div class="header-left">
           <NodeSwitcher />
         </div>
         <NSpace align="center" :size="12">
+          <button type="button" class="search-hint" :title="t('palette.open')" @click="ui.paletteOpen = true">
+            <NIcon :component="SearchOutline" />
+            <span class="search-text">{{ t('palette.open') }}</span>
+            <kbd>{{ paletteKey }}</kbd>
+          </button>
           <NTooltip v-if="settings.readOnly">
             <template #trigger>
-              <span class="ro">只读</span>
+              <span class="ro">{{ t('shell.layout.read_only') }}</span>
             </template>
-            以 --read-only 启动：不能 kill 进程、发送消息或关闭端口
+            {{ t('shell.layout.read_only_tip') }}
           </NTooltip>
           <NTooltip>
             <template #trigger>
@@ -100,26 +121,33 @@ const socketText = computed(() => ({
                 <template #icon><NIcon :component="LinkOutline" /></template>
               </NButton>
             </template>
-            复制当前页面链接（包含节点与打开的详情）
+            {{ t('shell.layout.copy_tip') }}
           </NTooltip>
           <NDropdown trigger="click" :options="themeOptions" :value="theme.mode"
                      @select="(m: Mode) => theme.setMode(m)">
-            <NButton quaternary circle class="theme-toggle" title="主题">
+            <NButton quaternary circle class="theme-toggle" :title="t('shell.layout.theme')">
               <template #icon>
                 <NIcon :component="theme.mode === 'system' ? ContrastOutline : theme.isDark ? MoonOutline : SunnyOutline" />
               </template>
+            </NButton>
+          </NDropdown>
+          <NDropdown trigger="click" :options="localeOptions" :value="lang.locale"
+                     @select="(l: Locale) => lang.setLocale(l)">
+            <NButton quaternary circle class="locale-toggle" :title="t('shell.layout.language')">
+              <template #icon><NIcon :component="LanguageOutline" /></template>
             </NButton>
           </NDropdown>
         </NSpace>
       </NLayoutHeader>
       <NLayoutContent class="content" :native-scrollbar="false">
         <div class="content-inner">
-          <WelcomePanel v-if="nodes.loaded && nodes.list.length === 0" />
+          <WelcomePanel v-if="nodes.loaded && nodes.list.length === 0 && !trace.replay" />
           <RouterView v-else />
         </div>
       </NLayoutContent>
     </NLayout>
     <ConnectDialog />
+    <CommandPalette />
   </NLayout>
 </template>
 
@@ -166,6 +194,35 @@ const socketText = computed(() => ({
   padding: 24px;
   max-width: 1440px;
   margin: 0 auto;
+}
+.search-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 6px 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--search-border);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  opacity: 0.75;
+}
+.search-hint:hover {
+  opacity: 1;
+}
+.search-hint kbd {
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 18px;
+  padding: 0 5px;
+  border-radius: 4px;
+  border: 1px solid var(--search-border);
+}
+@media (max-width: 720px) {
+  .search-text, .search-hint kbd { display: none; }
 }
 .ro {
   font-size: 12px;

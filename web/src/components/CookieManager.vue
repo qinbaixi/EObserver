@@ -4,14 +4,17 @@ import {
   NModal, NCard, NInput, NButton, NIcon, NEmpty, NPopconfirm, NText, useMessage,
 } from 'naive-ui'
 import { TrashOutline } from '@vicons/ionicons5'
+import { useI18n } from 'vue-i18n'
 import { useCookies } from '../stores/cookies'
 import { errorText } from '../api/errors'
+import { formatDateTime } from '../api/format'
 
 // Lists the cookies stored on the EObserver side: rename their labels or
 // delete them. The cookie values themselves are never sent to the page.
 const show = defineModel<boolean>('show', { required: true })
 const cookies = useCookies()
 const message = useMessage()
+const { t } = useI18n()
 const labels = ref<Record<string, string>>({})
 
 watch(show, async (open) => {
@@ -26,7 +29,7 @@ async function saveLabel(id: string) {
   if (!saved || saved.label === label) return
   try {
     await cookies.rename(id, label)
-    message.success('备注已保存')
+    message.success(t('shell.cookie.label_saved'))
   } catch (e) {
     message.error(errorText(e))
   }
@@ -48,36 +51,36 @@ async function removeAll() {
   }
 }
 
-const lastUsed = (s: number) => (s ? new Date(s * 1000).toLocaleString() : '-')
+const lastUsed = (s: number) => (s ? formatDateTime(s * 1000) : '-')
 </script>
 
 <template>
   <NModal v-model:show="show">
-    <NCard title="已保存的 cookie" style="width: 560px; max-width: calc(100vw - 32px)" closable
+    <NCard :title="t('shell.cookie.manager_title')" style="width: 560px; max-width: calc(100vw - 32px)" closable
            @close="show = false">
-      <NEmpty v-if="!cookies.saved.length" description="还没有保存过 cookie" style="padding: 24px 0" />
+      <NEmpty v-if="!cookies.saved.length" :description="t('shell.cookie.empty')" style="padding: 24px 0" />
       <div v-else class="list">
         <div v-for="c in cookies.saved" :key="c.id" class="row">
           <span class="mono hint">{{ c.hint }}</span>
-          <NInput v-model:value="labels[c.id]" size="small" placeholder="备注"
+          <NInput v-model:value="labels[c.id]" size="small" :placeholder="t('shell.cookie.label')"
                   @blur="saveLabel(c.id)" @keyup.enter="saveLabel(c.id)" />
           <NText depth="3" class="used">{{ lastUsed(c.last_used) }}</NText>
           <NPopconfirm @positive-click="remove(c.id)">
             <template #trigger>
-              <NButton quaternary circle size="small" title="删除">
+              <NButton quaternary circle size="small" :title="t('shell.cookie.delete')">
                 <template #icon><NIcon :component="TrashOutline" /></template>
               </NButton>
             </template>
-            删除这个 cookie？已经连上的节点不受影响。
+            {{ t('shell.cookie.delete_confirm') }}
           </NPopconfirm>
         </div>
       </div>
       <template #footer>
         <div class="footer">
-          <NText depth="3" class="note">只显示 cookie 的首尾字符，完整内容只保存在本机的配置目录中。</NText>
+          <NText depth="3" class="note">{{ t('shell.cookie.note') }}</NText>
           <NPopconfirm v-if="cookies.saved.length" @positive-click="removeAll">
-            <template #trigger><NButton size="small" type="error" secondary>全部删除</NButton></template>
-            删除全部 {{ cookies.saved.length }} 个已保存的 cookie？
+            <template #trigger><NButton size="small" type="error" secondary>{{ t('shell.cookie.delete_all') }}</NButton></template>
+            {{ t('shell.cookie.delete_all_confirm', { n: cookies.saved.length }) }}
           </NPopconfirm>
         </div>
       </template>

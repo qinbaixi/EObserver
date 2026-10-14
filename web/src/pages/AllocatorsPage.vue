@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, h, ref, toRef, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { NGrid, NGi, NCard, NDataTable, NAlert, NProgress, NText, type DataTableColumns } from 'naive-ui'
 import { useNodes } from '../stores/nodes'
 import { useTopic } from '../composables/useTopic'
@@ -13,13 +14,14 @@ import TimeSeriesChart, { type Series } from '../charts/TimeSeriesChart.vue'
 import { term } from '../api/term'
 import { useResizableTable } from '../api/table'
 
+const { t } = useI18n()
 const nodes = useNodes()
 const node = computed(() =>
   nodes.currentInfo?.status === 'connected' ? nodes.currentInfo.node : null)
 const { data, error, paused, interval, refresh } = useTopic<AllocInfo>('node.allocators', toRef(node), 2000)
 
 // Allocators drawn as their own series, in a fixed order so each keeps
-// its color; the rest are folded into "其他".
+// its color; the rest are folded into "other".
 const NAMED = ['eheap_alloc', 'binary_alloc', 'ets_alloc', 'll_alloc', 'literal_alloc', 'fix_alloc', 'std_alloc']
 const WINDOW_MS = 5 * 60 * 1000
 
@@ -42,13 +44,13 @@ watch(data, (d) => {
   history.value = [...history.value.filter((p) => p.time >= time - WINDOW_MS), { time, carriers, util }]
 })
 
-const label = (t: string) => t.replace(/_alloc$/, '')
+const label = (a: string) => a.replace(/_alloc$/, '')
 const carrierSeries = computed<Series[]>(() => [
-  ...NAMED.map((t) => ({ name: label(t), data: history.value.map((p): [number, number | null] => [p.time, p.carriers[t] ?? null]) })),
-  { name: '其他', data: history.value.map((p): [number, number | null] => [p.time, p.carriers.other]) },
+  ...NAMED.map((a) => ({ name: label(a), data: history.value.map((p): [number, number | null] => [p.time, p.carriers[a] ?? null]) })),
+  { name: t('pages.allocators.other'), data: history.value.map((p): [number, number | null] => [p.time, p.carriers.other]) },
 ])
 const utilSeries = computed<Series[]>(() =>
-  NAMED.map((t) => ({ name: label(t), data: history.value.map((p): [number, number | null] => [p.time, p.util[t] ?? null]) })))
+  NAMED.map((a) => ({ name: label(a), data: history.value.map((p): [number, number | null] => [p.time, p.util[a] ?? null]) })))
 
 const totals = computed(() => {
   const list = data.value?.allocators ?? []
@@ -58,7 +60,7 @@ const totals = computed(() => {
 })
 
 const pct = (v: number) => `${(v * 100).toFixed(0)}%`
-const mono = (t: string) => h('span', { class: 'mono' }, t)
+const mono = (s: string) => h('span', { class: 'mono' }, s)
 
 const columns: DataTableColumns<AllocatorRow> = [
   { key: 'type', title: term('分配器'), width: 150, sorter: (a, b) => a.type.localeCompare(b.type),
@@ -90,15 +92,15 @@ const allocTable = useResizableTable(columns)
 </script>
 
 <template>
-  <PageHeader title="内存分配器" subtitle="erts_alloc 的载体（向操作系统申请）与块（实际使用）">
+  <PageHeader :title="t('pages.allocators.title')" :subtitle="t('pages.allocators.subtitle')">
     <RefreshControl v-model:paused="paused" v-model:interval="interval" @refresh="refresh" />
   </PageHeader>
   <NodeGuard>
     <NAlert v-if="error" type="error" style="margin-bottom: 12px">{{ error }}</NAlert>
     <NGrid :cols="4" :x-gap="12" :y-gap="12" responsive="screen" item-responsive>
-      <NGi span="4 m:1"><KpiTile label="已分配载体" :value="data ? formatBytes(totals.carriers) : '-'" hint="VM 从操作系统申请的内存" /></NGi>
-      <NGi span="4 m:1"><KpiTile label="已用块" :value="data ? formatBytes(totals.blocks) : '-'" hint="载体中实际存放数据的部分" /></NGi>
-      <NGi span="4 m:1"><KpiTile label="整体利用率" :value="data ? pct(totals.util) : '-'" hint="利用率低说明存在碎片" /></NGi>
+      <NGi span="4 m:1"><KpiTile label="已分配载体" :value="data ? formatBytes(totals.carriers) : '-'" :hint="t('pages.allocators.hints.carriers')" /></NGi>
+      <NGi span="4 m:1"><KpiTile label="已用块" :value="data ? formatBytes(totals.blocks) : '-'" :hint="t('pages.allocators.hints.blocks')" /></NGi>
+      <NGi span="4 m:1"><KpiTile label="整体利用率" :value="data ? pct(totals.util) : '-'" :hint="t('pages.allocators.hints.util')" /></NGi>
       <NGi span="4 m:1"><KpiTile label="erlang:memory(total)" :value="data ? formatBytes(data.memory_total) : '-'" /></NGi>
       <NGi span="4 l:2">
         <NCard :title="term('载体大小')" size="small">
@@ -111,8 +113,8 @@ const allocTable = useResizableTable(columns)
         </NCard>
       </NGi>
       <NGi span="4">
-        <NCard size="small" title="各分配器">
-          <template #header-extra><NText depth="3" style="font-size: 12px">所有实例之和</NText></template>
+        <NCard size="small" :title="t('pages.allocators.table')">
+          <template #header-extra><NText depth="3" style="font-size: 12px">{{ t('pages.allocators.table_note') }}</NText></template>
           <NDataTable v-bind="allocTable" :data="data?.allocators ?? []" :loading="!data && !error" size="small"
                       :row-key="(r: AllocatorRow) => r.type" />
         </NCard>

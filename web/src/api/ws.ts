@@ -1,6 +1,9 @@
 // WebSocket client for the EObserver backend. Requests return promises,
 // subscriptions survive reconnects, and backend events fan out to listeners.
 import { ref } from 'vue'
+import { i18n } from '../i18n'
+
+const t = (key: string) => i18n.global.t(`shell.ws.${key}`)
 
 type Json = any // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -34,18 +37,23 @@ class Client {
     const ws = new WebSocket(`${proto}://${location.host}/ws`)
     this.ws = ws
     this.state.value = 'connecting'
+    // The server drops a socket it has not heard from for 120 s, which a
+    // page that only listens (the overview wall) would otherwise hit.
+    let keepalive = 0
     ws.onopen = () => {
       this.state.value = 'open'
       this.retry = 500
+      keepalive = window.setInterval(() => this.send({ type: 'ping' }), 30000)
       for (const [id, sub] of this.subs) this.sendSub(id, sub)
       this.emit('socket_open', null)
     }
     ws.onmessage = (ev) => this.onMessage(JSON.parse(ev.data))
     ws.onclose = () => {
+      clearInterval(keepalive)
       this.state.value = 'closed'
       for (const [, p] of this.pending) {
         clearTimeout(p.timer)
-        p.reject(new Error('连接已断开'))
+        p.reject(new Error(t('closed')))
       }
       this.pending.clear()
       setTimeout(() => this.connect(), this.retry)
@@ -56,13 +64,13 @@ class Client {
   request<T = Json>(method: string, params: Json = {}, timeout = 20000): Promise<T> {
     return new Promise((resolve, reject) => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-        reject(new Error('未连接到 EObserver 服务'))
+        reject(new Error(t('not_connected')))
         return
       }
       const id = this.nextId++
       const timer = window.setTimeout(() => {
         this.pending.delete(id)
-        reject(new Error('请求超时'))
+        reject(new Error(t('timeout')))
       }, timeout)
       this.pending.set(id, { resolve, reject, timer })
       this.ws.send(JSON.stringify({ type: 'req', id, method, params }))

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   NDrawer, NDrawerContent, NDescriptions, NDescriptionsItem, NTag, NButton, NSpace,
   NEmpty, NSpin, NAlert, NIcon, useDialog, useMessage,
@@ -14,6 +15,7 @@ import Term from './Term.vue'
 
 const props = defineProps<{ node: string; port: string | null }>()
 const emit = defineEmits<{ 'update:port': [string | null]; openPid: [string] }>()
+const { t } = useI18n()
 const dialog = useDialog()
 const message = useMessage()
 const settings = useSettings()
@@ -44,14 +46,14 @@ watch(() => props.port, () => void load(), { immediate: true })
 function close() {
   const port = props.port
   dialog.error({
-    title: '关闭端口',
-    content: `调用 erlang:port_close(${port})？使用该端口的进程会收到错误。`,
-    positiveText: '关闭',
-    negativeText: '取消',
+    title: t('pages.port_drawer.close'),
+    content: t('pages.port_drawer.confirm', { port }),
+    positiveText: t('pages.port_drawer.confirm_ok'),
+    negativeText: t('pages.port_drawer.cancel'),
     onPositiveClick: async () => {
       try {
         await client.request('port.close', { node: props.node, port })
-        message.success(`已关闭 ${port}`)
+        message.success(t('pages.port_drawer.closed', { port }))
         await load()
       } catch (e) {
         message.error(errorText(e))
@@ -78,27 +80,27 @@ function pid(ref: string) {
         </NSpace>
       </template>
       <NSpin v-if="loading && !detail" style="width: 100%; padding: 60px 0" />
-      <NEmpty v-else-if="error === 'not_found'" description="端口已关闭" style="padding: 60px 0" />
+      <NEmpty v-else-if="error === 'not_found'" :description="t('pages.port_drawer.gone')" style="padding: 60px 0" />
       <NAlert v-else-if="error" type="error">{{ error }}</NAlert>
       <template v-else-if="detail">
         <NDescriptions :column="1" label-placement="left" size="small" bordered>
-          <NDescriptionsItem label="名称"><span class="mono">{{ detail.name }}</span></NDescriptionsItem>
-          <NDescriptionsItem v-if="detail.registered_name" label="注册名">{{ detail.registered_name }}</NDescriptionsItem>
+          <NDescriptionsItem :label="t('pages.port_drawer.name')"><span class="mono">{{ detail.name }}</span></NDescriptionsItem>
+          <NDescriptionsItem v-if="detail.registered_name" :label="t('pages.port_drawer.registered')">{{ detail.registered_name }}</NDescriptionsItem>
           <NDescriptionsItem><template #label><Term label="所属进程" /></template>
             <a v-if="detail.connected" class="mono link" @click="pid(detail.connected)">{{ detail.connected }}</a>
           </NDescriptionsItem>
           <NDescriptionsItem v-if="detail.os_pid"><template #label><Term label="OS pid" /></template>{{ detail.os_pid }}</NDescriptionsItem>
-          <NDescriptionsItem v-if="detail.protocol" label="协议">{{ detail.protocol }}</NDescriptionsItem>
-          <NDescriptionsItem v-if="detail.local !== undefined" label="本地地址"><span class="mono">{{ detail.local ?? '-' }}</span></NDescriptionsItem>
-          <NDescriptionsItem v-if="detail.remote !== undefined" label="远端地址"><span class="mono">{{ detail.remote ?? '-' }}</span></NDescriptionsItem>
-          <NDescriptionsItem label="输入 / 输出">{{ formatBytes(detail.input) }} / {{ formatBytes(detail.output) }}</NDescriptionsItem>
+          <NDescriptionsItem v-if="detail.protocol" :label="t('pages.port_drawer.protocol')">{{ detail.protocol }}</NDescriptionsItem>
+          <NDescriptionsItem v-if="detail.local !== undefined" :label="t('pages.port_drawer.local')"><span class="mono">{{ detail.local ?? '-' }}</span></NDescriptionsItem>
+          <NDescriptionsItem v-if="detail.remote !== undefined" :label="t('pages.port_drawer.remote')"><span class="mono">{{ detail.remote ?? '-' }}</span></NDescriptionsItem>
+          <NDescriptionsItem :label="t('pages.port_drawer.io')">{{ formatBytes(detail.input) }} / {{ formatBytes(detail.output) }}</NDescriptionsItem>
           <NDescriptionsItem><template #label><Term label="队列" /></template>{{ formatBytes(detail.queue_size) }}</NDescriptionsItem>
           <NDescriptionsItem><template #label><Term label="内存" /></template>{{ formatBytes(detail.memory) }}</NDescriptionsItem>
-          <NDescriptionsItem label="锁">{{ detail.locking ?? '-' }}</NDescriptionsItem>
-          <NDescriptionsItem label="并行">{{ detail.parallelism ? '是' : '否' }}</NDescriptionsItem>
+          <NDescriptionsItem :label="t('pages.port_drawer.locking')">{{ detail.locking ?? '-' }}</NDescriptionsItem>
+          <NDescriptionsItem :label="t('pages.port_drawer.parallelism')">{{ t(detail.parallelism ? 'pages.yes' : 'pages.no') }}</NDescriptionsItem>
         </NDescriptions>
         <div v-if="detail.stats && Object.keys(detail.stats).length" class="group">
-          <div class="group-title">Socket 统计</div>
+          <div class="group-title">{{ t('pages.port_drawer.stats') }}</div>
           <NSpace :size="6">
             <NTag v-for="(v, k) in detail.stats" :key="k" size="small" :bordered="false">
               {{ k }}: <span class="mono">{{ formatNumber(v) }}</span>
@@ -111,12 +113,12 @@ function pid(ref: string) {
           <NSpace v-if="g.items.length" :size="6">
             <NTag v-for="r in g.items" :key="r" size="small" class="mono clickable" @click="pid(r)">{{ r }}</NTag>
           </NSpace>
-          <div v-else class="count">无</div>
+          <div v-else class="count">{{ t('pages.port_drawer.none') }}</div>
         </div>
         <div v-if="!settings.readOnly" class="group">
           <NButton type="error" secondary @click="close">
             <template #icon><NIcon :component="CloseCircleOutline" /></template>
-            关闭端口
+            {{ t('pages.port_drawer.close') }}
           </NButton>
         </div>
       </template>

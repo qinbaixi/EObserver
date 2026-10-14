@@ -321,3 +321,162 @@ export interface TraceStart {
   refused: { target: string; reason: string }[]
   limits: { max_events: number; max_seconds: number; max_rate: number }
 }
+
+// gen call statistics of one (process, direction, request kind).
+export interface TraceStatsRow {
+  row: number
+  pid: string
+  // in: calls the process served; out: calls it made
+  dir: 'in' | 'out'
+  // a tuple's first element or the atom; null for the two groups below
+  kind: string | null
+  group: 'named' | 'other' | 'overflow'
+  calls: number
+  answered: number
+  pending: number
+  unanswered: number
+  // microseconds; null without any answered call
+  avg: number | null
+  p95: number | null
+  max: number | null
+  // only with details: one entry per non-empty bucket, in microseconds
+  hist?: { low: number; high: number; count: number }[]
+  slowest?: { latency: number; t: number; peer: string | null; summary: string }[]
+}
+
+export interface TraceStats {
+  status: 'running' | 'stopped' | 'none'
+  id?: number
+  kinds?: number
+  max_kinds?: number
+  rows: TraceStatsRow[]
+}
+
+// A trace saved to a file, opened later without a node.
+export interface SavedTrace {
+  format: 'eobserver-trace'
+  version: 1
+  node: string | null
+  saved_at: number
+  state: TraceState
+  events: TraceEvent[]
+  stats: TraceStats | null
+}
+
+export type DiagLevel ='ok' | 'warn' | 'crit' | 'skip'
+
+export interface DiagItem {
+  pid?: string
+  name?: string | null
+  initial_call?: string
+  current_function?: string | null
+  table?: string
+  owner?: string | null
+  node?: string
+  value: number | null
+}
+
+export interface DiagCheck {
+  id: string
+  level: DiagLevel
+  value: number | null
+  warn: number | null
+  crit: number | null
+  items: DiagItem[]
+  [extra: string]: unknown
+}
+
+export interface DiagReport {
+  checks: DiagCheck[]
+  memory_total: number
+  process_count: number
+  took_ms: number
+}
+
+export interface WindowItem {
+  pid: string
+  name: string | null
+  initial_call: string
+  current_function: string | null
+  value: number
+  reductions: number
+  memory: number
+  message_queue_len: number
+  new: boolean
+  alive: boolean
+}
+
+export interface WindowReport {
+  seconds: number
+  process_count: number
+  created: number
+  exited: number
+  reductions: WindowItem[]
+  memory: WindowItem[]
+  message_queue_len: WindowItem[]
+}
+
+export type LogLevel = 'emergency' | 'alert' | 'critical' | 'error' | 'warning' | 'notice' | 'info' | 'debug'
+
+export interface LogLine {
+  seq: number
+  t: number
+  level: LogLevel
+  module: string | null
+  pid: string | null
+  text: string
+}
+
+export interface StackFrame {
+  mfa: string
+  location: string | null
+}
+
+// Crashes of one process (registered name or initial call; null for
+// plain spawned processes) with the same reason.
+export interface CrashGroup {
+  id: number
+  who: string | null
+  pid: string | null
+  class: string
+  reason: string
+  text: string
+  stack: StackFrame[]
+  count: number
+  first: number
+  last: number
+}
+
+// Terminations and restarts of one child of one supervisor.
+export interface RestartGroup {
+  id: number
+  supervisor: string
+  child: string
+  count: number
+  failed_starts: number
+  gave_up: boolean
+  restart_type: string | null
+  context: string
+  reason: string
+  pid: string | null
+  last: number
+  times: number[]
+}
+
+export interface LogsData {
+  id: number
+  reset: boolean
+  status: 'running' | 'stopped'
+  reason: string | null
+  started: number
+  now: number
+  primary_level: string | null
+  received: number
+  lost: number
+  dropped: number
+  limited: number
+  collector_restarts: number
+  logs: LogLine[]
+  crashes: CrashGroup[]
+  restarts: RestartGroup[]
+}

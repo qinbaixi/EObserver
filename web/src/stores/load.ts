@@ -9,13 +9,26 @@ import { useNodes } from './nodes'
 // the browser; nothing is stored on the observed nodes.
 //
 // The current node is sampled once the Load page has been opened, at the
-// interval chosen there. Other nodes are sampled only while a view asks for
-// them (the overview wall, the compare mode), every PEER_INTERVAL ms with
-// the same light `node.load` topic, and at most MAX_PEERS at a time.
+// interval chosen there. Every connected node (at most MAX_PEERS) is also
+// sampled in the background from app start, so the overview wall has
+// history when it is opened, unless the user paused it there. Views can ask
+// for more nodes (the compare mode, the cards on screen when there are more
+// than MAX_PEERS). Peers use the light `node.load` topic every peerInterval.
 export const MAX_WINDOW_MS = 10 * 60 * 1000
 export const PEER_INTERVAL = 2000
 export const SUMMARY_INTERVAL = 5000
 export const MAX_PEERS = 50
+
+const PEER_INTERVAL_KEY = 'eobs.interval.overview'
+
+function loadPeerInterval() {
+  try {
+    const v = Number(localStorage.getItem(PEER_INTERVAL_KEY))
+    return v >= 500 ? v : PEER_INTERVAL
+  } catch {
+    return PEER_INTERVAL
+  }
+}
 
 interface Sampler {
   interval: number
@@ -26,6 +39,10 @@ export const useLoad = defineStore('load', () => {
   const nodes = useNodes()
   const interval = ref(1000)
   const active = ref(false)
+  // Background sampling for the overview wall; not remembered across runs,
+  // so it always starts collecting.
+  const paused = ref(false)
+  const peerInterval = ref(loadPeerInterval())
   // Per node history and last error; each history is its own ref so a view
   // only re-renders for the nodes it shows.
   const history = shallowReactive<Record<string, ShallowRef<LoadPoint[]>>>({})
@@ -52,14 +69,21 @@ export const useLoad = defineStore('load', () => {
   const connected = (n: string) => nodes.nodes[n]?.status === 'connected'
 
   // Nodes to sample and at which interval.
+  // Views' demand first, then the background demand of the overview wall.
+  const demands = computed(() => {
+    const out = Object.values(demand)
+    if (!paused.value) out.push({ nodes: Object.keys(nodes.nodes).filter(connected), summary: true })
+    return out
+  })
+
   const wanted = computed(() => {
     const out = new Map<string, number>()
     if (active.value && node.value) out.set(node.value, interval.value)
     let peers = 0
-    for (const d of Object.values(demand)) {
+    for (const d of demands.value) {
       for (const n of d.nodes) {
         if (out.has(n) || !connected(n) || peers >= MAX_PEERS) continue
-        out.set(n, PEER_INTERVAL)
+        out.set(n, peerInterval.value)
         peers++
       }
     }
@@ -68,7 +92,7 @@ export const useLoad = defineStore('load', () => {
 
   const wantedSummary = computed(() => {
     const out = new Set<string>()
-    for (const d of Object.values(demand)) {
+    for (const d of demands.value) {
       if (!d.summary) continue
       for (const n of d.nodes) if (wanted.value.has(n)) out.add(n)
     }
@@ -101,7 +125,32 @@ export const useLoad = defineStore('load', () => {
     }
   }
 
-  watch([wanted, wantedSummary], reconcile)
+  watch([wanted, wantedSummary], reconcile, { immediate: true })
+  watch(peerInterval, (v) => {
+    try { localStorage.setItem(PEER_INTERVAL_KEY, String(v)) } catch { /* ignore */ }
+  })
+
+  // Takes a sample now: restarts the running subscriptions, or while paused
+  // reads every connected node once.
+  function refresh() {
+    if (!paused.value) {
+      for (const sub of loadSubs.values()) sub.stop()
+      loadSubs.clear()
+      for (const stop of summarySubs.values()) stop()
+      summarySubs.clear()
+      reconcile()
+      return
+    }
+    for (const n of Object.keys(nodes.nodes).filter(connected).slice(0, MAX_PEERS)) {
+      if (!loadSubs.has(n)) once('node.load', n, (p: LoadPoint) => push(n, p))
+      if (!summarySubs.has(n)) once('node.summary', n, (x: NodeSummary) => { summaries[n] = x })
+    }
+  }
+
+  function once<T>(topic: string, n: string, onData: (d: T) => void) {
+    const stop = client.subscribe(topic, { node: n }, 60_000, (d: T) => { stop(); onData(d) },
+      (e) => { stop(); errors[n] = e })
+  }
 
   client.on('node_removed', ({ node: n }: { node: string }) => {
     delete history[n]
@@ -124,5 +173,6 @@ export const useLoad = defineStore('load', () => {
   const points = computed(() => (node.value ? history[node.value]?.value ?? [] : []))
   const error = computed(() => (node.value ? errors[node.value] ?? null : null))
 
-  return { points, interval, error, node, start, history, errors, summaries, useSampling }
+  return { points, interval, error, node, start, history, errors, summaries, useSampling,
+           paused, peerInterval, refresh }
 })

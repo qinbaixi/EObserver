@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.0.9] - 2026-10-14
+
 ### 新增
 
 - Recon 工具箱（新菜单）：把 recon 库的常用功能做成图表，目标节点不需要安装 recon：
@@ -160,7 +162,8 @@ First public release.
   Windows x64.
 - Light and dark themes.
 
-[Unreleased]: https://github.com/qinbaixi/EObserver/compare/v0.0.8...HEAD
+[Unreleased]: https://github.com/qinbaixi/EObserver/compare/v0.0.9...HEAD
+[0.0.9]: https://github.com/qinbaixi/EObserver/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/qinbaixi/EObserver/compare/v0.0.7...v0.0.8
 [0.0.7]: https://github.com/qinbaixi/EObserver/compare/v0.0.6...v0.0.7
 [0.0.6]: https://github.com/qinbaixi/EObserver/compare/v0.0.5...v0.0.6

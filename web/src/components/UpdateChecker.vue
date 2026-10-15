@@ -16,7 +16,21 @@ const statusText = computed(() => {
   if (s === 'downloading') return t('shell.update.downloading', { percent: Math.floor(update.progress) })
   return t(`shell.update.${s}`)
 })
-const notes = computed(() => (update.info?.notes ?? '').trim().slice(0, 600))
+const notes = computed(() => toText(update.info?.notes ?? '').slice(0, 600))
+
+// GitHub hands electron-updater the release notes as rendered HTML; show them
+// as plain text with one line per heading, paragraph or list item.
+function toText(notes: string) {
+  let s = notes
+  if (/<[a-z][^>]*>/i.test(s)) {
+    s = s.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|li|h[1-6]|ul|ol|div)>/gi, '\n')
+      .replace(/<li[^>]*>/gi, '• ')
+    s = new DOMParser().parseFromString(s, 'text/html').body.textContent ?? ''
+  }
+  return s.replace(/^#+\s*/gm, '').replace(/\*\*/g, '')
+    .split('\n').map((l) => l.trim()).join('\n')
+    .replace(/\n{2,}/g, '\n').trim()
+}
 </script>
 
 <template>
@@ -57,7 +71,12 @@ const notes = computed(() => (update.info?.notes ?? '').trim().slice(0, 600))
         <NProgress type="line" :percentage="Math.floor(update.progress)" :show-indicator="false" :height="4" />
       </div>
       <div v-else-if="update.state === 'ready'" class="box">
-        <div class="headline">{{ t('shell.update.ready_headline', { version: update.info?.version }) }}</div>
+        <NTooltip :disabled="!notes" placement="right" :style="{ maxWidth: '360px', whiteSpace: 'pre-wrap' }">
+          <template #trigger>
+            <div class="headline">{{ t('shell.update.ready_headline', { version: update.info?.version }) }}</div>
+          </template>
+          {{ notes }}
+        </NTooltip>
         <NButton size="tiny" type="primary" block @click="update.install()">{{ t('shell.update.install') }}</NButton>
       </div>
     </template>

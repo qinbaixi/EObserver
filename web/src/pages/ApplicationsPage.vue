@@ -60,10 +60,14 @@ async function loadTree() {
 }
 
 // Keep an ?app= from the URL on first load; a node switch starts over.
-watch(node, (_, old) => {
+watch(node, async (_, old) => {
   apps.value = []
   if (old) selectedApp.value = null
-  void loadApps()
+  const before = selectedApp.value
+  await loadApps()
+  // An ?app= from the URL is already selected, so the watch below does not
+  // fire for it; load its tree now that the list is known.
+  if (before && selectedApp.value === before) await loadTree()
 }, { immediate: true })
 watch(selectedApp, () => void loadTree())
 
@@ -112,11 +116,7 @@ const current = computed(() => apps.value.find((a) => a.name === selectedApp.val
         <NSpin v-else-if="loadingTree" style="width: 100%; padding: 80px 0" />
         <NEmpty v-else-if="current && !current.running" :description="t('pages.applications.not_running')" style="padding: 80px 0" />
         <NEmpty v-else-if="tree && !tree.root" :description="t('pages.applications.no_tree')" style="padding: 80px 0" />
-        <NScrollbar v-else-if="tree?.root" x-scrollable>
-          <div style="min-width: 760px">
-            <SupervisionTree :root="tree.root" @select="(p) => (selectedPid = p)" />
-          </div>
-        </NScrollbar>
+        <SupervisionTree v-else-if="tree?.root" :root="tree.root" @select="(p) => (selectedPid = p)" />
         <p v-if="tree?.root" class="note">{{ t('pages.applications.note') }}</p>
       </NCard>
     </div>
@@ -127,13 +127,15 @@ const current = computed(() => apps.value.find((a) => a.name === selectedApp.val
 <style scoped>
 .layout {
   display: grid;
-  grid-template-columns: 260px 1fr;
+  /* minmax(0, …): a wide supervision tree scrolls inside its card instead
+     of stretching the column past the window. */
+  grid-template-columns: 260px minmax(0, 1fr);
   gap: 16px;
   align-items: start;
 }
 @media (max-width: 800px) {
   .layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 .search {

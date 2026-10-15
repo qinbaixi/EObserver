@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, h, ref, toRef, watch } from 'vue'
+import { computed, h } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { NGrid, NGi, NCard, NDataTable, NAlert, NProgress, NText, type DataTableColumns } from 'naive-ui'
-import { useNodes } from '../stores/nodes'
-import { useTopic } from '../composables/useTopic'
-import type { AllocInfo, AllocatorRow } from '../api/types'
+import { useAllocators, NAMED, WINDOW_MS } from '../stores/allocators'
+import type { AllocatorRow } from '../api/types'
 import { formatBytes } from '../api/format'
 import PageHeader from '../components/PageHeader.vue'
 import RefreshControl from '../components/RefreshControl.vue'
@@ -15,34 +15,8 @@ import { term } from '../api/term'
 import { useResizableTable } from '../api/table'
 
 const { t } = useI18n()
-const nodes = useNodes()
-const node = computed(() =>
-  nodes.currentInfo?.status === 'connected' ? nodes.currentInfo.node : null)
-const { data, error, paused, interval, refresh } = useTopic<AllocInfo>('node.allocators', toRef(node), 2000)
-
-// Allocators drawn as their own series, in a fixed order so each keeps
-// its color; the rest are folded into "other".
-const NAMED = ['eheap_alloc', 'binary_alloc', 'ets_alloc', 'll_alloc', 'literal_alloc', 'fix_alloc', 'std_alloc']
-const WINDOW_MS = 5 * 60 * 1000
-
-interface Point { time: number; carriers: Record<string, number>; util: Record<string, number | null> }
-const history = ref<Point[]>([])
-watch(node, () => { history.value = [] })
-watch(data, (d) => {
-  if (!d) return
-  const time = Date.now()
-  const carriers: Record<string, number> = { other: 0 }
-  const util: Record<string, number | null> = {}
-  for (const a of d.allocators) {
-    if (NAMED.includes(a.type)) {
-      carriers[a.type] = a.carriers
-      util[a.type] = a.carriers > 0 ? a.blocks / a.carriers : null
-    } else {
-      carriers.other += a.carriers
-    }
-  }
-  history.value = [...history.value.filter((p) => p.time >= time - WINDOW_MS), { time, carriers, util }]
-})
+const alloc = useAllocators()
+const { data, history, error, paused, interval } = storeToRefs(alloc)
 
 const label = (a: string) => a.replace(/_alloc$/, '')
 const carrierSeries = computed<Series[]>(() => [
@@ -93,7 +67,7 @@ const allocTable = useResizableTable(columns)
 
 <template>
   <PageHeader :title="t('pages.allocators.title')" :subtitle="t('pages.allocators.subtitle')">
-    <RefreshControl v-model:paused="paused" v-model:interval="interval" @refresh="refresh" />
+    <RefreshControl v-model:paused="paused" v-model:interval="interval" @refresh="alloc.refresh" />
   </PageHeader>
   <NodeGuard>
     <NAlert v-if="error" type="error" style="margin-bottom: 12px">{{ error }}</NAlert>

@@ -12,6 +12,8 @@ import { useTheme, type Mode } from '../stores/theme'
 import { useLocale } from '../stores/locale'
 import { LOCALES, type Locale } from '../i18n'
 import { useNodes } from '../stores/nodes'
+import { useLoad } from '../stores/load'
+import { useAllocators } from '../stores/allocators'
 import { useSettings } from '../stores/settings'
 import { useTrace } from '../stores/trace'
 import { client } from '../api/ws'
@@ -27,6 +29,10 @@ const route = useRoute()
 const router = useRouter()
 const theme = useTheme()
 const nodes = useNodes()
+// Start background sampling (overview wall, allocators) as soon as the app
+// opens; both can be paused on their pages.
+useLoad()
+useAllocators()
 const settings = useSettings()
 const trace = useTrace()
 const collapsed = ref(false)

@@ -6,11 +6,12 @@ import { NAlert } from 'naive-ui'
 import { useNodes } from '../stores/nodes'
 import { useLoad, MAX_PEERS } from '../stores/load'
 import PageHeader from '../components/PageHeader.vue'
+import RefreshControl from '../components/RefreshControl.vue'
 import NodeCard from '../components/overview/NodeCard.vue'
 
-// The overview wall: one card per observed node. Other nodes are sampled
-// only while this page is open; with more than MAX_PEERS nodes only the
-// cards on screen are.
+// The overview wall: one card per observed node. The load store samples
+// every connected node in the background (up to MAX_PEERS) until paused
+// here; with more nodes than that, the cards on screen are sampled too.
 const { t } = useI18n()
 const router = useRouter()
 const nodes = useNodes()
@@ -22,8 +23,8 @@ const grid = ref<HTMLElement | null>(null)
 let observer: IntersectionObserver | null = null
 
 load.useSampling('overview', () => {
-  const all = nodes.list.map((n) => n.node)
-  return limited.value ? all.filter((n) => visible.has(n)).slice(0, MAX_PEERS) : all
+  if (!limited.value || load.paused) return []
+  return nodes.list.map((n) => n.node).filter((n) => visible.has(n)).slice(0, MAX_PEERS)
 }, true)
 
 // Watches the cards only when sampling has to be limited to them.
@@ -55,7 +56,9 @@ function open(node: string) {
 </script>
 
 <template>
-  <PageHeader :title="t('overview.title')" :subtitle="t('overview.subtitle', { n: nodes.list.length })" />
+  <PageHeader :title="t('overview.title')" :subtitle="t('overview.subtitle', { n: nodes.list.length })">
+    <RefreshControl v-model:paused="load.paused" v-model:interval="load.peerInterval" @refresh="load.refresh" />
+  </PageHeader>
   <p class="hint">{{ t('overview.hint') }}</p>
   <NAlert v-if="limited" type="info" :show-icon="false" style="margin-bottom: 16px">
     {{ t('overview.limited', { max: MAX_PEERS }) }}

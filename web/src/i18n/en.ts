@@ -144,7 +144,7 @@ const en: typeof zh = {
   overview: {
     title: 'Overview',
     subtitle: '{n} nodes',
-    hint: 'Load of every node is sampled every 2 s while this page is open. The status light only looks at limit usage and the run queue; run the health check on the Diagnosis page for the full picture.',
+    hint: 'Load of every node is sampled in the background (every 2 s by default) for as long as the app is open, even when this page is not; pause it at the top right. The status light only looks at limit usage and the run queue; run the health check on the Diagnosis page for the full picture.',
     limited: 'More than {max} nodes: only the cards on screen are sampled',
     open: 'Open system overview',
     level: { ok: 'OK', warn: 'Warning', crit: 'Critical', waiting: 'Sampling' },
@@ -163,7 +163,7 @@ const en: typeof zh = {
       nodes: 'Nodes',
       pick: 'Pick nodes to compare',
       max: 'At most {n} nodes at a time',
-      hint: 'In compare mode the selected nodes are sampled every 2 s until you leave.',
+      hint: 'In compare mode the selected nodes are sampled at the same interval as the overview wall (2 s by default).',
       empty: 'Pick at least one node',
       metrics: {
         memory: 'Total memory',

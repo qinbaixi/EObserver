@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.0.10] - 2026-10-15
+
 ### 变更
 
 - 总览墙和内存分配器改为软件开着就在后台持续采样，不用先停在页面上等数据；两个页面右上角都有暂停 / 继续，暂停后才停止采集。
@@ -16,6 +18,7 @@ All notable changes to this project are documented here. The format follows
 - Recon 端口类型的环形图：长端口名的悬浮提示会超出图表，现在自动换行；扇区标签只显示文件名。
 - 下载更新后悬停查看更新说明时显示的是 HTML 源码，现在显示为纯文本。
 - 从链接打开「应用」页并指定应用时，监督树不显示。
+- 日志页偶尔漏掉崩溃记录、实时日志或消息跟踪里的单条记录：读取恰好碰上目标节点正在写入时，下次读取会跳过这一条。
 
 ## [0.0.9] - 2026-10-14
 
@@ -173,7 +176,8 @@ First public release.
   Windows x64.
 - Light and dark themes.
 
-[Unreleased]: https://github.com/qinbaixi/EObserver/compare/v0.0.9...HEAD
+[Unreleased]: https://github.com/qinbaixi/EObserver/compare/v0.0.10...HEAD
+[0.0.10]: https://github.com/qinbaixi/EObserver/compare/v0.0.9...v0.0.10
 [0.0.9]: https://github.com/qinbaixi/EObserver/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/qinbaixi/EObserver/compare/v0.0.7...v0.0.8
 [0.0.7]: https://github.com/qinbaixi/EObserver/compare/v0.0.6...v0.0.7

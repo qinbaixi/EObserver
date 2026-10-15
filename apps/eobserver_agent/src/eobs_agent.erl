@@ -24,7 +24,7 @@
 
 %% Bump whenever the exported API or return shapes change, so the tool
 %% replaces an older copy that is still loaded on the target.
--define(VERSION, 13).
+-define(VERSION, 14).
 
 %% Long-lived helper process on the observed node. It keeps
 %% scheduler_wall_time enabled, builds process lists while holding the
@@ -1276,7 +1276,7 @@ events_since(Since0, #{id := Id, tab := Tab, status := Status, reason := Reason,
                  '$end_of_table' -> []
              end,
     #{id => Id, status => Status, reason => Reason, count => Seq,
-      dropped => max(0, Seq - ?TRACE_BUFFER), next => Seq, started => Started,
+      dropped => max(0, Seq - ?TRACE_BUFFER), next => next_seq(Events, Since), started => Started,
       limits => Limits, processes => [trace_proc(P) || P <- Traced],
       events => Events}.
 
@@ -1937,10 +1937,7 @@ logs_read(Cursor, #{id := Id, tabs := #{logs := Logs, crashes := Crashes, restar
                 {Ls, _} -> Ls;
                 '$end_of_table' -> []
             end,
-    LogNext = case Lines of
-                  [] -> Seq;
-                  _ -> maps:get(seq, lists:last(Lines))
-              end,
+    LogNext = next_seq(Lines, LogSince),
     {CrashList, CrashNext} = group_changes(Crashes, CrashSince),
     {RestartList, RestartNext} = group_changes(Restarts, RestartSince),
     #{id => Id,
@@ -1967,9 +1964,15 @@ primary_level() ->
     end.
 
 group_changes(#{tab := Tab, idx := Idx}, Since) ->
-    [{seq, Seq}] = ets:lookup(Idx, seq),
-    Keys = ets:select(Idx, [{{'$1', '$2'}, [{is_integer, '$1'}, {'>', '$1', Since}], ['$2']}]),
-    {[G || K <- Keys, {_, _, G} <- ets:lookup(Tab, K)], Seq}.
+    Changed = ets:select(Idx, [{{'$1', '$2'}, [{is_integer, '$1'}, {'>', '$1', Since}], ['$_']}]),
+    Next = lists:foldl(fun({S, _}, Acc) -> max(S, Acc) end, Since, Changed),
+    {[G || {_, K} <- Changed, {_, _, G} <- ets:lookup(Tab, K)], Next}.
+
+%% The cursor after a read: the last sequence number actually returned.
+%% Writers bump the `seq` counter before inserting the row, so a reader
+%% that took the counter could skip a row that was not there yet.
+next_seq([], Since) -> Since;
+next_seq(Rows, _Since) -> maps:get(seq, lists:last(Rows)).
 
 %% The collector formats events and fills the rings.
 collector_init(Tabs, Ref) ->

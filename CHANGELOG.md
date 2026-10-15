@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.0.10] - 2026-10-15
+
 ### 变更
 
 - 总览墙和内存分配器改为软件开着就在后台持续采样，不用先停在页面上等数据；两个页面右上角都有暂停 / 继续，暂停后才停止采集。
@@ -173,7 +175,8 @@ First public release.
   Windows x64.
 - Light and dark themes.
 
-[Unreleased]: https://github.com/qinbaixi/EObserver/compare/v0.0.9...HEAD
+[Unreleased]: https://github.com/qinbaixi/EObserver/compare/v0.0.10...HEAD
+[0.0.10]: https://github.com/qinbaixi/EObserver/compare/v0.0.9...v0.0.10
 [0.0.9]: https://github.com/qinbaixi/EObserver/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/qinbaixi/EObserver/compare/v0.0.7...v0.0.8
 [0.0.7]: https://github.com/qinbaixi/EObserver/compare/v0.0.6...v0.0.7

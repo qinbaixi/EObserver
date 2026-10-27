@@ -20,6 +20,7 @@ import RefreshControl from '../components/RefreshControl.vue'
 import NodeGuard from '../components/NodeGuard.vue'
 import ProcessDrawer from '../components/ProcessDrawer.vue'
 import { term } from '../api/term'
+import KnowledgeLink from '../components/KnowledgeLink.vue'
 import { useResizableTable } from '../api/table'
 
 type SortKey = 'reds' | 'reductions' | 'memory' | 'message_queue_len' | 'name' | 'pid'
@@ -189,7 +190,7 @@ const columns = computed<DataTableColumns<ProcessRow>>(() => [
       size: 'small', bordered: false,
       type: r.status === 'running' ? 'success' : r.status === 'runnable' ? 'warning'
         : r.status === 'exiting' ? 'error' : 'default',
-    }, { default: () => r.status }),
+    }, { default: () => h(KnowledgeLink, { text: r.status, card: 'process_state' }) }),
   },
   ...(settings.readOnly ? [] : [{
     key: 'actions', title: '', width: 48, align: 'center' as const, fixed: 'right' as const,

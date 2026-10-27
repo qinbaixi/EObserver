@@ -12,6 +12,8 @@ import NodeGuard from '../components/NodeGuard.vue'
 import KpiTile from '../components/KpiTile.vue'
 import TimeSeriesChart, { type Series } from '../charts/TimeSeriesChart.vue'
 import { term } from '../api/term'
+import KnowledgeLink from '../components/KnowledgeLink.vue'
+import { cardForAllocator } from '../beambook'
 import { useResizableTable } from '../api/table'
 
 const { t } = useI18n()
@@ -38,7 +40,7 @@ const mono = (s: string) => h('span', { class: 'mono' }, s)
 
 const columns: DataTableColumns<AllocatorRow> = [
   { key: 'type', title: term('分配器'), width: 150, sorter: (a, b) => a.type.localeCompare(b.type),
-    render: (r) => h('b', { class: 'mono' }, r.type) },
+    render: (r) => h('b', { class: 'mono' }, h(KnowledgeLink, { text: r.type, card: cardForAllocator(r.type) })) },
   { key: 'instances', title: term('实例'), width: 70, align: 'right', render: (r) => mono(String(r.instances)) },
   { key: 'blocks', title: term('已用块'), width: 120, align: 'right', sorter: (a, b) => a.blocks - b.blocks,
     render: (r) => mono(formatBytes(r.blocks)) },

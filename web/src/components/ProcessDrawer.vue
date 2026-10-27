@@ -13,6 +13,7 @@ import type { ProcessDetail } from '../api/types'
 import { formatBytes, formatNumber } from '../api/format'
 import { useSettings } from '../stores/settings'
 import Term from './Term.vue'
+import KnowledgeLink from './KnowledgeLink.vue'
 
 const props = defineProps<{ node: string; pid: string | null }>()
 const emit = defineEmits<{ 'update:pid': [string | null]; killed: [] }>()
@@ -178,7 +179,7 @@ const bytes = (words: number) => formatBytes(words * (detail.value?.word_size ??
             <div v-else class="none">{{ t('procs.drawer.none') }}</div>
           </div>
           <div class="group">
-            <div class="group-title">{{ t('procs.drawer.gc') }}</div>
+            <div class="group-title"><Term :label="t('procs.drawer.gc')" card="gc_tuning" /></div>
             <table class="kv">
               <tr v-for="g in detail.garbage_collection" :key="g.key">
                 <td class="k">{{ g.key }}</td>
@@ -189,6 +190,7 @@ const bytes = (words: number) => formatBytes(words * (detail.value?.word_size ??
         </NTabPane>
 
         <NTabPane name="messages" :tab="t('procs.drawer.tabs.messages', { n: detail.message_queue_len })">
+          <div class="tab-know"><KnowledgeLink :text="t('book.cards.mailbox')" card="mailbox" /></div>
           <NAlert v-if="detail.messages === 'truncated'" type="warning">
             {{ t('procs.drawer.truncated', { n: formatNumber(detail.message_queue_len) }) }}
           </NAlert>
@@ -199,6 +201,7 @@ const bytes = (words: number) => formatBytes(words * (detail.value?.word_size ??
         </NTabPane>
 
         <NTabPane name="dictionary" :tab="t('procs.drawer.tabs.dictionary', { n: detail.dictionary.length })">
+          <div class="tab-know"><KnowledgeLink :text="t('book.cards.process_dictionary')" card="process_dictionary" /></div>
           <NEmpty v-if="!detail.dictionary.length" :description="t('procs.drawer.dict_empty')" />
           <table v-else class="kv">
             <tr v-for="(d, i) in detail.dictionary" :key="i">
@@ -209,6 +212,7 @@ const bytes = (words: number) => formatBytes(words * (detail.value?.word_size ??
         </NTabPane>
 
         <NTabPane name="stack" :tab="t('procs.drawer.tabs.stack')">
+          <div class="tab-know"><KnowledgeLink :text="t('book.cards.stack')" card="stack" /></div>
           <table class="kv">
             <tr v-for="(f, i) in detail.stacktrace" :key="i">
               <td class="mono">{{ f.mfa }}</td>
@@ -251,6 +255,13 @@ const bytes = (words: number) => formatBytes(words * (detail.value?.word_size ??
 </template>
 
 <style scoped>
+.tab-know {
+  display: flex;
+  justify-content: flex-end;
+  font-size: 12px;
+  opacity: 0.75;
+  margin-bottom: 8px;
+}
 .group {
   margin-top: 20px;
 }

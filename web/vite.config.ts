@@ -14,6 +14,9 @@ export default defineConfig({
     outDir: '../apps/eobserver/priv/www',
     emptyOutDir: true,
     chunkSizeWarningLimit: 1500,
+    // The BEAM Book's images are only shown in the reader and cards; keep
+    // them out of the main bundle even when small.
+    assetsInlineLimit: (file: string) => (file.includes('/beambook/data/img/') ? false : undefined),
   },
   server: {
     proxy: {

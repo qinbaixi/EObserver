@@ -6,6 +6,7 @@ import { NModal, NInput, NIcon, NSpin, useThemeVars, useMessage } from 'naive-ui
 import {
   SearchOutline, ServerOutline, GitNetworkOutline, GridOutline, AppsOutline,
   MoonOutline, SunnyOutline, MedkitOutline, AddCircleOutline, LanguageOutline, BugOutline,
+  BookOutline,
 } from '@vicons/ionicons5'
 import { pages, pageTitle, pageSubtitle } from '../router'
 import { useLocale } from '../stores/locale'
@@ -18,14 +19,19 @@ import StatusDot from './StatusDot.vue'
 import { useDumps } from '../stores/dump'
 import { basename } from '../api/dump'
 import { errorText } from '../api/errors'
+import { cardIds, slugsForCard } from '../beambook'
+import { useKnowledge } from '../stores/knowledge'
+import shellZh from '../i18n/areas/shell.zh'
+import shellEn from '../i18n/areas/shell.en'
 
 // Ctrl+K / ⌘K search over pages, nodes, actions and the current node's
 // processes, tables and applications. The node is only asked while the
 // palette is open and something is typed, and only through the existing
 // bounded requests: one node.processes page of 20 per (debounced) query,
-// and the ETS / Mnesia / application lists once per opening.
+// and the ETS / Mnesia / application lists once per opening. BEAM Book
+// knowledge cards are found by their name or their glossary terms.
 
-type Group = 'pages' | 'nodes' | 'processes' | 'tables' | 'apps' | 'actions' | 'dumps'
+type Group = 'pages' | 'nodes' | 'processes' | 'tables' | 'apps' | 'actions' | 'dumps' | 'knowledge'
 
 interface Item {
   key: string
@@ -40,8 +46,8 @@ interface Item {
 }
 
 // Short groups first so the (up to 20) processes do not push them out of view.
-const GROUPS: Group[] = ['pages', 'nodes', 'actions', 'dumps', 'apps', 'tables', 'processes']
-const LIMIT: Record<Group, number> = { pages: 20, nodes: 8, processes: 20, tables: 10, apps: 10, actions: 10, dumps: 8 }
+const GROUPS: Group[] = ['pages', 'nodes', 'actions', 'dumps', 'knowledge', 'apps', 'tables', 'processes']
+const LIMIT: Record<Group, number> = { pages: 20, nodes: 8, processes: 20, tables: 10, apps: 10, actions: 10, dumps: 8, knowledge: 6 }
 const PROC_LIMIT = 20
 const DEBOUNCE_MS = 250
 
@@ -53,6 +59,7 @@ const ui = useUi()
 const lang = useLocale()
 const dumps = useDumps()
 const message = useMessage()
+const knowledge = useKnowledge()
 
 const query = ref('')
 const q = computed(() => query.value.trim())
@@ -256,6 +263,17 @@ const items = computed<Item[]>(() => {
       add({ key: `recent:${r.path}`, group: 'dumps', title: basename(r.path), subtitle: r.path, icon: BugOutline,
             run: () => void openDump(r.path) },
           score(text, basename(r.path), r.path, ...both('palette.keywords.dump')))
+    }
+  }
+  // Knowledge cards, by name or by the glossary labels that open them, in
+  // either language (only while typing).
+  if (text) {
+    const glossary = [shellZh.glossary, shellEn.glossary] as Record<string, { label: string }>[]
+    for (const id of cardIds) {
+      const labels = slugsForCard(id).flatMap((slug) => glossary.map((g) => g[slug]?.label))
+      add({ key: `card:${id}`, group: 'knowledge', title: t(`book.cards.${id}`), subtitle: t('book.drawer.title'),
+            icon: BookOutline, run: () => knowledge.openCard(id) },
+          score(text, ...both(`book.cards.${id}`), ...labels))
     }
   }
   // Actions match their title and keywords in either language.

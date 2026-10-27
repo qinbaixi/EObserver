@@ -13,6 +13,8 @@ import { useChartTheme } from '../../composables/useChartTheme'
 import DonutChart from '../../charts/DonutChart.vue'
 import UsageBar from '../UsageBar.vue'
 import StatCard from '../StatCard.vue'
+import Term from '../Term.vue'
+import KnowledgeIcon from '../KnowledgeIcon.vue'
 import { formatParams, refLink, useNav } from './cells'
 
 const props = defineProps<{ id: string; info: DumpInfo }>()
@@ -104,14 +106,14 @@ const facts = computed(() => {
   const erts = sv.match(/\[erts-([^\]]+)\]/)?.[1]
   const bits = sv.match(/\[(\d+)-bit\]/)?.[1]
   const smp = sv.match(/\[smp:([^\]]+)\]/)?.[1]
-  const rows: { label: string; value: string }[] = [
+  const rows: { label: string; value: string; card?: string }[] = [
     { label: t('crashdump.facts.node'), value: String(g.node ?? '-') },
     { label: t('crashdump.facts.time'), value: String(g.time ?? '-') },
     { label: t('crashdump.facts.otp'), value: otp ? `OTP ${otp}${erts ? ` · erts ${erts}` : ''}` : sv || '-' },
   ]
   if (bits || smp) rows.push({ label: t('crashdump.facts.arch'), value: [bits ? `${bits}-bit` : '', smp ? `smp ${smp}` : ''].filter(Boolean).join(' · ') })
   if (g.calling_thread) rows.push({ label: t('crashdump.facts.thread'), value: String(g.calling_thread) })
-  if (g.taints) rows.push({ label: t('crashdump.facts.taints'), value: String(g.taints) })
+  if (g.taints) rows.push({ label: t('crashdump.facts.taints'), value: String(g.taints), card: 'crash_dump' })
   rows.push({ label: t('crashdump.facts.file'), value: formatBytes(props.info.size) })
   return rows
 })
@@ -119,6 +121,16 @@ const facts = computed(() => {
 // --- counts vs limits ----------------------------------------------------------
 
 const LIMITED = ['processes', 'ports', 'atoms', 'ets'] as const
+// The counts' own explanations and cards; their labels also name memory
+// glossary entries (进程, 原子), which mean something else here.
+const COUNT_TIP: Record<string, string | undefined> = { processes: 'process', ports: 'port', atoms: 'atom' }
+// The BEAM Book card behind each kind of finding.
+const FINDING_CARD: Record<string, string> = {
+  top_memory_process: 'process_memory', long_message_queue: 'mailbox', big_ets: 'ets', binary_heavy: 'binary',
+  many_processes_in_state: 'process_state', garbage_collecting: 'gc', run_queue_long: 'run_queue',
+  port_queue: 'port_queue', calling_process: 'crash_dump', truncated: 'crash_dump', dump_aborted: 'crash_dump',
+}
+const COUNT_CARD: Record<string, string> = { processes: 'process', ports: 'ports', atoms: 'atom', ets: 'ets' }
 const usage = computed(() => {
   const d = data.value
   if (!d) return []
@@ -225,7 +237,7 @@ const scanning = computed(() => props.info.status === 'scanning')
               <dt>{{ t('crashdump.overview.check') }}</dt><dd>{{ reason.check }}</dd>
             </dl>
             <div class="slogan">
-              <span class="slogan-label">Slogan</span>
+              <span class="slogan-label"><Term label="Slogan" card="crash_dump" /></span>
               <code class="mono">{{ data?.general?.slogan }}</code>
             </div>
           </template>
@@ -250,6 +262,7 @@ const scanning = computed(() => props.info.status === 'scanning')
                        class="finding" :class="[x.f.level, { clickable: !!x.f.target }]" @click="openFinding(x.f)">
               <NIcon :component="LEVEL_ICON[x.f.level] ?? InformationCircle" :size="18" class="finding-icon" />
               <span class="finding-text">{{ x.text }}</span>
+              <KnowledgeIcon v-if="FINDING_CARD[x.f.code]" :card="FINDING_CARD[x.f.code]" />
               <NIcon v-if="x.f.target" :component="ChevronForward" class="finding-go" />
             </component>
           </div>
@@ -261,7 +274,8 @@ const scanning = computed(() => props.info.status === 'scanning')
         <NCard size="small" :title="t('crashdump.overview.counts')">
           <template v-if="data">
             <template v-for="u in usage" :key="u.key">
-              <UsageBar :label="t(`crashdump.counts.${u.key}`)" :used="u.used" :limit="u.limit" />
+              <UsageBar :label="t(`crashdump.counts.${u.key}`)" :used="u.used" :limit="u.limit"
+                        :tip="COUNT_TIP[u.key] ? t(`pages.system.tips.${COUNT_TIP[u.key]}`) : undefined" :card="COUNT_CARD[u.key]" />
             </template>
             <div class="count-grid" :class="{ spaced: usage.length }">
               <button v-for="c in plainCounts" :key="c.key" type="button" class="count" @click="emit('tab', COUNT_TAB[c.key])">

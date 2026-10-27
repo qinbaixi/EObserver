@@ -20,6 +20,9 @@ const recon = useRecon()
 const { running, error, last, atText, run } = useTool<ReconProcReport>(toRef(recon, 'proc'), () => props.node)
 
 const ATTRS: ReconProcAttr[] = ['memory', 'reductions', 'message_queue_len', 'total_heap_size', 'binary_memory']
+const ATTR_CARD: Record<ReconProcAttr, string> = {
+  memory: 'process_memory', reductions: 'reductions', message_queue_len: 'mailbox', total_heap_size: 'gc', binary_memory: 'binary',
+}
 const BYTES = new Set<ReconProcAttr>(['memory', 'total_heap_size', 'binary_memory'])
 const attribute = ref<ReconProcAttr>('memory')
 const n = ref(20)
@@ -48,7 +51,7 @@ const columns = computed<DataTableColumns<ReconProcItem>>(() => {
         : null),
     },
     {
-      key: 'value', title: term(attrName(a), t(`recon.proc.attr_tips.${a}`)), width: 140, align: 'right',
+      key: 'value', title: term(attrName(a), t(`recon.proc.attr_tips.${a}`), ATTR_CARD[a]), width: 140, align: 'right',
       render: (i) => h('span', { class: 'mono grow' }, fmt(a, i.value)),
     },
     ...other.map((k) => ({

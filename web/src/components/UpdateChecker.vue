@@ -85,15 +85,12 @@ function toText(notes: string) {
 
 <style scoped>
 .update {
-  position: absolute;
-  left: 16px;
-  right: 16px;
-  bottom: 14px;
+  flex: none;
+  margin: 8px 16px 14px;
   font-size: 12px;
 }
 .update.collapsed {
-  left: 0;
-  right: 0;
+  margin: 8px 0 14px;
   display: flex;
   justify-content: center;
 }

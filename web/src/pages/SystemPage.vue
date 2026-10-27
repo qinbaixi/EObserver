@@ -79,10 +79,10 @@ const statRows = computed(() => s.value ? [
       <NGi><StatCard :title="t('pages.system.cards.cpu')" :rows="cpuRows" /></NGi>
       <NGi>
         <NCard :title="t('pages.system.cards.usage')" size="small">
-          <UsageBar label="进程" :tip="t('pages.system.tips.process')" :used="s.process_count" :limit="s.process_limit" />
-          <UsageBar label="端口" :tip="t('pages.system.tips.port')" :used="s.port_count" :limit="s.port_limit" />
-          <UsageBar label="原子" :tip="t('pages.system.tips.atom')" :used="s.atom_count" :limit="s.atom_limit" />
-          <UsageBar v-if="s.ets_limit" label="ETS 表" :used="s.ets_count" :limit="s.ets_limit" />
+          <UsageBar label="进程" :tip="t('pages.system.tips.process')" card="process" :used="s.process_count" :limit="s.process_limit" />
+          <UsageBar label="端口" :tip="t('pages.system.tips.port')" card="ports" :used="s.port_count" :limit="s.port_limit" />
+          <UsageBar label="原子" :tip="t('pages.system.tips.atom')" card="atom" :used="s.atom_count" :limit="s.atom_limit" />
+          <UsageBar v-if="s.ets_limit" label="ETS 表" card="ets" :used="s.ets_count" :limit="s.ets_limit" />
           <div v-else class="ets">{{ t('pages.system.ets') }} <span class="mono">{{ s.ets_count }}</span></div>
         </NCard>
       </NGi>

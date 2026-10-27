@@ -13,7 +13,7 @@ const en: typeof zh = {
   },
   palette: {
     open: 'Search',
-    placeholder: 'Search pages, nodes, processes, tables, apps or actions…',
+    placeholder: 'Search pages, nodes, processes, tables, apps, knowledge or actions…',
     empty: 'No matches',
     searching: 'Searching…',
     no_node: 'Connect a node to search its processes, tables and applications',
@@ -26,6 +26,7 @@ const en: typeof zh = {
       apps: 'Applications',
       actions: 'Actions',
       dumps: 'Crash dumps',
+      knowledge: 'Knowledge cards',
     },
     current: 'current',
     dump_open: 'open',

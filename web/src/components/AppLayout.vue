@@ -3,7 +3,7 @@ import { computed, h, ref } from 'vue'
 import { useRoute, useRouter, RouterView } from 'vue-router'
 import {
   NLayout, NLayoutSider, NLayoutHeader, NLayoutContent, NMenu, NIcon, NButton,
-  NTooltip, NSpace, NDropdown, useMessage, useThemeVars, type MenuOption,
+  NTooltip, NSpace, NDropdown, NScrollbar, useMessage, useThemeVars, type MenuOption,
 } from 'naive-ui'
 import { MoonOutline, SunnyOutline, LinkOutline, ContrastOutline, SearchOutline, LanguageOutline } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
@@ -22,6 +22,8 @@ import WelcomePanel from './WelcomePanel.vue'
 import ConnectDialog from './ConnectDialog.vue'
 import UpdateChecker from './UpdateChecker.vue'
 import CommandPalette from './CommandPalette.vue'
+import KnowledgeDrawer from './KnowledgeDrawer.vue'
+import BookModal from './BookModal.vue'
 import { useUi } from '../stores/ui'
 import { useUrlSync } from '../composables/useUrlSync'
 
@@ -80,8 +82,8 @@ const menuOptions = computed<MenuOption[]>(() =>
   })),
 )
 
-// Pages that work without any observed node (the crash dump viewer).
-const nodeFree = computed(() => route.name === 'crashdump')
+// Pages that work without any observed node (the crash dump viewer, the book).
+const nodeFree = computed(() => route.name === 'crashdump' || route.name === 'book')
 
 const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`))
 </script>
@@ -90,15 +92,17 @@ const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`)
   <NLayout has-sider position="absolute">
     <NLayoutSider bordered collapse-mode="width" :collapsed-width="64" :width="220"
                   :collapsed="collapsed" show-trigger @collapse="collapsed = true"
-                  @expand="collapsed = false">
+                  content-class="sider-body" @expand="collapsed = false">
       <div class="brand" :class="{ collapsed }">
         <img src="/favicon.svg" alt="" class="brand-logo" />
         <span v-if="!collapsed" class="brand-name">EObserver</span>
       </div>
-      <NMenu :value="String(route.name)" :options="menuOptions" :collapsed="collapsed"
-             :collapsed-width="64" :collapsed-icon-size="20"
-             style="padding-bottom: 96px"
-             @update:value="(k: string) => router.push({ name: k })" />
+      <NScrollbar class="nav-scroll">
+        <NMenu :value="String(route.name)" :options="menuOptions" :collapsed="collapsed"
+               :collapsed-width="64" :collapsed-icon-size="20"
+               style="padding-bottom: 12px"
+               @update:value="(k: string) => router.push({ name: k })" />
+      </NScrollbar>
       <UpdateChecker v-if="settings.version" :collapsed="collapsed" />
     </NLayoutSider>
     <NLayout>
@@ -157,11 +161,25 @@ const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`)
     </NLayout>
     <ConnectDialog />
     <CommandPalette />
+    <KnowledgeDrawer />
+    <BookModal />
   </NLayout>
 </template>
 
 <style scoped>
+/* The logo stays at the top and the version at the bottom; only the menu
+   scrolls when the window is too short for it. */
+:deep(.sider-body) {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.nav-scroll {
+  flex: 1;
+  min-height: 0;
+}
 .brand {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 10px;

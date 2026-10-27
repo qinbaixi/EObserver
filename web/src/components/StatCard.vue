@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { NCard } from 'naive-ui'
 import Term from './Term.vue'
-defineProps<{ title: string; rows: { label: string; value: string | number }[] }>()
+defineProps<{ title: string; rows: { label: string; value: string | number; card?: string }[] }>()
 </script>
 
 <template>
   <NCard :title="title" size="small" class="stat-card">
     <dl>
       <template v-for="r in rows" :key="r.label">
-        <dt><Term :label="r.label" /></dt>
+        <dt><Term :label="r.label" :card="r.card" /></dt>
         <dd class="mono">{{ r.value }}</dd>
       </template>
     </dl>

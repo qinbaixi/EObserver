@@ -51,6 +51,7 @@ OTP's `observer` is indispensable but built on wxWidgets: it needs a desktop ses
 - **Memory allocators**: blocks versus carriers per allocator, utilisation and history, to spot fragmentation.
 - **Cluster topology**: how every observed node is connected; click a neighbour to observe it too.
 - **Crash dumps**: open an `erl_crash.dump` (like OTP's crashdump_viewer) without connecting to any node; it is parsed locally. Multi-GB files work: one scan builds an index and sections are read on demand (a 2 GB dump scans in seconds from a warm cache), and the overview is usable while the scan runs. It opens on a diagnosis: the crash reason in plain words (out of memory, kernel process terminated, system limit, halt, ...) with advice, and findings (process garbage collecting at the crash, memory hogs, long message queues, limits nearly reached, big ETS tables, ...), each linking to its details. Processes, ports, ETS, timers, schedulers, nodes, memory and allocators, modules, funs, atoms and persistent terms are sortable, filterable, server-paged tables; process details show the message queue, dictionary, stack and decoded heap terms, with clickable pids. Truncated dumps open too, with the missing part marked.
+- **BEAM Book knowledge cards**: terms marked with a book icon (reductions, run queue, carriers, mailbox and 40-odd more) open a card with the matching passages from the bundled *The BEAM Book*, links to related cards, and a built-in reader that opens the whole book at that section, in English or in its Chinese translation. Each page title also lists the cards behind that page. The book works offline; open it from **BEAM Book** in the sidebar.
 - **Command palette**: <kbd>Ctrl</kbd>+<kbd>K</kbd> / <kbd>⌘</kbd>+<kbd>K</kbd> jumps to any page, node, process, table or application, and can start a health check, connect a node or switch theme and language.
 - **English and Chinese**: follows the system language by default; switch in the top bar. The theme can follow the system or be fixed to light or dark.
 - **Shareable links**: the node and the open process, port, table or application are part of the URL.
@@ -80,6 +81,10 @@ OTP's `observer` is indispensable but built on wxWidgets: it needs a desktop ses
   <tr>
     <td><img src="docs/images/allocators-dark.png" alt="Memory allocators" /></td>
     <td><img src="docs/images/command-palette.png" alt="Command palette" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/knowledge-card.png" alt="BEAM Book knowledge card" /></td>
+    <td><img src="docs/images/book-reader.png" alt="Built-in BEAM Book reader" /></td>
   </tr>
   <tr>
     <td colspan="2" align="center"><img src="docs/images/connect-local.png" alt="Local nodes" width="60%" /></td>
@@ -204,3 +209,5 @@ Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) and fo
 Copyright 2026 the EObserver authors.
 
 Licensed under the [Apache License, Version 2.0](LICENSE), the same license as Erlang/OTP.
+
+The bundled *The BEAM Book* is by Erik Stenman, licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); the Chinese translation is by Bycc. See [docs/third-party/beam-book.md](docs/third-party/beam-book.md).

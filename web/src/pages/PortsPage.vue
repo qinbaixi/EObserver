@@ -14,6 +14,8 @@ import NodeGuard from '../components/NodeGuard.vue'
 import PortDrawer from '../components/PortDrawer.vue'
 import ProcessDrawer from '../components/ProcessDrawer.vue'
 import { term } from '../api/term'
+import KnowledgeLink from '../components/KnowledgeLink.vue'
+import { cardForPort } from '../beambook'
 import { useResizableTable } from '../api/table'
 
 const { t } = useI18n()
@@ -44,9 +46,12 @@ const columns = computed<DataTableColumns<PortRow>>(() => [
       r.registered_name ? h('b', null, `${r.registered_name} `) : null,
       h('span', { class: r.registered_name ? 'muted' : '' }, r.name),
     ]) },
-  { key: 'type', title: t('pages.ports.cols.type'), width: 90,
+  { key: 'type', title: term(t('pages.ports.cols.type'), undefined, 'port_types'), width: 90,
     render: (r) => h(NTag, { size: 'small', bordered: false, type: r.inet ? 'info' : r.os_pid ? 'warning' : 'default' },
-      { default: () => (r.inet ? 'socket' : t(r.os_pid ? 'pages.ports.types.external' : 'pages.ports.types.driver')) }) },
+      { default: () => h(KnowledgeLink, {
+        text: r.inet ? 'socket' : t(r.os_pid ? 'pages.ports.types.external' : 'pages.ports.types.driver'),
+        card: r.inet ? 'sockets' : r.os_pid ? 'port_spawn' : cardForPort(r.name),
+      }) }) },
   { key: 'connected', title: term('所属进程'), width: 130,
     render: (r) => r.connected
       ? h('a', { class: 'mono link', onClick: (e: Event) => { e.stopPropagation(); selectedPid.value = r.connected } }, r.connected)

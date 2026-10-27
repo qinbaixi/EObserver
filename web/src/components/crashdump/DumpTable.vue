@@ -8,6 +8,8 @@ import { errorText } from '../../api/errors'
 import { formatNumber } from '../../api/format'
 import { useResizableTable } from '../../api/table'
 import { colLabel, isNumeric, renderCell, useNav } from './cells'
+import KnowledgeLink from '../KnowledgeLink.vue'
+import { cardForAllocator } from '../../beambook'
 
 // One dump.query kind as a server-side paged, sorted and filtered table.
 // Columns come from the backend; labels from crashdump.col.<key>.
@@ -87,6 +89,18 @@ function width(c: DumpColumn, all: DumpColumn[]): { width?: number; minWidth?: n
   return { minWidth: Math.max(base, Math.floor((room - used) / Math.max(1, flex))) }
 }
 
+// Values with a BEAM Book card: allocator names (eheap_alloc, or one
+// instance as eheap_alloc[2]) and process states.
+function knowledgeCell(key: string, v: unknown) {
+  if (typeof v !== 'string' || !v) return null
+  if (props.kind === 'allocators' && key === 'name') {
+    const card = cardForAllocator(v.replace(/\[\d+\]$/, ''))
+    return card ? h('span', { class: 'mono' }, h(KnowledgeLink, { text: v, card })) : null
+  }
+  if (props.kind === 'processes' && key === 'state') return h(KnowledgeLink, { text: v, card: 'process_state' })
+  return null
+}
+
 const columns = computed<DataTableColumns<DumpRow>>(() => (data.value?.columns ?? []).map((c) => ({
   key: c.key,
   title: colLabel(c.key),
@@ -95,7 +109,7 @@ const columns = computed<DataTableColumns<DumpRow>>(() => (data.value?.columns ?
   ellipsis: c.type === 'term' || c.type === 'text' ? { tooltip: false } : undefined,
   sorter: c.sortable ? true as const : undefined,
   sortOrder: c.sortable ? (sort.value === c.key ? (order.value === 'asc' ? 'ascend' as const : 'descend' as const) : false as const) : undefined,
-  render: (r: DumpRow) => renderCell(c.type, r[c.key], nav),
+  render: (r: DumpRow) => knowledgeCell(c.key, r[c.key]) ?? renderCell(c.type, r[c.key], nav),
 })))
 
 function onSort(s: DataTableSortState | null) {

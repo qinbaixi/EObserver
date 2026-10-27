@@ -25,7 +25,10 @@ export function useUrlSync() {
   }, { immediate: true })
 
   watch([() => nodes.loaded, () => nodes.current, () => route.fullPath], ([loaded, cur], [, old]) => {
-    if (!loaded) return
+    // Until the first navigation finishes (a lazily loaded page such as the
+    // crash dump viewer or the book) the route is still the start location,
+    // and replacing its query would send the app to / instead.
+    if (!loaded || !route.matched.length) return
     const q = route.query.node
     if (typeof q === 'string' && q && !nodes.nodes[q] && !offered.has(q)) return
     if ((cur ?? undefined) === q) return

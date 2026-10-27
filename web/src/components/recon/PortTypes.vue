@@ -9,6 +9,8 @@ import { useRecon } from '../../stores/recon'
 import DonutChart from '../../charts/DonutChart.vue'
 import { useTool } from './useTool'
 import { pct } from './shared'
+import KnowledgeLink from '../KnowledgeLink.vue'
+import { cardForPort } from '../../beambook'
 
 const props = defineProps<{ node: string }>()
 const { t } = useI18n()
@@ -26,7 +28,8 @@ const share = (r: Row) => (report.value?.total ? r.count / report.value.total : 
 
 const columns = computed<DataTableColumns<Row>>(() => [
   { key: 'name', title: t('recon.ports.name'), minWidth: 160, ellipsis: { tooltip: true },
-    render: (r) => h('span', { class: 'mono' }, r.name) },
+    render: (r) => h('span', { class: 'mono' }, r.name === t('recon.ports.other') ? r.name
+      : h(KnowledgeLink, { text: r.name, card: cardForPort(r.name) })) },
   { key: 'count', title: t('recon.ports.count'), width: 100, align: 'right',
     sorter: (a, b) => a.count - b.count, render: (r) => h('span', { class: 'mono grow' }, formatNumber(r.count)) },
   {

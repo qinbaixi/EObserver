@@ -51,6 +51,7 @@ OTP 的 `observer` 很好用，但它基于 wxWidgets，有几个痛点：需要
 - **内存分配器**：各分配器的块与载体大小、利用率和历史曲线，用来发现内存碎片。
 - **集群拓扑**：已观察节点之间的分布式连接，点击相邻节点即可连接它。
 - **崩溃转储**：打开 `erl_crash.dump`（对标 OTP 自带的 crashdump_viewer），不用连接任何节点，完全在本机解析。几 G 的文件也能打开：先扫描一遍建立索引，再按需读取，2 GB 的文件在缓存命中时几秒就能扫完，扫描期间可以先看概要。打开后默认进入诊断概要，把崩溃原因翻译成白话（内存耗尽、kernel 进程退出、系统上限、主动 halt 等）并给出排查建议，自动列出疑点（垃圾回收中的进程、内存大户、消息堆积、接近上限的资源、大 ETS 表等），每条都能点进去看明细。进程、端口、ETS、定时器、调度器、节点、内存与分配器、模块、fun、原子、persistent_term 等都有可排序、可筛选、服务端分页的表格；进程详情包括消息队列、进程字典、调用栈和堆数据还原，pid 之间可点击跳转。被截断的转储也能打开，并标出缺失的部分。
+- **BEAM Book 知识卡片**：界面里带书本图标的术语（reductions、运行队列、载体、信箱等 40 多个）点一下就会在右侧弹出知识卡片，内容摘自内置的《The BEAM Book》中文译本，可以跳到相关知识，也可以一键打开应用内的全书阅读器，定位到对应小节继续读，并能切换英文原文对照。每个页面标题旁的「相关知识」列出这一页背后的原理。全书离线可读，侧边栏「BEAM Book」直接进入。
 - **命令面板**：<kbd>Ctrl</kbd>+<kbd>K</kbd> / <kbd>⌘</kbd>+<kbd>K</kbd> 搜索并跳转到页面、节点、进程、表和应用，也能直接开始体检、连接节点、切换主题和语言。
 - **中英文界面**：默认跟随系统语言，顶栏可以切换中文 / English。主题可以跟随系统，也可以固定为浅色或深色。
 - **可分享链接**：节点以及打开的进程、端口、表、应用都会写进 URL。
@@ -80,6 +81,10 @@ OTP 的 `observer` 很好用，但它基于 wxWidgets，有几个痛点：需要
   <tr>
     <td><img src="docs/images/allocators-dark.png" alt="内存分配器" /></td>
     <td><img src="docs/images/command-palette.png" alt="命令面板" /></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/knowledge-card.png" alt="BEAM Book 知识卡片" /></td>
+    <td><img src="docs/images/book-reader.png" alt="内置的 BEAM Book 阅读器" /></td>
   </tr>
   <tr>
     <td colspan="2" align="center"><img src="docs/images/connect-local.png" alt="本机节点" width="60%" /></td>
@@ -204,3 +209,5 @@ WebSocket 协议见 [docs/protocol.md](docs/protocol.md)。
 Copyright 2026 the EObserver authors.
 
 基于 [Apache License 2.0](LICENSE) 发布，与 Erlang/OTP 使用相同的许可证。
+
+内置的《The BEAM Book》由 Erik Stenman 著，以 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) 协议发布，中文翻译由 Bycc 完成，详见 [docs/third-party/beam-book.md](docs/third-party/beam-book.md)。

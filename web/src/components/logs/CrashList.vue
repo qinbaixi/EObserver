@@ -6,6 +6,8 @@ import { formatNumber } from '../../api/format'
 import { formatTime } from '../../api/trace'
 import type { CrashGroup, RestartGroup } from '../../api/types'
 import { useLogs } from '../../stores/logs'
+import KnowledgeLink from '../KnowledgeLink.vue'
+import { term } from '../../api/term'
 
 const { t } = useI18n()
 const logs = useLogs()
@@ -37,7 +39,7 @@ const tag = (text: string, tip: string, type: 'error' | 'default' | 'warning' = 
 
 const restartColumns = computed<DataTableColumns<RestartRow>>(() => [
   {
-    key: 'supervisor', title: t('logs.crashes.supervisor'), minWidth: 160, ellipsis: { tooltip: true },
+    key: 'supervisor', title: term(t('logs.crashes.supervisor'), undefined, 'supervisor'), minWidth: 160, ellipsis: { tooltip: true },
     render: ({ r }) => h('span', { class: 'mono' }, r.supervisor),
   },
   {
@@ -75,7 +77,7 @@ const crashes = computed(() => [...logs.crashes.values()].sort((a, b) => b.last 
 function renderCrash(c: CrashGroup) {
   return h('div', { class: 'detail' }, [
     h('div', { class: 'facts' }, [
-      h('span', null, [h(NText, { depth: 3 }, { default: () => t('procs.colon', { label: t('logs.crashes.class') }) }), h('span', { class: 'mono' }, c.class)]),
+      h('span', null, [h(NText, { depth: 3 }, { default: () => t('procs.colon', { label: t('logs.crashes.class') }) }), h('span', { class: 'mono' }, h(KnowledgeLink, { text: c.class, card: 'exceptions' }))]),
       h('span', null, [h(NText, { depth: 3 }, { default: () => t('procs.colon', { label: t('logs.crashes.first') }) }), h('span', { class: 'mono' }, formatTime(c.first))]),
       h('span', null, [h(NText, { depth: 3 }, { default: () => t('procs.colon', { label: t('logs.crashes.last') }) }), h('span', { class: 'mono' }, formatTime(c.last))]),
       c.pid ? h('span', null, [h(NText, { depth: 3 }, { default: () => t('procs.colon', { label: t('logs.crashes.latest_pid') }) }), h('span', { class: 'mono' }, c.pid)]) : null,

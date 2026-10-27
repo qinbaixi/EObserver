@@ -11,7 +11,7 @@ export default {
   },
   palette: {
     open: '搜索',
-    placeholder: '搜索页面、节点、进程、表、应用或操作…',
+    placeholder: '搜索页面、节点、进程、表、应用、知识或操作…',
     empty: '没有匹配的结果',
     searching: '正在搜索…',
     no_node: '连接节点后可以搜索进程、表和应用',
@@ -24,6 +24,7 @@ export default {
       apps: '应用',
       actions: '操作',
       dumps: '崩溃转储',
+      knowledge: '知识卡片',
     },
     current: '当前',
     dump_open: '已打开',

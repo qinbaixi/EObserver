@@ -122,6 +122,25 @@ check() ->
     ok = eobs_agent:logs_stop(),
     false = lists:member(eobs_agent_logs, logger:get_handler_ids()),
     lager_smoke(),
+    logfile_smoke(),
+    ok.
+
+%% A logger file handler's file can be listed, read, searched and nothing
+%% else can be read.
+logfile_smoke() ->
+    File = filename:absname("eobs_smoke.log"),
+    ok = logger:add_handler(eobs_smoke_file, logger_std_h,
+                            #{level => notice, config => #{file => File}}),
+    logger:notice("smoke file line ~p", [1]),
+    timer:sleep(500),
+    Path = list_to_binary(File),
+    {ok, Files} = eobs_agent:logfile_list(),
+    [#{source := logger, index := null}] = [F || #{path := P} = F <- Files, P =:= Path],
+    {ok, #{entries := Entries}} = eobs_agent:logfile_read(Path, eof, back, 65536),
+    [#{level := notice}] = [E || #{text := T} = E <- Entries, binary:match(T, <<"smoke file line 1">>) =/= nomatch],
+    {ok, #{hits := [_ | _]}} = eobs_agent:logfile_search(Path, eof, back, <<"smoke file">>, null),
+    {error, not_a_log_file} = eobs_agent:logfile_read(<<"/etc/hosts">>, 0, fwd, 4096),
+    ok = logger:remove_handler(eobs_smoke_file),
     ok.
 
 %% A stand-in for lager's default sink: the agent joins it as a backend,

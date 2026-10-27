@@ -11,6 +11,7 @@ start() ->
     Www = www_dir(),
     Routes = [
         {"/ws", eobs_ws, #{}},
+        {"/download/logfile", eobs_download, #{}},
         {"/assets/[...]", cowboy_static, {dir, filename:join(Www, "assets")}},
         {"/favicon.svg", cowboy_static, {file, filename:join(Www, "favicon.svg")}},
         %% Every other path is a client-side route: serve the SPA shell.

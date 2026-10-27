@@ -173,6 +173,10 @@ export default {
     too_many_sockets: 'socket 超过 10 万个，为保护目标节点不做统计',
     too_big: '数据量太大，为保护目标节点已中止',
     logs_failed: '无法在目标节点上开始收集日志',
+    not_a_log_file: '这个文件不在节点的日志配置里，可能已被删除或配置已变化',
+    files_busy: '这个节点上已有 2 个日志文件读取在进行，请稍后再试',
+    gz_not_seekable: '压缩文件不支持按时间跳转',
+    gz_too_far: '压缩文件只能查看解压后的前 64 MB',
   },
   format: {
     days: '{d} 天 {h} 小时',

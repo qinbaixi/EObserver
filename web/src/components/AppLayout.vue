@@ -3,11 +3,11 @@ import { computed, h, ref, watch } from 'vue'
 import { useRoute, useRouter, RouterView } from 'vue-router'
 import {
   NLayout, NLayoutSider, NLayoutHeader, NLayoutContent, NMenu, NIcon, NButton,
-  NTooltip, NSpace, NDropdown, useMessage, useThemeVars, type MenuOption,
+  NTooltip, NSpace, NDropdown, NScrollbar, useMessage, useThemeVars, type MenuOption,
 } from 'naive-ui'
 import {
   MoonOutline, SunnyOutline, LinkOutline, ContrastOutline, SearchOutline, LanguageOutline,
-  EllipsisHorizontalCircleOutline, OptionsOutline,
+  EllipsisHorizontalCircleOutline, OptionsOutline, SettingsOutline,
 } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
 import { pages, pageTitle } from '../router'
@@ -92,25 +92,34 @@ const pageOption = (name: string): MenuOption => {
 const MORE = '__more'
 const CUSTOMIZE = '__customize'
 const customizing = ref(false)
-// The chosen pages, then everything else under "More" with the customize
-// entry at its end.
+// The chosen pages, then everything else under "More", whose row has a gear
+// that opens the customize dialog.
 const menuOptions = computed<MenuOption[]>(() => [
   ...nav.pinned.map(pageOption),
   {
     key: MORE,
-    label: () => h('span', { class: 'menu-label' }, [
+    label: () => h('span', { class: 'menu-label menu-more' }, [
       t('shell.nav_more'),
       h('span', { class: 'menu-count' }, String(nav.rest.length)),
+      h('span', {
+        class: 'menu-gear',
+        title: t('shell.nav_custom.title'),
+        onClick: (e: MouseEvent) => { e.stopPropagation(); customizing.value = true },
+      }, [h(NIcon, { component: SettingsOutline })]),
     ]),
     icon: () => h(NIcon, null, { default: () => h(EllipsisHorizontalCircleOutline) }),
+    // The gear is in the row's label, which a collapsed sidebar hides, so the
+    // popup menu offers the same entry instead.
     children: [
       ...nav.rest.map(pageOption),
-      { type: 'divider', key: 'more-divider' },
-      {
-        key: CUSTOMIZE,
-        label: () => h('span', { class: 'menu-custom' }, t('shell.nav_custom.open')),
-        icon: () => h(NIcon, null, { default: () => h(OptionsOutline) }),
-      },
+      ...(collapsed.value ? [
+        { type: 'divider', key: 'more-divider' },
+        {
+          key: CUSTOMIZE,
+          label: () => h('span', { class: 'menu-custom' }, t('shell.nav_custom.open')),
+          icon: () => h(NIcon, null, { default: () => h(OptionsOutline) }),
+        },
+      ] : []),
     ],
   },
 ])
@@ -134,16 +143,18 @@ const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`)
   <NLayout has-sider position="absolute">
     <NLayoutSider bordered collapse-mode="width" :collapsed-width="64" :width="220"
                   :collapsed="collapsed" show-trigger @collapse="collapsed = true"
-                  @expand="collapsed = false">
+                  content-class="sider-body" @expand="collapsed = false">
       <div class="brand" :class="{ collapsed }">
         <img src="/favicon.svg" alt="" class="brand-logo" />
         <span v-if="!collapsed" class="brand-name">EObserver</span>
       </div>
-      <NMenu :value="String(route.name)" :options="menuOptions" :collapsed="collapsed"
+      <NScrollbar class="nav-scroll">
+      <NMenu class="nav-menu" :value="String(route.name)" :options="menuOptions" :collapsed="collapsed"
              :collapsed-width="64" :collapsed-icon-size="20"
-             :expanded-keys="expanded" style="padding-bottom: 96px"
+             :expanded-keys="expanded" style="padding-bottom: 12px"
              @update:expanded-keys="(k: string[]) => (expanded = k)"
              @update:value="onSelect" />
+      </NScrollbar>
       <UpdateChecker v-if="settings.version" :collapsed="collapsed" />
     </NLayoutSider>
     <NLayout>
@@ -209,7 +220,19 @@ const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`)
 </template>
 
 <style scoped>
+/* The logo stays at the top and the version at the bottom; only the menu
+   scrolls when "More" is open and the window is short. */
+:deep(.sider-body) {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.nav-scroll {
+  flex: 1;
+  min-height: 0;
+}
 .brand {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -324,5 +347,59 @@ const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`)
 }
 :deep(.menu-custom) {
   opacity: 0.7;
+}
+/* The pinned pages are few, so they get room that grows with the window
+   instead of the dense default rows; pages under "More" stay compact. */
+.nav-menu {
+  --nav-row: clamp(42px, 6vh, 56px);
+  --nav-gap: clamp(4px, 1.1vh, 12px);
+}
+.nav-menu > :deep(.n-menu-item),
+.nav-menu > :deep(.n-submenu) {
+  margin-top: var(--nav-gap);
+}
+.nav-menu > :deep(.n-menu-item),
+.nav-menu > :deep(.n-submenu > .n-menu-item),
+.nav-menu > :deep(.n-submenu > .n-menu-item > .n-menu-item-content) {
+  height: var(--nav-row);
+}
+.nav-menu > :deep(.n-menu-item .n-menu-item-content-header),
+.nav-menu > :deep(.n-submenu > .n-menu-item .n-menu-item-content-header) {
+  font-size: 15px;
+}
+.nav-menu > :deep(.n-menu-item .n-menu-item-content__icon),
+.nav-menu > :deep(.n-submenu > .n-menu-item .n-menu-item-content__icon) {
+  font-size: 21px !important;
+}
+.nav-menu > :deep(.n-submenu) {
+  padding-top: var(--nav-gap);
+}
+.nav-menu > :deep(.n-submenu)::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 12px;
+  right: 12px;
+  border-top: 1px solid rgba(128, 128, 128, 0.14);
+}
+:deep(.menu-more) {
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+:deep(.menu-gear) {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  font-size: 16px;
+  opacity: 0.55;
+}
+:deep(.menu-gear:hover) {
+  opacity: 1;
+  background: rgba(128, 128, 128, 0.16);
 }
 </style>

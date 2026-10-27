@@ -1,6 +1,6 @@
 {application, eobserver, [
     {description, "A modern web UI for observing Erlang nodes"},
-    {vsn, "0.0.10"},
+    {vsn, "0.0.11"},
     {registered, [eobs_sup, eobs_nodes, eobs_node_sup, eobs_dump_sup, eobs_dump_files]},
     {mod, {eobs_app, []}},
     {applications, [kernel, stdlib, cowboy, jsx, eobserver_agent]},

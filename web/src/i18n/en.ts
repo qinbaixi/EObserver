@@ -184,8 +184,13 @@ const en: typeof zh = {
   },
   logs: {
     title: 'Logs',
-    tabs: { crashes: 'Crashes', live: 'Live log', files: 'Log files' },
-    only_since: 'Only logs and crashes since this page was opened ({time}) are shown; earlier history and the node\'s own log files are not read. Collection stops 60 s after leaving this page.',
+    tabs: { live: 'Live log', files: 'Log files' },
+    only_since: 'The live log only shows logs since this page was opened ({time}); see Log files for earlier history. Collection stops 60 s after leaving this page.',
+    crashes_page: {
+      title: 'Crashes',
+      running: 'Collecting · {n} crashes',
+      only_since: 'Only crashes and restarts since this page or the logs page was opened ({time}) are shown. Collection stops 60 s after leaving both pages.',
+    },
     status: {
       running: 'Collecting',
       starting: 'Starting…',

@@ -10,6 +10,7 @@ const en: typeof zh = {
     diagnosis: { title: 'Diagnosis', subtitle: '' },
     recon: { title: 'Recon toolbox', subtitle: '' },
     logs: { title: 'Logs', subtitle: '' },
+    crashes: { title: 'Crashes', subtitle: '' },
     processes: { title: 'Processes', subtitle: '' },
     trace: { title: 'Message Trace', subtitle: '' },
     ports: { title: 'Ports', subtitle: '' },

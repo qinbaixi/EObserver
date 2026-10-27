@@ -172,6 +172,10 @@ const en: typeof zh = {
     too_many_sockets: 'More than 100,000 sockets; skipped to protect the node',
     too_big: 'Too much data; stopped to protect the node',
     logs_failed: 'Couldn\'t start collecting logs on the node',
+    not_a_log_file: 'This file is not in the node\'s log setup; it may have been removed or the setup changed',
+    files_busy: 'Two log file reads are already running on this node; try again shortly',
+    gz_not_seekable: 'Jumping to a time is not supported in compressed files',
+    gz_too_far: 'Only the first 64 MB of a compressed file can be viewed',
   },
   format: {
     days: '{d}d {h}h',

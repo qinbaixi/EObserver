@@ -19,12 +19,17 @@
 -export([recon_proc_count/3, recon_bin_leak/2, recon_inet_count/4, recon_port_types/0,
          recon_alloc/0, recon_scheduler_usage/2]).
 -export([logs_events/2, logs_stop/0]).
+-export([logfile_list/0, logfile_read/4, logfile_seek/2, logfile_search/5, logfile_chunk/3]).
 %% logger handler callback, called by logger in the logging process.
 -export([log/2]).
+%% gen_event callbacks: the agent is also a lager backend while the Logs
+%% page is open, called in lager's event manager process.
+-export([init/1, handle_event/2, handle_call/2, handle_info/2, terminate/2,
+         code_change/3]).
 
 %% Bump whenever the exported API or return shapes change, so the tool
 %% replaces an older copy that is still loaded on the target.
--define(VERSION, 14).
+-define(VERSION, 16).
 
 %% Long-lived helper process on the observed node. It keeps
 %% scheduler_wall_time enabled, builds process lists while holding the
@@ -1695,6 +1700,20 @@ one_line(Bin, Max) ->
 %%   - the keeper removes the handler and stops when the tool node goes
 %%     away or after LOG_IDLE_MS without being read; logger itself removes
 %%     a handler that crashes.
+%%
+%% lager does not log through logger: lager:log and the lager parse
+%% transform send to lager's own gen_event managers (sinks). When lager
+%% runs, the keeper also adds the agent to every sink as a gen_event
+%% handler that does the same as log/2 (one counted send, nothing else).
+%% It answers lager's get_loglevel with an empty mask, so lager's levels
+%% stay as they are: we see what lager already produces, and lager:debug
+%% calls that lager filters out stay as cheap as before. Every call to a
+%% sink is made from a helper with a timeout, since a sink may be busy.
+%% When lager redirects error_logger into itself, the logger events that
+%% error_logger takes (those with error_logger metadata: error_logger
+%% calls, OTP's own reports, crashes) reach us twice; their lines then
+%% come from lager only, and the logger events serve the crash records.
+%% Other logger calls are not passed on to lager, so they still show.
 %%--------------------------------------------------------------------
 
 %% Registered name of the keeper, and the handler id.
@@ -1714,6 +1733,10 @@ one_line(Bin, Max) ->
 -define(LOG_TIMES, 10).
 %% A collector killed by its heap limit is replaced after this long.
 -define(LOG_RESTART_MS, 10000).
+%% Longest wait for a lager event manager to add or remove our handler.
+-define(LAGER_CALL_MS, 5000).
+%% Our handler id in lager's event managers.
+-define(LAGER_ID, {?MODULE, ?LOGS}).
 %% Slots of the atomics array shared by the handler and the collector.
 -define(A_INFLIGHT, 1).
 -define(A_MAXSEV, 2).
@@ -1788,6 +1811,63 @@ log(#{level := Level} = Event, #{config := #{ref := Ref, collector := Pid}}) ->
 log(_Event, _Config) ->
     ok.
 
+%% The lager backend. Runs in the sink's event manager: keep it tiny too.
+init({Ref, Collector}) ->
+    {ok, #{ref => Ref, collector => Collector}}.
+
+handle_event({log, Msg}, #{ref := Ref, collector := Pid} = St)
+  when tuple_size(Msg) =:= 7, element(1, Msg) =:= lager_msg ->
+    MaxSev = atomics:get(Ref, ?A_MAXSEV),
+    Kept = case severity(element(4, Msg)) =< MaxSev of
+               true ->
+                   case atomics:add_get(Ref, ?A_INFLIGHT, 1) > ?LOG_BACKLOG of
+                       false ->
+                           Pid ! {?LOGS, {lager, Msg}},
+                           ok;
+                       true ->
+                           atomics:sub(Ref, ?A_INFLIGHT, 1),
+                           lager_dropped(Ref, ?A_DROPPED, Pid)
+                   end;
+               false when MaxSev =:= ?SEV_NONE ->
+                   lager_dropped(Ref, ?A_DROPPED, Pid);
+               false ->
+                   lager_dropped(Ref, ?A_LIMITED, Pid)
+           end,
+    case Kept of
+        ok -> {ok, St};
+        gone -> remove_handler
+    end;
+handle_event(_Event, St) ->
+    {ok, St}.
+
+%% lager ORs the masks of all its backends into the level its callers
+%% check; an empty one leaves that level alone.
+handle_call(get_loglevel, St) ->
+    {ok, {mask, 0}, St};
+handle_call(_Request, St) ->
+    {ok, {error, bad_request}, St}.
+
+handle_info(_Info, St) ->
+    {ok, St}.
+
+terminate(_Arg, _St) ->
+    ok.
+
+code_change(_OldVsn, St, _Extra) ->
+    {ok, St}.
+
+%% As log_dropped/3, but a gen_event handler removes itself by returning.
+lager_dropped(Ref, Slot, Pid) ->
+    case atomics:add_get(Ref, Slot, 1) band 1023 of
+        0 ->
+            case is_process_alive(Pid) of
+                true -> ok;
+                false -> gone
+            end;
+        _ ->
+            ok
+    end.
+
 %% Every 1024th drop checks that the collector is still there: one that
 %% was killed with its keeper leaves nobody to remove the handler, and
 %% the error makes logger remove it.
@@ -1811,6 +1891,82 @@ remove_log_handler() ->
     case catch logger:get_handler_config(?LOGS) of
         {ok, #{module := ?MODULE}} -> _ = logger:remove_handler(?LOGS), ok;
         _ -> ok
+    end,
+    [bounded(fun() -> gen_event:delete_handler(Sink, ?LAGER_ID, stop) end, ?LAGER_CALL_MS)
+     || Sink <- lager_sinks()],
+    ok.
+
+%% The running lager sinks: the default one, the one error_logger events
+%% may be redirected to, and any extra sinks lager knows about.
+lager_sinks() ->
+    Known = case lager_config({'_global', handlers}) of
+                Handlers when is_list(Handlers) ->
+                    [Sink || {_Handler, _Watcher, Sink} <- Handlers, is_atom(Sink)];
+                _ ->
+                    []
+            end,
+    [Sink || Sink <- lists:usort([lager_event, error_logger_lager_event | Known]),
+             is_pid(whereis(Sink))].
+
+%% Adds the lager backend to every sink; returns the sinks it is in.
+lager_attach(Ref, Collector) ->
+    [Sink || Sink <- lager_sinks(),
+             bounded(fun() -> gen_event:add_handler(Sink, ?LAGER_ID, {Ref, Collector}) end,
+                     ?LAGER_CALL_MS) =:= ok].
+
+%% Whether lager forwards error_logger, and with it OTP logger, events.
+lager_redirects() ->
+    is_pid(whereis(error_logger)) andalso
+        bounded(fun() -> lists:member(error_logger_lager_h, gen_event:which_handlers(error_logger)) end,
+                ?LAGER_CALL_MS) =:= true.
+
+%% The least severe level lager's default sink lets through, or null.
+lager_level() ->
+    Mask = case lager_config({lager_event, loglevel}) of
+               {M, _Traces} when is_integer(M) -> M;
+               _ ->
+                   %% lager 2
+                   case lager_config(loglevel) of
+                       {M, _} when is_integer(M) -> M;
+                       _ -> undefined
+                   end
+           end,
+    case Mask of
+        undefined -> null;
+        _ -> lager_mask_level(Mask)
+    end.
+
+lager_mask_level(Mask) ->
+    case [L || {Bit, L} <- [{128, debug}, {64, info}, {32, notice}, {16, warning},
+                            {8, error}, {4, critical}, {2, alert}, {1, emergency}],
+               Mask band Bit =/= 0] of
+        [L | _] -> L;
+        [] -> none
+    end.
+
+%% A value of lager's configuration, read without calling lager: lager 3.8
+%% and later keep it in persistent_term, older ones in an ETS table.
+lager_config(Key) ->
+    try
+        persistent_term:get({lager_config, Key})
+    catch error:_ ->
+        case catch ets:lookup(lager_config, Key) of
+            [{_, Value}] -> Value;
+            _ -> undefined
+        end
+    end.
+
+%% Runs Fun in a helper and gives up after Timeout, so a busy event
+%% manager cannot hold up the caller. Returns error if Fun raised.
+bounded(Fun, Timeout) ->
+    {Pid, Ref} = spawn_monitor(fun() -> exit({done, Fun()}) end),
+    receive
+        {'DOWN', Ref, process, Pid, {done, Result}} -> Result;
+        {'DOWN', Ref, process, Pid, _} -> error
+    after Timeout ->
+        exit(Pid, kill),
+        erlang:demonitor(Ref, [flush]),
+        timeout
     end.
 
 %% The keeper owns the rings and the handler, and answers the tool. It
@@ -1828,7 +1984,7 @@ logs_init(Parent, Owner) ->
              restarts => group_store()},
     ets:insert(maps:get(logs, Tabs), {seq, 0}),
     St0 = #{id => erlang:unique_integer([positive]), owners => [Owner], tabs => Tabs,
-            ref => atomics:new(4, [{signed, true}]), worker => undefined,
+            ref => atomics:new(4, [{signed, true}]), worker => undefined, lager => [],
             status => stopped, reason => null, stopped_at => 0, collector_restarts => 0,
             started => erlang:system_time(millisecond), last_read => now_ms()},
     St = logs_start(St0),
@@ -1855,7 +2011,9 @@ logs_start(#{ref := Ref, tabs := Tabs} = St) ->
                config => #{ref => Ref, collector => Worker}},
     case logger:add_handler(?LOGS, ?MODULE, Config) of
         ok ->
-            St#{worker := Worker, status := running, reason := null};
+            Sinks = lager_attach(Ref, Worker),
+            Worker ! {redirected, Sinks =/= [] andalso lager_redirects()},
+            St#{worker := Worker, status := running, reason := null, lager := Sinks};
         {error, Reason} ->
             unlink(Worker),
             exit(Worker, kill),
@@ -1919,7 +2077,8 @@ logs_halt(Reason, #{worker := Worker} = St) ->
         undefined -> ok;
         _ -> unlink(Worker), exit(Worker, kill)
     end,
-    St#{worker := undefined, status := stopped, reason := Reason, stopped_at := now_ms()}.
+    St#{worker := undefined, status := stopped, reason := Reason, stopped_at := now_ms(),
+        lager := []}.
 
 %% Cursor: {Id, LogSeq, CrashSeq, RestartSeq}. A cursor of an earlier
 %% collection (or null) reads everything there is.
@@ -1948,6 +2107,11 @@ logs_read(Cursor, #{id := Id, tabs := #{logs := Logs, crashes := Crashes, restar
       started => maps:get(started, St),
       now => erlang:system_time(millisecond),
       primary_level => primary_level(),
+      lager => maps:get(lager, St) =/= [],
+      lager_level => case maps:get(lager, St) of
+                         [] -> null;
+                         _ -> lager_level()
+                     end,
       received => Seq,
       lost => max(0, Seq - ?LOG_RING - LogSince),
       dropped => atomics:get(Ref, ?A_DROPPED),
@@ -1976,7 +2140,8 @@ next_seq(Rows, _Since) -> maps:get(seq, lists:last(Rows)).
 
 %% The collector formats events and fills the rings.
 collector_init(Tabs, Ref) ->
-    collector_loop(#{tabs => Tabs, ref => Ref, sec => 0, n => 0, limited_sec => undefined}).
+    collector_loop(#{tabs => Tabs, ref => Ref, sec => 0, n => 0, limited_sec => undefined,
+                     redirected => false}).
 
 collector_loop(#{ref := Ref} = St) ->
     receive
@@ -1986,11 +2151,17 @@ collector_loop(#{ref := Ref} = St) ->
         {rate_reset, Sec} when Sec =:= map_get(limited_sec, St) ->
             atomics:put(Ref, ?A_MAXSEV, ?SEV_ALL),
             collector_loop(St#{limited_sec := undefined});
+        {redirected, Redirected} ->
+            collector_loop(St#{redirected := Redirected});
         _ ->
             collector_loop(St)
     end.
 
-collect_event(#{level := Level} = Event, #{sec := Sec, n := N, ref := Ref} = St) ->
+collect_event(Event, #{sec := Sec, n := N, ref := Ref} = St) ->
+    Level = case Event of
+                {lager, Msg} -> element(4, Msg);
+                #{level := L} -> L
+            end,
     NowMs = erlang:monotonic_time(millisecond),
     Now = floor_div(NowMs, 1000),
     N1 = case Now of
@@ -2027,33 +2198,95 @@ rate_limit(MaxSev, Now, NowMs, #{ref := Ref} = St) ->
 floor_div(A, B) when A >= 0 -> A div B;
 floor_div(A, B) -> -((-A + B - 1) div B).
 
-store_log(#{level := Level, msg := Msg, meta := Meta} = Event, #{tabs := Tabs}) ->
+store_log({lager, {lager_msg, _Dest, Meta, Level, _DateTime, {Mega, Sec, Micro}, Message}},
+          #{tabs := Tabs}) ->
+    Get = fun(Key) ->
+                  case lists:keyfind(Key, 1, Meta) of
+                      {_, V} -> V;
+                      false -> undefined
+                  end
+          end,
+    store_line(#{t => (Mega * 1000000 + Sec) * 1000000 + Micro,
+                 level => Level,
+                 module => case Get(module) of
+                               M when is_atom(M), M =/= undefined -> M;
+                               _ -> null
+                           end,
+                 pid => case Get(pid) of
+                            P when is_pid(P) -> ref_bin(P);
+                            P when is_list(P) -> limited_chars(P, 100);
+                            _ -> null
+                        end,
+                 source => lager,
+                 text => lager_text(Message)}, Tabs);
+store_log(#{level := Level, msg := Msg, meta := Meta} = Event, #{tabs := Tabs} = St) ->
     Time = case Meta of
                #{time := T} when is_integer(T) -> T;
                _ -> erlang:system_time(microsecond)
            end,
-    Logs = maps:get(logs, Tabs),
-    Seq = ets:update_counter(Logs, seq, 1),
-    ets:insert(Logs, {Seq, #{seq => Seq,
-                             t => Time,
-                             level => Level,
-                             module => case Meta of
-                                           #{mfa := {M, _, _}} when is_atom(M) -> M;
-                                           _ -> null
-                                       end,
-                             pid => case Meta of
-                                        #{pid := P} when is_pid(P) -> ref_bin(P);
-                                        _ -> null
-                                    end,
-                             text => log_text(Event)}}),
-    case Seq > ?LOG_RING of
-        true -> ets:delete(Logs, Seq - ?LOG_RING);
-        false -> ok
+    %% A copy of this one comes from lager.
+    case maps:get(redirected, St) andalso is_map_key(error_logger, Meta) of
+        false ->
+            store_line(#{t => Time,
+                         level => Level,
+                         module => case Meta of
+                                       #{mfa := {M, _, _}} when is_atom(M) -> M;
+                                       _ -> null
+                                   end,
+                         pid => case Meta of
+                                    #{pid := P} when is_pid(P) -> ref_bin(P);
+                                    _ -> null
+                                end,
+                         source => logger,
+                         text => log_text(Event)}, Tabs);
+        true ->
+            ok
     end,
     case crash_info(Msg, Meta) of
         none -> ok;
         {crash, Who, Pid, Class, Reason, Stack} -> store_crash(Who, Pid, Class, Reason, Stack, Time, Tabs);
         {restart, Ctx, Sup, Child, Reason} -> store_restart(Ctx, Sup, Child, Reason, Time, Tabs)
+    end.
+
+store_line(Line, Tabs) ->
+    Logs = maps:get(logs, Tabs),
+    Seq = ets:update_counter(Logs, seq, 1),
+    ets:insert(Logs, {Seq, Line#{seq => Seq}}),
+    case Seq > ?LOG_RING of
+        true -> ets:delete(Logs, Seq - ?LOG_RING);
+        false -> ok
+    end.
+
+%% lager hands over the message already formatted (chardata). A message
+%% formatted with ~s from UTF-8 bytes arrives as one char per byte; it is
+%% shown decoded when the bytes are valid UTF-8.
+lager_text(Message) ->
+    Chars = try unicode:characters_to_list(Message) of
+                L when is_list(L) -> L;
+                _ -> lager_text_fallback(Message)
+            catch _:_ ->
+                lager_text_fallback(Message)
+            end,
+    Head = lists:sublist(Chars, ?LOG_TEXT_CHARS * 4),
+    Text = case lists:all(fun(C) -> C < 256 end, Head)
+               andalso lists:any(fun(C) -> C > 127 end, Head) of
+               true ->
+                   case unicode:characters_to_list(list_to_binary(Head), utf8) of
+                       Decoded when is_list(Decoded) -> Decoded;
+                       _ -> Head
+                   end;
+               false ->
+                   Head
+           end,
+    clip(string:trim(Text, trailing), ?LOG_TEXT_CHARS).
+
+lager_text_fallback(Message) ->
+    unicode:characters_to_list(limited(Message, ?LOG_TEXT_CHARS)).
+
+limited_chars(Chars, Max) ->
+    case io_lib:printable_unicode_list(Chars) of
+        true -> clip(Chars, Max);
+        false -> limited(Chars, Max)
     end.
 
 %% The message as the node's own logger would print it, within limits.
@@ -2218,6 +2451,574 @@ group_put(#{tab := Tab, idx := Idx}, Key, Fun) ->
 
 now_ms() ->
     erlang:monotonic_time(millisecond).
+
+%%--------------------------------------------------------------------
+%% Log files
+%%
+%% The node's own log files, read only: the files lager's file backends
+%% and crash log write, and those of logger's file handlers, each with
+%% the rotated copies next to it (File.0, File.1, ... and .gz). Built so
+%% that it cannot take the node down:
+%%   - only files in that list can be read; every call builds the list
+%%     again and refuses any other path;
+%%   - nothing is kept between calls; each call runs in its own process
+%%     with a heap limit, low priority and a time limit, opens the file
+%%     raw and read only, and reads at most a page (LF_PAGE), a search
+%%     at most LF_SCAN bytes, a download chunk at most LF_CHUNK;
+%%   - at most LF_JOBS calls run at a time, others are refused as busy;
+%%   - a .gz file can only be read from its start, up to LF_GZ_MAX bytes
+%%     of uncompressed data.
+%%--------------------------------------------------------------------
+
+-define(LF_PAGE, 262144).
+-define(LF_CHUNK, 1048576).
+-define(LF_SCAN, 67108864).
+-define(LF_SCAN_MS, 3000).
+-define(LF_HITS, 500).
+-define(LF_GZ_MAX, 67108864).
+-define(LF_JOBS, [eobs_agent_file_1, eobs_agent_file_2]).
+-define(LF_HEAP_WORDS, 8000000).
+-define(LF_TIMEOUT, 10000).
+-define(LF_ENTRY_CHARS, 16000).
+%% Bytes read around a probe while seeking a time.
+-define(LF_PROBE, 65536).
+
+%% The log files of the node, newest first within each file's group.
+logfile_list() ->
+    lf_job(fun() -> {ok, [lf_info(F) || F <- lf_files()]} end).
+
+%% A page of entries. Dir back: the page ending at Pos (eof: the end of
+%% the file); fwd: the page starting at Pos. Pages start and end on line
+%% boundaries; `start`/`stop` are where the next page goes on from.
+logfile_read(Path, Pos, Dir, Bytes) ->
+    lf_with(Path, fun(File) -> lf_read(File, Pos, Dir, min(max(Bytes, 4096), ?LF_PAGE)) end).
+
+%% The position of the first entry at or after Time (a binary such as
+%% <<"2026-10-27 11:32">>, compared with the entries' own timestamps).
+logfile_seek(Path, Time) ->
+    lf_with(Path, fun(#{gz := true}) -> {error, gz_not_seekable};
+                     (File) -> lf_seek(File, Time)
+                  end).
+
+%% Lines containing Text, scanning from Pos in Dir for at most LF_SCAN
+%% bytes or LF_SCAN_MS; `next` is where to go on, null when done.
+logfile_search(Path, Pos, Dir, Text, MinLevel) when is_binary(Text), Text =/= <<>> ->
+    lf_with(Path, fun(File) -> lf_search(File, Pos, Dir, Text, MinLevel) end).
+
+%% Raw bytes of the file (compressed ones as they are), for downloads.
+logfile_chunk(Path, Pos, Len) ->
+    lf_with(Path, fun(#{path := P}) ->
+                          lf_pread(P, Pos, min(Len, ?LF_CHUNK))
+                  end).
+
+lf_with(Path, Fun) ->
+    lf_job(fun() ->
+                   Wanted = unicode:characters_to_list(Path),
+                   case [F || #{path := P} = F <- lf_files(), P =:= Wanted] of
+                       [File | _] -> Fun(File);
+                       [] -> {error, not_a_log_file}
+                   end
+           end).
+
+%% Runs Fun in a process of its own, holding one of the LF_JOBS names.
+lf_job(Fun) ->
+    {Pid, Ref} = spawn_opt(fun() -> lf_job_init(Fun) end,
+                           [monitor, {priority, low},
+                            {max_heap_size, #{size => ?LF_HEAP_WORDS, kill => true,
+                                              error_logger => false}}]),
+    receive
+        {'DOWN', Ref, process, Pid, {lf_done, Result}} -> Result;
+        {'DOWN', Ref, process, Pid, lf_busy} -> {error, files_busy};
+        {'DOWN', Ref, process, Pid, killed} -> {error, too_big};
+        {'DOWN', Ref, process, Pid, Reason} -> {error, {failed, fmt(Reason)}}
+    after ?LF_TIMEOUT ->
+        exit(Pid, kill),
+        erlang:demonitor(Ref, [flush]),
+        {error, timeout}
+    end.
+
+lf_job_init(Fun) ->
+    case lists:any(fun(Name) -> try register(Name, self()) catch error:badarg -> false end end,
+                   ?LF_JOBS) of
+        true -> exit({lf_done, Fun()});
+        false -> exit(lf_busy)
+    end.
+
+%% #{path, base, source, level, index, gz} per file; index is null for
+%% the file being written, N for File.N.
+lf_files() ->
+    Lager = lists:append([lf_lager_files(Sink) || Sink <- lager_sinks()]),
+    Crash = case is_pid(whereis(lager_crash_log)) of
+                true ->
+                    case application:get_env(lager, crash_log) of
+                        {ok, F} when is_list(F), F =/= [] -> [{lf_lager_path(F), crash_log, null}];
+                        _ -> []
+                    end;
+                false ->
+                    []
+            end,
+    Logger = [{F, logger, L} || #{module := M, config := #{file := F}} = H <- lf_logger_handlers(),
+                               M =:= logger_std_h orelse M =:= logger_disk_log_h,
+                               is_list(F),
+                               L <- [maps:get(level, H, all)]],
+    Seen = lists:foldl(fun({F, S, L}, Acc) ->
+                               case lists:keymember(F, 1, Acc) of
+                                   true -> Acc;
+                                   false -> Acc ++ [{F, S, L}]
+                               end
+                       end, [], Lager ++ Crash ++ Logger),
+    lists:append([lf_rotations(F, S, L) || {F, S, L} <- Seen]).
+
+lf_lager_files(Sink) ->
+    case bounded(fun() -> gen_event:which_handlers(Sink) end, ?LAGER_CALL_MS) of
+        Handlers when is_list(Handlers) ->
+            [{lf_lager_path(F), lager, lf_lager_level(Sink, Id)}
+             || {lager_file_backend, F} = Id <- Handlers, is_list(F)];
+        _ ->
+            []
+    end.
+
+%% As lager's own expand_path: relative to log_root, then absolute.
+lf_lager_path(File) ->
+    Path = case {filename:pathtype(File), application:get_env(lager, log_root)} of
+               {relative, {ok, Root}} when is_list(Root) -> filename:join(Root, File);
+               _ -> File
+           end,
+    filename:absname(Path).
+
+lf_lager_level(Sink, Id) ->
+    case bounded(fun() -> gen_event:call(Sink, Id, get_loglevel, ?LAGER_CALL_MS) end,
+                 ?LAGER_CALL_MS + 500) of
+        {mask, Mask} when is_integer(Mask) -> lager_mask_level(Mask);
+        N when is_integer(N) -> lager_mask_level(lf_num_mask(N));
+        _ -> null
+    end.
+
+%% lager 2 numbers: debug 7 ... emergency 0; everything at or above.
+lf_num_mask(N) -> (1 bsl (N + 1)) - 1.
+
+lf_logger_handlers() ->
+    case catch logger:get_handler_config() of
+        L when is_list(L) -> [H || H <- L, is_map(H)];
+        _ -> []
+    end.
+
+%% The file and its rotated copies File.N and File.N.gz, in that order.
+lf_rotations(File, Source, Level) ->
+    Dir = filename:dirname(File),
+    Base = filename:basename(File),
+    Names = case file:list_dir(Dir) of
+                {ok, Ns} -> Ns;
+                _ -> []
+            end,
+    Rotated = lists:sort([{N, Gz, Name} || Name <- Names,
+                                           {N, Gz} <- [lf_rotation(Base, Name)]]),
+    Entry = fun(Path, Index, Gz) ->
+                    #{path => Path, base => File, source => Source, level => Level,
+                      index => Index, gz => Gz}
+            end,
+    Current = case filelib:is_regular(File) of
+                  true -> [Entry(File, null, false)];
+                  false -> []
+              end,
+    Current ++ [Entry(filename:join(Dir, Name), N, Gz) || {N, Gz, Name} <- Rotated].
+
+lf_rotation(Base, Name) ->
+    case lists:prefix(Base ++ ".", Name) of
+        true ->
+            Rest = lists:nthtail(length(Base) + 1, Name),
+            {Digits, Gz} = case lists:suffix(".gz", Rest) of
+                               true -> {lists:sublist(Rest, length(Rest) - 3), true};
+                               false -> {Rest, false}
+                           end,
+            case Digits =/= [] andalso lists:all(fun(C) -> C >= $0 andalso C =< $9 end, Digits) of
+                true -> {list_to_integer(Digits), Gz};
+                false -> none
+            end;
+        false ->
+            none
+    end.
+
+lf_info(#{path := Path, base := Base} = F) ->
+    {Size, Mtime} = case file:read_file_info(Path, [{time, posix}]) of
+                        {ok, Info} -> {element(2, Info), element(6, Info) * 1000};
+                        _ -> {null, null}
+                    end,
+    F#{path := lf_bin(Path), base := lf_bin(Base), size => Size, mtime => Mtime}.
+
+lf_bin(Name) ->
+    case unicode:characters_to_binary(Name) of
+        B when is_binary(B) -> B;
+        _ -> list_to_binary(io_lib:format("~w", [Name]))
+    end.
+
+lf_pread(Path, Pos, Len) ->
+    case file:open(Path, [read, raw, binary]) of
+        {ok, Fd} ->
+            try
+                case file:pread(Fd, Pos, Len) of
+                    {ok, Bin} -> {ok, Bin};
+                    eof -> {ok, <<>>};
+                    {error, _} = E -> E
+                end
+            after
+                file:close(Fd)
+            end;
+        {error, _} = E ->
+            E
+    end.
+
+lf_size(Path) ->
+    case file:read_file_info(Path) of
+        {ok, Info} -> element(2, Info);
+        _ -> 0
+    end.
+
+%% Bytes [From, From + Len) of the uncompressed data of a .gz file, and
+%% whether that reached its end.
+lf_gz_range(Path, From, Len) when From + Len > ?LF_GZ_MAX ->
+    case From >= ?LF_GZ_MAX of
+        true -> {error, gz_too_far};
+        false -> lf_gz_range(Path, From, ?LF_GZ_MAX - From)
+    end;
+lf_gz_range(Path, From, Len) ->
+    {ok, Fd} = file:open(Path, [read, raw, binary]),
+    Z = zlib:open(),
+    try
+        ok = zlib:inflateInit(Z, 31),
+        lf_gz_loop(Fd, Z, 0, From, From + Len, [])
+    after
+        catch zlib:close(Z),
+        file:close(Fd)
+    end.
+
+lf_gz_loop(Fd, Z, At, From, To, Acc) ->
+    case file:read(Fd, 65536) of
+        {ok, In} ->
+            Out = iolist_to_binary(zlib:inflate(Z, In)),
+            Next = At + byte_size(Out),
+            Keep = case Next =< From orelse At >= To of
+                       true -> <<>>;
+                       false ->
+                           S = max(From - At, 0),
+                           binary:part(Out, S, min(byte_size(Out), To - At) - S)
+                   end,
+            case Next >= To of
+                true -> {ok, iolist_to_binary(lists:reverse([Keep | Acc])), false};
+                false -> lf_gz_loop(Fd, Z, Next, From, To, [Keep | Acc])
+            end;
+        eof ->
+            {ok, iolist_to_binary(lists:reverse(Acc)), true}
+    end.
+
+%% Pages
+
+lf_read(#{gz := true, path := P}, Pos, _Dir, Bytes) ->
+    Start = case Pos of
+                N when is_integer(N) -> N;
+                _ -> 0
+            end,
+    case lf_gz_range(P, Start, Bytes) of
+        {ok, Bin, Eof} ->
+            Body = case Eof of
+                       true -> Bin;
+                       false -> lf_upto_last_nl(Bin)
+                   end,
+            Stop = Start + byte_size(Body),
+            {ok, #{size => case Eof of true -> Stop; false -> null end,
+                   start => Start, stop => Stop, gz => true,
+                   entries => lf_entries(Body, Start)}};
+        {error, _} = E ->
+            E
+    end;
+lf_read(#{path := P}, Pos, Dir, Bytes) ->
+    Size = lf_size(P),
+    case Dir of
+        back ->
+            End = case Pos of
+                      N when is_integer(N) -> min(N, Size);
+                      _ -> Size
+                  end,
+            Start0 = max(0, End - Bytes),
+            {ok, Bin} = lf_pread(P, Start0, End - Start0),
+            {Start, Body} = case Start0 of
+                                0 -> {0, Bin};
+                                _ -> lf_from_first_nl(Start0, Bin)
+                            end,
+            {ok, #{size => Size, start => Start, stop => End, gz => false,
+                   entries => lf_entries(Body, Start)}};
+        fwd ->
+            Start = case Pos of
+                        N when is_integer(N) -> lf_entry_start(P, min(N, Size));
+                        _ -> 0
+                    end,
+            {ok, Bin} = lf_pread(P, Start, min(Bytes, Size - Start)),
+            Body = case Start + byte_size(Bin) >= Size of
+                       true -> Bin;
+                       false -> lf_upto_last_nl(Bin)
+                   end,
+            {ok, #{size => Size, start => Start, stop => Start + byte_size(Body), gz => false,
+                   entries => lf_entries(Body, Start)}}
+    end.
+
+%% A page that would start inside a multi-line entry (a stack trace
+%% printed by lager, a report) starts at that entry's first line instead,
+%% looking back at most LF_PROBE bytes.
+lf_entry_start(_P, 0) ->
+    0;
+lf_entry_start(P, Pos) ->
+    {ok, Re} = lf_header_re(),
+    {ok, Line} = lf_pread(P, Pos, 512),
+    case lf_header(Line, Re) of
+        {ok, _} ->
+            Pos;
+        none ->
+            From = max(0, Pos - ?LF_PROBE),
+            {ok, Bin} = lf_pread(P, From, Pos - From),
+            {Start, Body} = case From of
+                                0 -> {0, Bin};
+                                _ -> lf_from_first_nl(From, Bin)
+                            end,
+            case [At || {At, L} <- lf_lines(Body, Start), lf_header(L, Re) =/= none] of
+                [] -> Pos;
+                Heads -> lists:last(Heads)
+            end
+    end.
+
+%% Drops a partial first line (unless the chunk is one long line).
+lf_from_first_nl(Start, Bin) ->
+    case binary:match(Bin, <<"\n">>) of
+        {I, 1} when I + 1 < byte_size(Bin) ->
+            {Start + I + 1, binary:part(Bin, I + 1, byte_size(Bin) - I - 1)};
+        _ ->
+            {Start, Bin}
+    end.
+
+lf_upto_last_nl(Bin) ->
+    case binary:matches(Bin, <<"\n">>) of
+        [] -> Bin;
+        Ms -> {I, 1} = lists:last(Ms), binary:part(Bin, 0, I + 1)
+    end.
+
+%% Lines with their positions; a line that does not start with a
+%% timestamp belongs to the entry above it (reports, stack traces).
+lf_lines(Bin, Base) ->
+    lf_lines(binary:split(Bin, <<"\n">>, [global]), Base, []).
+
+lf_lines([], _Pos, Acc) -> lists:reverse(Acc);
+lf_lines([<<>>], _Pos, Acc) -> lists:reverse(Acc);
+lf_lines([L | Rest], Pos, Acc) -> lf_lines(Rest, Pos + byte_size(L) + 1, [{Pos, L} | Acc]).
+
+lf_entries(Bin, Base) ->
+    {ok, Re} = lf_header_re(),
+    Groups = lists:foldl(fun({Pos, Line}, Acc) ->
+                                 case lf_header(Line, Re) of
+                                     {ok, H} -> [{Pos, H, [Line]} | Acc];
+                                     none ->
+                                         case Acc of
+                                             [{P, H, Ls} | Rest] -> [{P, H, [Line | Ls]} | Rest];
+                                             [] -> [{Pos, none, [Line]}]
+                                         end
+                                 end
+                         end, [], lf_lines(Bin, Base)),
+    [lf_entry(Pos, H, lists:reverse(Ls)) || {Pos, H, Ls} <- lists:reverse(Groups)].
+
+lf_entry(Pos, Header, Lines) ->
+    Text = lf_text(iolist_to_binary(lists:join(<<"\n">>, Lines))),
+    case Header of
+        none ->
+            #{pos => Pos, t => null, level => null, pid => null, module => null, cont => true,
+              text => Text};
+        #{t := T, level := L, pid := P, module := M} ->
+            #{pos => Pos, t => T, level => L, pid => P, module => M, cont => false,
+              text => Text}
+    end.
+
+%% lager: 2026-10-27 11:32:06.771 [info] <0.89.0>@mod:fun:12 message
+%% logger: 2026-10-27T11:32:06.771397+08:00 info: message
+lf_header_re() ->
+    re:compile("^(\\d{4}-\\d\\d-\\d\\d[ T]\\d\\d:\\d\\d:\\d\\d(?:[.,]\\d+)?)\\S*\\s+"
+               "\\[?(debug|info|notice|warning|error|critical|alert|emergency)\\]?:?"
+               "(?:\\s+(<[0-9.]+>)(?:@([a-zA-Z0-9_]+)[^\\s]*)?)?",
+               []).
+
+lf_header(Line, Re) ->
+    case re:run(Line, Re, [{capture, all, binary}]) of
+        {match, [_, T, L | More]} ->
+            {Pid, Mod} = case More of
+                             [P, M] -> {lf_null(P), lf_null(M)};
+                             [P] -> {lf_null(P), null};
+                             [] -> {null, null}
+                         end,
+            {ok, #{t => binary:replace(T, <<"T">>, <<" ">>), level => binary_to_atom(L, latin1),
+                   pid => Pid, module => Mod}};
+        _ ->
+            none
+    end.
+
+lf_null(<<>>) -> null;
+lf_null(B) -> B.
+
+%% Text as shown: UTF-8, also when it was written as UTF-8 bytes taken
+%% for latin1 characters (one char per byte, then encoded again).
+lf_text(Bin) ->
+    Chars = case unicode:characters_to_list(Bin, utf8) of
+                L when is_list(L) -> lf_undouble(L);
+                _ -> binary_to_list(Bin)
+            end,
+    clip(Chars, ?LF_ENTRY_CHARS).
+
+lf_undouble(Chars) ->
+    case lists:all(fun(C) -> C < 256 end, Chars) andalso lists:any(fun(C) -> C > 127 end, Chars) of
+        true ->
+            case unicode:characters_to_list(list_to_binary(Chars), utf8) of
+                L when is_list(L) -> L;
+                _ -> Chars
+            end;
+        false ->
+            Chars
+    end.
+
+%% Seeking a time: halves [Lo, Hi) while it is longer than a probe, then
+%% looks for the first entry at or after Time from Lo.
+lf_seek(#{path := P}, Time) ->
+    {ok, Re} = lf_header_re(),
+    Size = lf_size(P),
+    Pos = lf_seek(P, Re, Time, 0, Size),
+    {ok, #{pos => Pos, size => Size}}.
+
+lf_seek(P, Re, Time, Lo, Hi) when Hi - Lo > ?LF_PROBE ->
+    Mid = (Lo + Hi) div 2,
+    case lf_first_time(P, Re, Mid) of
+        {T, _At} when T < Time -> lf_seek(P, Re, Time, Mid, Hi);
+        {_T, _At} -> lf_seek(P, Re, Time, Lo, Mid);
+        none -> lf_seek(P, Re, Time, Mid, Hi)
+    end;
+lf_seek(P, Re, Time, Lo, Hi) ->
+    {ok, Bin} = lf_pread(P, Lo, Hi - Lo + ?LF_PROBE),
+    {Start, Body} = case Lo of
+                        0 -> {0, Bin};
+                        _ -> lf_from_first_nl(Lo, Bin)
+                    end,
+    Found = [Pos || {Pos, Line} <- lf_lines(Body, Start),
+                    {ok, #{t := T}} <- [lf_header(Line, Re)], T >= Time],
+    case Found of
+        [Pos | _] -> Pos;
+        [] -> min(Hi, lf_size(P))
+    end.
+
+lf_first_time(P, Re, At) ->
+    {ok, Bin} = lf_pread(P, At, ?LF_PROBE),
+    {Start, Body} = lf_from_first_nl(At, Bin),
+    case [{T, Pos} || {Pos, Line} <- lf_lines(Body, Start),
+                      {ok, #{t := T}} <- [lf_header(Line, Re)]] of
+        [First | _] -> First;
+        [] -> none
+    end.
+
+%% Search
+
+lf_search(File, Pos, Dir, Text, MinLevel) ->
+    {ok, Re} = lf_header_re(),
+    %% Also finds the text in files that hold it encoded twice.
+    Twice = unicode:characters_to_binary(binary_to_list(Text)),
+    Pattern = binary:compile_pattern(lists:usort([Text, Twice])),
+    MaxSev = case MinLevel of
+                 null -> ?SEV_ALL;
+                 L -> severity(L)
+             end,
+    Deadline = now_ms() + ?LF_SCAN_MS,
+    case File of
+        #{gz := true, path := P} ->
+            Start = case Pos of
+                        N when is_integer(N) -> N;
+                        _ -> 0
+                    end,
+            case lf_gz_range(P, Start, min(?LF_SCAN, ?LF_GZ_MAX)) of
+                {ok, Bin, Eof} ->
+                    Body = case Eof of true -> Bin; false -> lf_upto_last_nl(Bin) end,
+                    Hits = lf_hits(Body, Start, Pattern, Re, MaxSev, ?LF_HITS),
+                    Next = case Eof orelse Start + byte_size(Body) >= ?LF_GZ_MAX of
+                               true -> null;
+                               false -> Start + byte_size(Body)
+                           end,
+                    {ok, #{hits => Hits, next => Next, scanned => byte_size(Body)}};
+                {error, _} = E ->
+                    E
+            end;
+        #{path := P} ->
+            Size = lf_size(P),
+            Start = case {Pos, Dir} of
+                        {N, _} when is_integer(N) -> min(N, Size);
+                        {_, back} -> Size;
+                        {_, fwd} -> 0
+                    end,
+            lf_scan(P, Size, Start, Dir, Pattern, Re, MaxSev, Deadline, 0, [])
+    end.
+
+lf_scan(_P, _Size, At, _Dir, _Pat, _Re, _Sev, _Deadline, Scanned, Hits)
+  when length(Hits) >= ?LF_HITS ->
+    {ok, #{hits => lists:sublist(Hits, ?LF_HITS), next => At, scanned => Scanned}};
+lf_scan(P, Size, At, Dir, Pat, Re, Sev, Deadline, Scanned, Hits) ->
+    Done = case Dir of
+               fwd -> At >= Size;
+               back -> At =< 0
+           end,
+    case Done of
+        true ->
+            {ok, #{hits => Hits, next => null, scanned => Scanned}};
+        false ->
+            case Scanned + ?LF_CHUNK > ?LF_SCAN orelse now_ms() > Deadline of
+                true ->
+                    {ok, #{hits => Hits, next => At, scanned => Scanned}};
+                false ->
+                    {From, Body, Next} =
+                        case Dir of
+                            fwd ->
+                                {ok, B} = lf_pread(P, At, min(?LF_CHUNK, Size - At)),
+                                B1 = case At + byte_size(B) >= Size of
+                                         true -> B;
+                                         false -> lf_upto_last_nl(B)
+                                     end,
+                                {At, B1, At + byte_size(B1)};
+                            back ->
+                                S0 = max(0, At - ?LF_CHUNK),
+                                {ok, B} = lf_pread(P, S0, At - S0),
+                                {S, B1} = case S0 of
+                                              0 -> {0, B};
+                                              _ -> lf_from_first_nl(S0, B)
+                                          end,
+                                {S, B1, S}
+                        end,
+                    Left = ?LF_HITS - length(Hits),
+                    Found = lf_hits(Body, From, Pat, Re, Sev, Left),
+                    Hits1 = case Dir of
+                                fwd -> Hits ++ Found;
+                                back -> Hits ++ lists:reverse(Found)
+                            end,
+                    lf_scan(P, Size, Next, Dir, Pat, Re, Sev, Deadline,
+                            Scanned + byte_size(Body), Hits1)
+            end
+    end.
+
+lf_hits(Body, From, Pat, Re, MaxSev, Max) ->
+    case binary:match(Body, Pat) of
+        nomatch ->
+            [];
+        _ ->
+            Lines = [{Pos, L} || {Pos, L} <- lf_lines(Body, From), binary:match(L, Pat) =/= nomatch],
+            Hits = [E || {Pos, L} <- Lines,
+                         E <- [lf_entry(Pos, case lf_header(L, Re) of
+                                                 {ok, H} -> H;
+                                                 none -> none
+                                             end, [L])],
+                         lf_level_ok(E, MaxSev)],
+            lists:sublist(Hits, Max)
+    end.
+
+lf_level_ok(_E, ?SEV_ALL) -> true;
+lf_level_ok(#{level := null}, _MaxSev) -> false;
+lf_level_ok(#{level := L}, MaxSev) -> severity(L) =< MaxSev.
 
 %%--------------------------------------------------------------------
 %% Memory allocators

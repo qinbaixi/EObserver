@@ -9,6 +9,8 @@
 -export([request/2, collect/2, collect/3]).
 
 -define(TIMEOUT, 10000).
+%% The agent gives up on a log file call after 10 s.
+-define(LF_TIMEOUT, 15000).
 
 %% Requests that change the observed node; refused in read-only mode.
 -define(MUTATING, [<<"process.kill">>, <<"process.send">>, <<"port.close">>,
@@ -153,6 +155,21 @@ handle(<<"recon.scheduler_usage">>, #{<<"node">> := Node} = Params) ->
     Seconds = max(1, min(30, int(maps:get(<<"seconds">>, Params, 5), 5))),
     unwrap(eobs_node:call(to_node(Node), recon_scheduler_usage, [node(), Seconds],
                           Seconds * 1000 + 25000));
+%% the node's own log files: read only, every read bounded by the agent
+handle(<<"logfile.list">>, #{<<"node">> := Node}) ->
+    unwrap(eobs_node:call(to_node(Node), logfile_list, [], ?LF_TIMEOUT));
+handle(<<"logfile.read">>, #{<<"node">> := Node, <<"path">> := Path} = Params) when is_binary(Path) ->
+    unwrap(eobs_node:call(to_node(Node), logfile_read,
+                          [Path, lf_pos(Params), lf_dir(Params), 262144], ?LF_TIMEOUT));
+handle(<<"logfile.seek">>, #{<<"node">> := Node, <<"path">> := Path, <<"time">> := Time})
+  when is_binary(Path), is_binary(Time) ->
+    unwrap(eobs_node:call(to_node(Node), logfile_seek, [Path, Time], ?LF_TIMEOUT));
+handle(<<"logfile.search">>, #{<<"node">> := Node, <<"path">> := Path, <<"text">> := Text} = Params)
+  when is_binary(Path), is_binary(Text), Text =/= <<>> ->
+    Level = enum(maps:get(<<"level">>, Params, null),
+                 [emergency, alert, critical, error, warning, notice, info, debug], null),
+    unwrap(eobs_node:call(to_node(Node), logfile_search,
+                          [Path, lf_pos(Params), lf_dir(Params), Text, Level], ?LF_TIMEOUT));
 %% crash dumps: read-only, parsed in the tool itself (never on a node)
 handle(<<"dump.browse">>, Params) ->
     eobs_dump_files:browse(maps:get(<<"path">>, Params, null));
@@ -381,6 +398,15 @@ cluster() ->
                                  end,
                   error => case R of {ok, _} -> null; _ -> eobs_json:to_json(R) end}
                 || {N, R} <- Infos]}.
+
+lf_pos(Params) ->
+    case maps:get(<<"pos">>, Params, null) of
+        N when is_integer(N), N >= 0 -> N;
+        _ -> eof
+    end.
+
+lf_dir(Params) ->
+    enum(maps:get(<<"dir">>, Params, <<"back">>), [back, fwd], back).
 
 unwrap({ok, ok}) -> ok;
 unwrap({ok, {ok, _} = Ok}) -> Ok;

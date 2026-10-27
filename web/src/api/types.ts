@@ -553,6 +553,8 @@ export interface LogLine {
   level: LogLevel
   module: string | null
   pid: string | null
+  /** logger: OTP logger; lager: one of lager's sinks */
+  source?: 'logger' | 'lager'
   text: string
 }
 
@@ -600,6 +602,10 @@ export interface LogsData {
   started: number
   now: number
   primary_level: string | null
+  /** Whether the agent also collects from lager. */
+  lager?: boolean
+  /** The least severe level lager lets through, when it collects from lager. */
+  lager_level?: string | null
   received: number
   lost: number
   dropped: number
@@ -609,3 +615,44 @@ export interface LogsData {
   crashes: CrashGroup[]
   restarts: RestartGroup[]
 }
+
+/** One of the node's own log files (logfile.list). */
+export interface LogFile {
+  path: string
+  /** The file being written; rotated copies share it. */
+  base: string
+  source: 'lager' | 'crash_log' | 'logger'
+  level: string | null
+  /** null for the file being written, N for base.N */
+  index: number | null
+  gz: boolean
+  size: number | null
+  mtime: number | null
+}
+
+export interface LogFileEntry {
+  pos: number
+  /** Timestamp as written in the file, e.g. 2026-10-27 11:32:06.771 */
+  t: string | null
+  level: LogLevel | null
+  pid: string | null
+  module: string | null
+  /** Continues the entry above it (no timestamp of its own). */
+  cont: boolean
+  text: string
+}
+
+export interface LogFilePage {
+  size: number | null
+  start: number
+  stop: number
+  gz: boolean
+  entries: LogFileEntry[]
+}
+
+export interface LogFileSearch {
+  hits: LogFileEntry[]
+  next: number | null
+  scanned: number
+}
+

@@ -121,4 +121,44 @@ check() ->
         eobs_agent:logs_events(node(), Cursor),
     ok = eobs_agent:logs_stop(),
     false = lists:member(eobs_agent_logs, logger:get_handler_ids()),
+    lager_smoke(),
+    logfile_smoke(),
+    ok.
+
+%% A logger file handler's file can be listed, read, searched and nothing
+%% else can be read.
+logfile_smoke() ->
+    File = filename:absname("eobs_smoke.log"),
+    _ = file:delete(File),
+    ok = logger:add_handler(eobs_smoke_file, logger_std_h,
+                            #{level => notice, config => #{file => File}}),
+    logger:notice("smoke file line ~p", [1]),
+    timer:sleep(500),
+    Path = list_to_binary(File),
+    {ok, Files} = eobs_agent:logfile_list(),
+    [#{source := logger, index := null}] = [F || #{path := P} = F <- Files, P =:= Path],
+    {ok, #{entries := Entries}} = eobs_agent:logfile_read(Path, eof, back, 65536),
+    [#{level := notice}] = [E || #{text := T} = E <- Entries, binary:match(T, <<"smoke file line 1">>) =/= nomatch],
+    {ok, #{hits := [_ | _]}} = eobs_agent:logfile_search(Path, eof, back, <<"smoke file">>, null),
+    {error, not_a_log_file} = eobs_agent:logfile_read(<<"/etc/hosts">>, 0, fwd, 4096),
+    ok = logger:remove_handler(eobs_smoke_file),
+    ok.
+
+%% A stand-in for lager's default sink: the agent joins it as a backend,
+%% keeps lager's level alone and leaves when collecting stops.
+lager_smoke() ->
+    {ok, Sink} = gen_event:start({local, lager_event}),
+    {ok, #{status := running, lager := true, cursor := Cursor}} = eobs_agent:logs_events(node(), null),
+    [{eobs_agent, eobs_agent_logs}] = gen_event:which_handlers(lager_event),
+    {mask, 0} = gen_event:call(lager_event, {eobs_agent, eobs_agent_logs}, get_loglevel),
+    Bytes = binary_to_list(<<"lager ", (unicode:characters_to_binary([20013, 25991]))/binary>>),
+    gen_event:notify(lager_event, {log, {lager_msg, [], [{pid, pid_to_list(self())}, {module, agent_smoke}],
+                                         debug, {"", ""}, os:timestamp(), Bytes}}),
+    timer:sleep(300),
+    Text = unicode:characters_to_binary([$l, $a, $g, $e, $r, $\s, 20013, 25991]),
+    {ok, #{logs := [#{text := Text, level := debug, module := agent_smoke, source := lager}]}} =
+        eobs_agent:logs_events(node(), Cursor),
+    ok = eobs_agent:logs_stop(),
+    [] = gen_event:which_handlers(lager_event),
+    gen_event:stop(Sink),
     ok.

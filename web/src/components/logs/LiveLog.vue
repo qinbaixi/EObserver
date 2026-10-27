@@ -63,6 +63,12 @@ const columns = computed<DataTableColumns<LogLine>>(() => [
     render: (l) => h('span', { class: 'mono muted nowrap' }, formatTime(l.t)),
   },
   { key: 'level', title: t('logs.live.min_level'), width: 100, render: (l) => levelTag(l.level) },
+  ...(logs.status?.lager
+    ? [{
+        key: 'source', title: t('logs.live.source'), width: 76,
+        render: (l: LogLine) => h('span', { class: 'mono muted' }, l.source ?? ''),
+      }]
+    : []),
   {
     key: 'module', title: t('logs.live.module'), width: 160, ellipsis: { tooltip: true },
     render: (l) => h('span', { class: 'mono' }, l.module ?? ''),
@@ -84,7 +90,7 @@ watch(() => filtered.value.length, async () => {
 
 function exportText() {
   const text = filtered.value.map((l) =>
-    `${formatTime(l.t)} [${l.level}] ${l.module ?? '-'} ${l.pid ?? ''}\n${dedent(l.text)}`).join('\n')
+    `${formatTime(l.t)} [${l.level}]${l.source === 'lager' ? ' (lager)' : ''} ${l.module ?? '-'} ${l.pid ?? ''}\n${dedent(l.text)}`).join('\n')
   const blob = new Blob([text + '\n'], { type: 'text/plain;charset=utf-8' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
@@ -154,6 +160,7 @@ const showDetail = computed({
       <template #header>
         <NSpace align="center" :size="8">
           <component :is="levelTag(shown.level)" />
+          <NTag v-if="shown.source === 'lager'" size="small" :bordered="false">lager</NTag>
           <span v-if="shown.module" class="mono">{{ shown.module }}</span>
           <span v-if="shown.pid" class="mono">{{ shown.pid }}</span>
           <NText depth="3" class="mono">{{ formatTime(shown.t) }}</NText>

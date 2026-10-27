@@ -3,7 +3,8 @@
 -include_lib("stdlib/include/assert.hrl").
 
 -export([busy_loop/1, sink/0, hold/1, grow/1, hold_binaries/1, hold_many_binaries/1,
-         start_crash_sup/0, log_flood/2, call_kinds/3, drop_binaries/2, tcp_pair/0]).
+         start_crash_sup/0, log_flood/2, call_kinds/3, drop_binaries/2, tcp_pair/0,
+         write_log/3, write_big_log/2]).
 %% A tiny gen_server for the message trace test, run on the peer; init/1
 %% also serves as the supervisor of the logs test.
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
@@ -18,7 +19,8 @@
          message_trace/1, message_trace_limits/1,
          trace_call_stats/1, trace_call_stats_limits/1,
          diagnosis/1, diagnosis_many_processes/1,
-         logs_and_crashes/1, logs_flood/1, logs_removed_with_tool/1,
+         logs_and_crashes/1, logs_flood/1, logs_removed_with_tool/1, logs_lager/1,
+         log_files/1, log_files_big/1,
          recon_toolbox/1, recon_many_processes/1]).
 
 all() ->
@@ -29,7 +31,8 @@ all() ->
      http_password_and_origin, local_discovery, saved_cookies, saved_nodes,
      message_trace, message_trace_limits, trace_call_stats, trace_call_stats_limits,
      diagnosis, diagnosis_many_processes,
-     logs_and_crashes, logs_flood, logs_removed_with_tool,
+     logs_and_crashes, logs_flood, logs_removed_with_tool, logs_lager,
+     log_files, log_files_big,
      recon_toolbox, recon_many_processes].
 
 init_per_suite(Config) ->
@@ -1013,6 +1016,288 @@ logs_removed_with_tool(Config) ->
     ?assertNot(peer:call(Peer, erlang, is_process_alive, [Collector])),
     %% The node keeps logging without it.
     ok = peer:call(Peer, logger, error, ["after the tool left", []]).
+
+%% A node that logs with lager. lager itself is not a dependency, so the
+%% target gets what the agent relies on: the default sink (a gen_event
+%% manager taking {log, #lager_msg{}}), lager's level in persistent_term,
+%% and error_logger_lager_h, through which lager takes over error_logger
+%% and so logger events.
+logs_lager(Config) ->
+    Node = ?config(target, Config),
+    Peer = ?config(peer, Config),
+    {ok, Mod, Bin} = compile:forms(scan_forms(lager_redirect_source()), [binary]),
+    {module, Mod} = peer:call(Peer, code, load_binary, [Mod, "error_logger_lager_h.erl", Bin]),
+    ok = peer:call(Peer, erlang, apply,
+                   [fun() ->
+                            {ok, Sink} = gen_event:start({local, lager_event}),
+                            unlink(Sink),
+                            %% info and up
+                            persistent_term:put({lager_config, {lager_event, loglevel}}, {127, []}),
+                            _ = error_logger:start(),
+                            ok = logger:add_handler(error_logger, error_logger,
+                                                    #{level => info, filter_default => log}),
+                            ok = logger:remove_handler(default),
+                            ok = gen_event:add_handler(error_logger, error_logger_lager_h, [])
+                    end, []]),
+    connect(Node),
+    {#{status := running, lager := true, lager_level := info}, S0} = logs_collect(Node, undefined),
+    Ours = {eobs_agent, eobs_agent_logs},
+    ?assert(lists:member(Ours, peer:call(Peer, gen_event, which_handlers, [lager_event]))),
+    %% Recomputing lager's level as lager does keeps it: our mask is empty.
+    {mask, 0} = peer:call(Peer, gen_event, call, [lager_event, Ours, get_loglevel]),
+    Notify = fun(Level, Meta, Text) ->
+                     Msg = {lager_msg, [], Meta, Level, {"", ""}, os:timestamp(), Text},
+                     ok = peer:call(Peer, gen_event, notify, [lager_event, {log, Msg}])
+             end,
+    Notify(info, [{module, eobs_ct}, {pid, "<0.1.0>"}], "lager info 1"),
+    Notify(error, [{pid, self()}], ["lager ", <<"error">>]),
+    %% UTF-8 bytes formatted with ~s: decoded for display.
+    Notify(info, [], binary_to_list(<<"lager ", (unicode:characters_to_binary([20013, 25991]))/binary>>)),
+    %% error_logger, which lager redirects: shown once, from lager. A
+    %% logger call is not passed on to lager: shown from logger.
+    peer:call(Peer, error_logger, error_msg, ["error_logger error", []]),
+    peer:call(Peer, logger, error, ["logger error", []]),
+    peer:call(Peer, erlang, spawn, [erlang, error, [lager_crash]]),
+    Texts = fun(Logs) -> [T || #{text := T} <- Logs] end,
+    Done = fun({Logs, Crashes, _}) ->
+                   lists:member(<<"error_logger error">>, Texts(Logs))
+                       andalso lists:member(<<"logger error">>, Texts(Logs))
+                       andalso map_size(Crashes) =:= 1
+           end,
+    {{Logs, Crashes, _}, _} = logs_until(Node, S0, {[], #{}, #{}}, Done),
+    [#{level := info, module := eobs_ct, pid := <<"<0.1.0>">>, source := lager}] =
+        [L || #{text := <<"lager info 1">>} = L <- Logs],
+    [#{level := error, source := lager}] = [L || #{text := <<"lager error">>} = L <- Logs],
+    ?assert(lists:member(unicode:characters_to_binary([$l, $a, $g, $e, $r, $\s, 20013, 25991]), Texts(Logs))),
+    [#{source := lager}] = [L || #{text := <<"error_logger error">>} = L <- Logs],
+    [#{source := logger}] = [L || #{text := <<"logger error">>} = L <- Logs],
+    [#{source := lager}] = [L || #{text := <<"Error in process", _/binary>>} = L <- Logs],
+    [#{reason := <<"lager_crash">>}] = maps:values(Crashes),
+    %% Disconnecting takes the backend out of lager again.
+    ok = eobs_nodes:disconnect(Node),
+    ?assertEqual([], peer:call(Peer, gen_event, which_handlers, [lager_event])),
+    ok = peer:call(Peer, logger, error, ["after the tool left", []]).
+
+%% The node's own log files: lager's file backends (found through their
+%% handler ids in lager's sink, relative to log_root), the rotated copies
+%% next to them, and logger's file handlers. Nothing else can be read.
+log_files(Config) ->
+    Node = ?config(target, Config),
+    Peer = ?config(peer, Config),
+    Root = filename:join(?config(priv_dir, Config), "lager_logs"),
+    Debug = filename:join([Root, "gm", "debug.log"]),
+    Otp = filename:join([Root, "otp.log"]),
+    ok = peer:call(Peer, ?MODULE, write_log, [Debug, {{2026, 10, 27}, {0, 0, 0}}, 20000]),
+    ok = peer:call(Peer, ?MODULE, write_log, [Debug ++ ".0", {{2026, 10, 26}, {0, 0, 0}}, 100]),
+    ok = file:write_file(Debug ++ ".1.gz",
+                         zlib:gzip(<<"2026-10-25 10:00:00.000 [info] <0.1.0> older, compressed\n">>)),
+    ok = file:write_file(filename:join([Root, "gm", "other.log"]), <<"not configured\n">>),
+    {ok, Mod, Bin} = compile:forms(scan_forms(lager_file_backend_source()), [binary]),
+    {module, Mod} = peer:call(Peer, code, load_binary, [Mod, "lager_file_backend.erl", Bin]),
+    ok = peer:call(Peer, erlang, apply,
+                   [fun() ->
+                            {ok, Sink} = gen_event:start({local, lager_event}),
+                            unlink(Sink),
+                            application:set_env(lager, log_root, Root),
+                            ok = gen_event:add_handler(lager_event, {lager_file_backend, "gm/debug.log"}, []),
+                            ok = logger:add_handler(eobs_ct_file, logger_std_h,
+                                                    #{level => notice, config => #{file => Otp}}),
+                            logger:notice("otp file line")
+                    end, []]),
+    connect(Node),
+    NodeBin = atom_to_binary(Node, utf8),
+    Req = fun(Method, Params) -> eobs_api:request(Method, Params#{<<"node">> => NodeBin}) end,
+    {ok, Files} = Req(<<"logfile.list">>, #{}),
+    ?assert(is_binary(eobs_json:encode(Files))),
+    DebugBin = list_to_binary(Debug),
+    [#{path := DebugBin, source := lager, level := info, index := null, gz := false, size := Size},
+     #{index := 0, gz := false}, #{index := 1, gz := true}] =
+        [F || #{base := B} = F <- Files, B =:= DebugBin],
+    ?assert(lists:any(fun(#{path := P, source := logger}) -> P =:= list_to_binary(Otp);
+                         (_) -> false
+                      end, Files)),
+    ?assertEqual([], [P || #{path := P} <- Files, binary:match(P, <<"other.log">>) =/= nomatch]),
+    %% The last page, then the one before it: they join without a gap.
+    {ok, #{size := Size, stop := Size, start := S1, entries := Last}} =
+        Req(<<"logfile.read">>, #{<<"path">> => DebugBin, <<"pos">> => null}),
+    #{level := error, module := null, cont := false, text := <<"2026-10-27 23:59", _/binary>> = Tail} = lists:last(Last),
+    ?assertMatch({match, _}, re:run(Tail, "stack line 2")),
+    {ok, #{stop := S1, start := S0, entries := Before}} =
+        Req(<<"logfile.read">>, #{<<"path">> => DebugBin, <<"pos">> => S1, <<"dir">> => <<"back">>}),
+    ?assert(S0 < S1),
+    #{pos := LastBefore} = lists:last(Before),
+    ?assert(LastBefore < S1),
+    %% UTF-8 text, also when written encoded twice.
+    ?assert(lists:any(fun(#{text := T}) -> binary:match(T, <<"玩家"/utf8>>) =/= nomatch end, Last)),
+    %% Seeking a time lands on the first entry at or after it.
+    {ok, #{pos := At}} = Req(<<"logfile.seek">>, #{<<"path">> => DebugBin, <<"time">> => <<"2026-10-27 12:00">>}),
+    {ok, #{entries := [#{t := <<"2026-10-27 12:00:0", _/binary>>, pos := At} | _]}} =
+        Req(<<"logfile.read">>, #{<<"path">> => DebugBin, <<"pos">> => At, <<"dir">> => <<"fwd">>}),
+    %% A page asked to start inside a multi-line entry starts at its first line.
+    #{pos := CrashPos} = lists:last(Last),
+    {ok, #{start := CrashPos, entries := [#{pos := CrashPos, text := Tail}]}} =
+        Req(<<"logfile.read">>, #{<<"path">> => DebugBin, <<"pos">> => Size - 10, <<"dir">> => <<"fwd">>}),
+    %% Searching backwards from the end, with a level.
+    {ok, #{hits := [#{text := Hit, level := error} | _] = Hits}} =
+        Req(<<"logfile.search">>, #{<<"path">> => DebugBin, <<"pos">> => null, <<"dir">> => <<"back">>,
+                                   <<"text">> => <<"terminated">>, <<"level">> => <<"error">>}),
+    ?assertMatch({match, _}, re:run(Hit, "terminated")),
+    ?assertEqual(lists:reverse(lists:sort([P || #{pos := P} <- Hits])), [P || #{pos := P} <- Hits]),
+    %% A compressed copy, read from its start.
+    {ok, #{gz := true, entries := [#{text := <<"2026-10-25 10:00:00.000 [info] <0.1.0> older, compressed">>}]}} =
+        Req(<<"logfile.read">>, #{<<"path">> => list_to_binary(Debug ++ ".1.gz"), <<"pos">> => 0,
+                                  <<"dir">> => <<"fwd">>}),
+    {error, gz_not_seekable} =
+        Req(<<"logfile.seek">>, #{<<"path">> => list_to_binary(Debug ++ ".1.gz"), <<"time">> => <<"2026">>}),
+    %% Only files of the node's log setup.
+    [{error, not_a_log_file} = Req(M, #{<<"path">> => P, <<"time">> => <<"2026">>, <<"text">> => <<"x">>})
+     || M <- [<<"logfile.read">>, <<"logfile.seek">>, <<"logfile.search">>],
+        P <- [<<"/etc/passwd">>, list_to_binary(filename:join([Root, "gm", "other.log"])),
+              list_to_binary(filename:join([Root, "gm", "..", "gm", "debug.log"]))]],
+    %% Download, through the tool's HTTP server.
+    {_, Port} = ranch:get_addr(eobs_http_listener),
+    Query = uri_string:compose_query([{"node", atom_to_list(Node)}, {"path", Debug}]),
+    {200, Resp} = http_get(Port, "/download/logfile?" ++ Query, []),
+    ?assertMatch({match, _}, re:run(Resp, "content-disposition: attachment")),
+    {400, _} = http_get(Port, "/download/logfile?" ++ uri_string:compose_query(
+                                                         [{"node", atom_to_list(Node)}, {"path", "/etc/passwd"}]), []),
+    %% Nothing stays behind on the node.
+    ?assertEqual([undefined, undefined],
+                 [peer:call(Peer, erlang, whereis, [N]) || N <- [eobs_agent_file_1, eobs_agent_file_2]]).
+
+%% A big file: reading, seeking and searching keep the node's memory and
+%% responsiveness in check, and more than two at once are refused.
+log_files_big(Config) ->
+    Node = ?config(target, Config),
+    Peer = ?config(peer, Config),
+    MB = list_to_integer(os:getenv("EOBS_BIG_LOG_MB", "1024")),
+    File = filename:join(?config(priv_dir, Config), "big.log"),
+    ok = peer:call(Peer, ?MODULE, write_big_log, [File, MB], 600000),
+    ok = peer:call(Peer, erlang, apply,
+                   [fun() -> ok = logger:add_handler(eobs_ct_big, logger_std_h,
+                                                     #{level => emergency, config => #{file => File}})
+                    end, []]),
+    connect(Node),
+    NodeBin = atom_to_binary(Node, utf8),
+    Path = list_to_binary(File),
+    Req = fun(Method, Params) ->
+                  eobs_api:request(Method, Params#{<<"node">> => NodeBin, <<"path">> => Path})
+          end,
+    garbage_collect_all(Peer),
+    Before = peer:call(Peer, erlang, memory, [total]),
+    Self = self(),
+    Watcher = spawn_link(fun() -> watch_node(Peer, Self, []) end),
+    {ok, #{size := Size}} = Req(<<"logfile.read">>, #{<<"pos">> => null}),
+    ?assert(Size >= MB * 1048576 div 2),
+    {T, {ok, #{pos := At}}} = timer:tc(fun() -> Req(<<"logfile.seek">>, #{<<"time">> => <<"2026-10-27 12:00">>}) end),
+    {ok, #{entries := [#{t := <<"2026-10-27 12:00", _/binary>>} | _]}} =
+        Req(<<"logfile.read">>, #{<<"pos">> => At, <<"dir">> => <<"fwd">>}),
+    %% Text that is not there: each call stops at its scan limit.
+    {ok, #{hits := [], next := Next, scanned := Scanned}} =
+        Req(<<"logfile.search">>, #{<<"pos">> => 0, <<"dir">> => <<"fwd">>, <<"text">> => <<"nowhere">>}),
+    ?assert(is_integer(Next)),
+    ?assert(Scanned =< 64 * 1048576),
+    %% Four at once: two run, the others are refused.
+    Results = [receive {search, R} -> R end
+               || _ <- [spawn(fun() ->
+                                     Self ! {search, Req(<<"logfile.search">>,
+                                                         #{<<"pos">> => 0, <<"dir">> => <<"fwd">>,
+                                                           <<"text">> => <<"nowhere">>})}
+                             end) || _ <- [1, 2, 3, 4]]],
+    ?assert(length([ok || {ok, _} <- Results]) >= 1),
+    ?assert(length([busy || {error, files_busy} <- Results]) >= 1),
+    Watcher ! {stop, self()},
+    Samples = receive {samples, S} -> S end,
+    garbage_collect_all(Peer),
+    After = peer:call(Peer, erlang, memory, [total]),
+    MaxMem = lists:max([M || {_, M} <- Samples]),
+    MaxPing = lists:max([P || {P, _} <- Samples]),
+    ct:pal("~p MB file: seek ~p ms; memory before ~p, peak ~p, after ~p; slowest ping ~p us",
+           [Size div 1048576, T div 1000, Before, MaxMem, After, MaxPing]),
+    ?assert(MaxMem - Before < 100 * 1024 * 1024),
+    ?assert(After - Before < 16 * 1024 * 1024),
+    ?assert(MaxPing < 500000).
+
+watch_node(Peer, Parent, Acc) ->
+    receive
+        {stop, From} -> From ! {samples, Acc}
+    after 50 ->
+        {T, _} = timer:tc(fun() -> peer:call(Peer, erlang, node, []) end),
+        Mem = peer:call(Peer, erlang, memory, [total]),
+        watch_node(Peer, Parent, [{T, Mem} | Acc])
+    end.
+
+%% A lager log of N entries spread over a day from Start, with a stack
+%% trace after the last one and some text that is UTF-8 encoded twice.
+write_log(File, Start, N) ->
+    ok = filelib:ensure_dir(File),
+    S0 = calendar:datetime_to_gregorian_seconds(Start),
+    Lines = [begin
+                 {{Y, Mo, D}, {H, Mi, S}} = calendar:gregorian_seconds_to_datetime(S0 + I * 86400 div N),
+                 Level = lists:nth(1 + I rem 3, ["debug", "info", "error"]),
+                 Msg = case I rem 10 of
+                           0 -> <<"gen_server mod terminated with reason: badarg">>;
+                           5 -> unicode:characters_to_binary(binary_to_list(<<"玩家 登录"/utf8>>));
+                           _ -> <<"request handled">>
+                       end,
+                 [io_lib:format("~4..0B-~2..0B-~2..0B ~2..0B:~2..0B:~2..0B.000 [~s] <0.~B.0>@mod:f:1 ",
+                                [Y, Mo, D, H, Mi, S, Level, I rem 500]), Msg, "\n"]
+             end || I <- lists:seq(0, N - 1)],
+    file:write_file(File, [Lines, "2026-10-27 23:59:59.999 [error] <0.1.0> CRASH REPORT\n",
+                           "    stack line 1\n    stack line 2\n"]).
+
+%% About MB megabytes in logger's format, one block of lines per second
+%% of 2026-10-27 so times keep increasing.
+write_big_log(File, MB) ->
+    {ok, Fd} = file:open(File, [write, raw, binary, delayed_write]),
+    Block = fun(Sec) ->
+                    {_, {H, Mi, S}} = calendar:gregorian_seconds_to_datetime(Sec),
+                    Head = io_lib:format("2026-10-27T~2..0B:~2..0B:~2..0B.000000+00:00 info: ", [H, Mi, S]),
+                    iolist_to_binary([[Head, "line ", integer_to_list(I), " of a big log file\n"]
+                                      || I <- lists:seq(1, 200)])
+            end,
+    Size = byte_size(Block(0)),
+    N = MB * 1048576 div Size,
+    S0 = calendar:datetime_to_gregorian_seconds({{2026, 10, 27}, {0, 0, 0}}),
+    [ok = file:write(Fd, Block(S0 + I * 86400 div N)) || I <- lists:seq(0, N - 1)],
+    file:close(Fd).
+
+lager_file_backend_source() ->
+    "-module(lager_file_backend).\n"
+    "-export([init/1, handle_event/2, handle_call/2, handle_info/2, terminate/2, code_change/3]).\n"
+    "init(_) -> {ok, []}.\n"
+    "handle_event(_, S) -> {ok, S}.\n"
+    "handle_call(get_loglevel, S) -> {ok, {mask, 127}, S};\n"
+    "handle_call(_, S) -> {ok, ok, S}.\n"
+    "handle_info(_, S) -> {ok, S}.\n"
+    "terminate(_, _) -> ok.\n"
+    "code_change(_, S, _) -> {ok, S}.\n".
+
+%% Forwards error_logger events to the sink, as lager's handler does.
+lager_redirect_source() ->
+    "-module(error_logger_lager_h).\n"
+    "-export([init/1, handle_event/2, handle_call/2, handle_info/2, terminate/2, code_change/3]).\n"
+    "init(_) -> {ok, []}.\n"
+    "handle_event({Type, _GL, {Pid, Format, Args}}, S) when Type =:= error; Type =:= info_msg ->\n"
+    "    Level = case Type of error -> error; _ -> info end,\n"
+    "    gen_event:notify(lager_event, {log, {lager_msg, [], [{pid, Pid}], Level, {\"\", \"\"},\n"
+    "                                          os:timestamp(), io_lib:format(Format, Args)}}),\n"
+    "    {ok, S};\n"
+    "handle_event(_, S) -> {ok, S}.\n"
+    "handle_call(_, S) -> {ok, ok, S}.\n"
+    "handle_info(_, S) -> {ok, S}.\n"
+    "terminate(_, _) -> ok.\n"
+    "code_change(_, S, _) -> {ok, S}.\n".
+
+scan_forms(Source) ->
+    {ok, Tokens, _} = erl_scan:string(Source),
+    {Forms, []} = lists:foldl(fun({dot, _} = Dot, {Acc, Cur}) ->
+                                      {ok, F} = erl_parse:parse_form(lists:reverse([Dot | Cur])),
+                                      {[F | Acc], []};
+                                 (T, {Acc, Cur}) ->
+                                      {Acc, [T | Cur]}
+                              end, {[], []}, Tokens),
+    lists:reverse(Forms).
 
 wait_registered(Peer, Name) ->
     case peer:call(Peer, erlang, whereis, [Name]) of

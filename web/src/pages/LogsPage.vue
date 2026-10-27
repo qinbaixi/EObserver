@@ -11,13 +11,14 @@ import PageHeader from '../components/PageHeader.vue'
 import NodeGuard from '../components/NodeGuard.vue'
 import CrashList from '../components/logs/CrashList.vue'
 import LiveLog from '../components/logs/LiveLog.vue'
+import LogFiles from '../components/logs/LogFiles.vue'
 
 const { t, te } = useI18n()
 const nodes = useNodes()
 const logs = useLogs()
 const tabRef = useQueryRef('tab')
 const tab = computed({
-  get: () => (tabRef.value === 'live' ? 'live' : 'crashes'),
+  get: () => (tabRef.value === 'live' || tabRef.value === 'files' ? tabRef.value : 'crashes'),
   set: (v: string) => { tabRef.value = v === 'crashes' ? null : v },
 })
 
@@ -44,9 +45,19 @@ const primaryLevel = computed(() => {
   return l && l !== 'all' && l !== 'debug' ? l : null
 })
 
+// With lager attached, the logger level only concerns logger calls.
+const lagerNote = computed(() => {
+  if (!s.value?.lager) return ''
+  const l = s.value.lager_level
+  return l && l !== 'debug' ? t('logs.lager_level', { level: l }) : t('logs.lager')
+})
+
 const intro = computed(() =>
   t('logs.only_since', { time: s.value ? formatTime(s.value.started * 1000).slice(0, 8) : '…' })
-  + (primaryLevel.value ? t('logs.primary_level', { level: primaryLevel.value }) : ''))
+  + lagerNote.value
+  + (primaryLevel.value
+    ? t(s.value?.lager ? 'logs.primary_level_otp' : 'logs.primary_level', { level: primaryLevel.value })
+    : ''))
 </script>
 
 <template>
@@ -82,6 +93,9 @@ const intro = computed(() =>
         </NTabPane>
         <NTabPane name="live" :tab="t('logs.tabs.live')">
           <LiveLog />
+        </NTabPane>
+        <NTabPane name="files" :tab="t('logs.tabs.files')" display-directive="show:lazy">
+          <LogFiles />
         </NTabPane>
       </NTabs>
     </template>

@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### 新增
+
+- 实时日志支持 lager：目标节点运行 lager 时，用 `lager:log`、`lager:info` 等（以及 lager 的 parse transform）输出的日志也会出现在「日志 > 实时日志」里，新增「来源」列区分 logger / lager。打开日志页时临时挂到 lager 的各个 sink 上，不改变 lager 的日志级别（lager 本来不输出的 debug 不会因此开启），离开页面或断开连接后自动移除。lager 接管 error_logger 时同一条日志不会重复显示。页面说明里会给出 lager 的级别。
+- lager 用 `~s` 输出 UTF-8 中文时，日志文件里是乱码，实时日志里会按 UTF-8 正确显示。
+- 日志页新增「日志文件」标签页：查看节点自己写到磁盘上的日志，包括 lager 文件后端（直接从 lager 的 sink 里找到正在写的文件，按 `log_root` 定位）、lager crash log、OTP logger 的文件 handler，以及它们轮转出来的 `.0`、`.1`……和 `.gz` 文件。从末尾往前分页加载，可以跳到开头/最新、按时间跳转、在整个文件里搜索（每次最多扫 64 MB，可以继续往下搜）、点一行看完整内容（多行的 crash report 和调用栈合成一条），也可以下载整个文件。只能读日志配置里的文件；每次读取都在目标节点上单独的进程里做，有内存、时间和并发上限，2 GB 的文件实测内存峰值约 +15 MB。
+
 ## [0.0.12] - 2026-10-27
 
 ### 新增

@@ -95,7 +95,7 @@ function pid(ref: string) {
           <NDescriptionsItem v-if="detail.remote !== undefined" :label="t('pages.port_drawer.remote')"><span class="mono">{{ detail.remote ?? '-' }}</span></NDescriptionsItem>
           <NDescriptionsItem :label="t('pages.port_drawer.io')">{{ formatBytes(detail.input) }} / {{ formatBytes(detail.output) }}</NDescriptionsItem>
           <NDescriptionsItem><template #label><Term label="队列" /></template>{{ formatBytes(detail.queue_size) }}</NDescriptionsItem>
-          <NDescriptionsItem><template #label><Term label="内存" /></template>{{ formatBytes(detail.memory) }}</NDescriptionsItem>
+          <NDescriptionsItem><template #label><Term label="内存" card="ports" /></template>{{ formatBytes(detail.memory) }}</NDescriptionsItem>
           <NDescriptionsItem :label="t('pages.port_drawer.locking')">{{ detail.locking ?? '-' }}</NDescriptionsItem>
           <NDescriptionsItem :label="t('pages.port_drawer.parallelism')">{{ t(detail.parallelism ? 'pages.yes' : 'pages.no') }}</NDescriptionsItem>
         </NDescriptions>

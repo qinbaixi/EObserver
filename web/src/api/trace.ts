@@ -13,6 +13,18 @@ function lookup(group: string, id: string): string | undefined {
 
 export const kindLabel = (kind: string): string => lookup('kind', kind) ?? kind
 export const kindTip = (kind: string): string | undefined => lookup('kind_tip', kind)
+// The BEAM Book card behind a kind of traced message.
+export function kindCard(kind: string): string | undefined {
+  if (kind === 'call' || kind === 'reply') return 'call_trick'
+  if (kind === 'exit' || kind === 'down') return 'exits_monitors'
+  if (kind === 'io') return 'group_leader'
+  if (kind === 'timer') return 'timers'
+  if (kind === 'node') return 'node'
+  if (kind === 'code') return 'code'
+  if (kind === 'cast' || kind === 'info') return 'message_passing'
+  if (/^(tcp|udp|ssl)/.test(kind)) return 'sockets'
+  return undefined
+}
 export const categoryLabel = (cat: string): string => lookup('category', cat) ?? cat
 export const stopReason = (reason: string): string =>
   lookup('stop_reason', reason) ?? t('procs.trace.stopped_with', { reason })

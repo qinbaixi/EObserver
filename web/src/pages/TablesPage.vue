@@ -81,7 +81,7 @@ const etsColumns = computed<DataTableColumns<EtsTable>>(() => [
     render: (r) => h(NTag, { size: 'small', bordered: false }, { default: () => r.type }) },
   { key: 'size', title: term('对象数'), width: 110, align: 'right', sorter: (a, b) => num(a.size, b.size),
     render: (r) => mono(formatNumber(r.size)) },
-  { key: 'memory', title: term('内存', t('procs.tables.memory_tip')), width: 110, align: 'right', sorter: (a, b) => num(a.memory, b.memory),
+  { key: 'memory', title: term('内存', t('procs.tables.memory_tip'), 'ets'), width: 110, align: 'right', sorter: (a, b) => num(a.memory, b.memory),
     defaultSortOrder: 'descend', render: (r) => mono(formatBytes(r.memory)) },
   { key: 'owner', title: term('所属进程'), minWidth: 200, ellipsis: { tooltip: true },
     render: (r) => r.owner

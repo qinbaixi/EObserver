@@ -13,6 +13,8 @@ import PageHeader from '../components/PageHeader.vue'
 import RefreshControl from '../components/RefreshControl.vue'
 import ClusterGraph from '../charts/ClusterGraph.vue'
 import { useResizableTable } from '../api/table'
+import KnowledgeLink from '../components/KnowledgeLink.vue'
+import { term } from '../api/term'
 
 const nodes = useNodes()
 const ui = useUi()
@@ -50,8 +52,8 @@ const columns = computed<DataTableColumns<Row>>(() => [
     render: (r) => h('a', { class: 'mono link', onClick: () => select(r.to, r.observed) }, r.to) },
   { key: 'kind', title: t('pages.cluster.cols.kind'), width: 110,
     render: (r) => h(NTag, { size: 'small', bordered: false, type: r.hidden ? 'default' : 'info' },
-      { default: () => t(r.hidden ? 'pages.cluster.hidden' : 'pages.cluster.visible') }) },
-  { key: 'input', title: t('pages.cluster.cols.input'), width: 110, align: 'right', sorter: (a, b) => (a.input ?? 0) - (b.input ?? 0),
+      { default: () => h(KnowledgeLink, { text: t(r.hidden ? 'pages.cluster.hidden' : 'pages.cluster.visible'), card: 'node' }) }) },
+  { key: 'input', title: term(t('pages.cluster.cols.input'), undefined, 'dist_port'), width: 110, align: 'right', sorter: (a, b) => (a.input ?? 0) - (b.input ?? 0),
     render: (r) => mono(r.input == null ? '-' : formatBytes(r.input)) },
   { key: 'output', title: t('pages.cluster.cols.output'), width: 110, align: 'right', sorter: (a, b) => (a.output ?? 0) - (b.output ?? 0),
     render: (r) => mono(r.output == null ? '-' : formatBytes(r.output)) },

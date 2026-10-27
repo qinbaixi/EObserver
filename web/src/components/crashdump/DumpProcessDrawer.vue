@@ -8,6 +8,7 @@ import { dumpRequest, isTerm, type DictItem, type DumpProcess, type DumpTerm, ty
 import { errorText } from '../../api/errors'
 import { formatNumber } from '../../api/format'
 import DumpTermBlock from './DumpTermBlock.vue'
+import KnowledgeLink from '../KnowledgeLink.vue'
 import { formatValue, infoLabel, keyType, PID_RE, PORT_RE, refLink, useNav } from './cells'
 
 // A process from the dump: its fields, then the message queue, dictionary
@@ -101,6 +102,15 @@ function back() {
 
 const s = computed(() => detail.value?.summary ?? {})
 const name = computed(() => String(s.value.name || s.value.registered_name || ''))
+// The BEAM Book card for a process field: heap areas and fragments are
+// explained with generational GC, the stack fields with the stack.
+function infoCard(key: string): string | undefined {
+  if (/heap|frag/.test(key)) return 'gc'
+  if (key.startsWith('stack')) return 'stack'
+  if (key === 'run_queue') return 'run_queue'
+  if (key === 'internal_state') return 'pcb'
+  return undefined
+}
 const state = computed(() => String(s.value.state ?? ''))
 const stateType = computed(() => {
   const st = state.value.toLowerCase()
@@ -147,7 +157,7 @@ const asStack = (v: unknown) => v as StackItem
           <NButton v-if="history.length" size="tiny" quaternary @click="back">{{ t('crashdump.back') }}</NButton>
           <span class="mono">{{ pid }}</span>
           <NTag v-if="name" size="small" type="primary" :bordered="false">{{ name }}</NTag>
-          <NTag v-if="state" size="small" :type="stateType" :bordered="false">{{ state }}</NTag>
+          <NTag v-if="state" size="small" :type="stateType" :bordered="false"><KnowledgeLink :text="state" card="process_state" /></NTag>
         </div>
       </template>
 
@@ -161,7 +171,7 @@ const asStack = (v: unknown) => v as StackItem
           </NAlert>
           <table class="kv">
             <tr v-for="f in info" :key="f.key">
-              <td class="k">{{ infoLabel(f.key) }}</td>
+              <td class="k"><KnowledgeLink :text="infoLabel(f.key)" :card="infoCard(f.key)" /></td>
               <td>
                 <component :is="() => refLink(String(f.value), nav)" v-if="typeof f.value === 'string' && (PID_RE.test(f.value) || PORT_RE.test(f.value))" />
                 <span v-else class="mono v">{{ infoValue(f.key, f.value, f.type) }}</span>

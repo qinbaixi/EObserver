@@ -16,7 +16,7 @@ import { errorText } from '../api/errors'
 import { formatNumber } from '../api/format'
 import type { ProcessPage, TraceCategory, TraceEvent } from '../api/types'
 import {
-  categoryLabel, kindLabel, kindTip, refusedReason, stopReason,
+  categoryLabel, kindLabel, kindTip, kindCard, refusedReason, stopReason,
   eventLine, formatLatency, formatTime, peerText,
 } from '../api/trace'
 import { useTrace } from '../stores/trace'
@@ -27,6 +27,8 @@ import NodeGuard from '../components/NodeGuard.vue'
 import CallStats from '../components/trace/CallStats.vue'
 import SequenceView from '../components/trace/SequenceView.vue'
 import { useQueryRef } from '../composables/useQueryRef'
+import KnowledgeLink from '../components/KnowledgeLink.vue'
+import KnowledgeIcon from '../components/KnowledgeIcon.vue'
 
 const trace = useTrace()
 const settings = useSettings()
@@ -191,7 +193,7 @@ const columns = computed<DataTableColumns<TraceEvent>>(() => [
       size: 'small', bordered: false,
       type: e.cat === 'business' ? (e.kind === 'call' || e.kind === 'reply' ? 'info' : 'success')
         : e.cat === 'network' ? 'warning' : 'default',
-    }, { default: () => kindLabel(e.kind) }),
+    }, { default: () => h(KnowledgeLink, { text: kindLabel(e.kind), card: kindCard(e.kind) }) }),
   },
   {
     key: 'peer', title: t('procs.trace.col.peer'), width: 220, ellipsis: { tooltip: true },
@@ -423,7 +425,10 @@ onBeforeUnmount(() => { selected.value = null })
             <NText depth="3" class="mono">{{ formatTime(shown.t) }}</NText>
           </NSpace>
         </template>
-        <p v-if="kindTip(shown.kind)" class="tip">{{ kindTip(shown.kind) }}</p>
+        <p v-if="kindTip(shown.kind)" class="tip">
+          {{ kindTip(shown.kind) }}
+          <KnowledgeIcon v-if="kindCard(shown.kind)" :card="kindCard(shown.kind)!" />
+        </p>
         <p v-if="peerText(shown)" class="peer">
           {{ t(shown.dir === 'in' ? 'procs.trace.from' : 'procs.trace.to') }} <span class="mono">{{ peerText(shown) }}</span>
           <template v-if="shown.dead">{{ t('procs.trace.peer_gone') }}</template>

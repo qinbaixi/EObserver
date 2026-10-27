@@ -11,6 +11,14 @@ import { errorText } from '../../api/errors'
 import { formatBytes, formatNumber } from '../../api/format'
 import type { DiagCheck, DiagItem, DiagLevel, DiagReport } from '../../api/types'
 import { useDiag } from '../../stores/diag'
+import KnowledgeIcon from '../KnowledgeIcon.vue'
+
+// The BEAM Book card that explains what each check looks at.
+const CHECK_CARD: Record<string, string> = {
+  process_count: 'process', port_count: 'ports', atom_count: 'atom', ets_count: 'ets',
+  message_queue: 'mailbox', process_memory: 'memory_leaks', ets_memory: 'ets', binary_memory: 'binary',
+  run_queue: 'run_queue', stuck: 'deadlocks', binary_holders: 'binary', dist_queue: 'dist_port',
+}
 
 const props = defineProps<{ node: string }>()
 const emit = defineEmits<{ open: [pid: string] }>()
@@ -143,6 +151,7 @@ const atText = computed(() => last.value ? new Date(last.value.at).toLocaleTimeS
       <div class="head">
         <NIcon :component="ICONS[c.level]" size="20" class="icon" />
         <span class="title">{{ t(`diag.check.${c.id}.title`) }}</span>
+        <KnowledgeIcon v-if="CHECK_CARD[c.id]" :card="CHECK_CARD[c.id]" />
         <NTag size="small" :bordered="false"
               :type="c.level === 'crit' ? 'error' : c.level === 'warn' ? 'warning' : c.level === 'ok' ? 'success' : 'default'">
           {{ t(`diag.level.${c.level}`) }}

@@ -117,7 +117,7 @@ const columns = computed<DataTableColumns<ReconAllocRow>>(() => [
     render: (r) => mono(String(r.instance), 'mono') },
   group('mbcs', '多块载体'),
   group('sbcs', '单块载体'),
-  { key: 'sbcs_to_mbcs', title: term(t('recon.alloc.sbcs_to_mbcs'), t('recon.alloc.sbcs_to_mbcs_tip')), width: 110, align: 'right',
+  { key: 'sbcs_to_mbcs', title: term(t('recon.alloc.sbcs_to_mbcs'), t('recon.alloc.sbcs_to_mbcs_tip'), 'sbct'), width: 110, align: 'right',
     sorter: (a, b) => num(a.sbcs_to_mbcs) - num(b.sbcs_to_mbcs),
     render: (r) => mono(r.sbcs_to_mbcs == null ? '-' : r.sbcs_to_mbcs.toFixed(2)) },
 ])
@@ -137,13 +137,13 @@ const columns = computed<DataTableColumns<ReconAllocRow>>(() => [
   <NAlert v-if="error" type="error" style="margin-bottom: 12px">{{ error }}</NAlert>
   <NGrid v-if="report" cols="1 l:2" responsive="screen" :x-gap="12" :y-gap="12">
     <NGi span="1 l:2">
-      <NCard size="small" :title="term(t('recon.alloc.heatmap'), t('recon.alloc.heatmap_tip'))">
+      <NCard size="small" :title="term(t('recon.alloc.heatmap'), t('recon.alloc.heatmap_tip'), 'carriers')">
         <UsageHeatmap v-if="heat.cells.length" :rows="heat.rows" :cols="heat.cols" :cells="heat.cells" :tooltip="heat.tooltip" />
         <div v-else class="empty">{{ t('recon.alloc.empty') }}</div>
       </NCard>
     </NGi>
     <NGi>
-      <NCard size="small" :title="term(t('recon.alloc.cache'), t('recon.alloc.cache_tip'))" class="full">
+      <NCard size="small" :title="term(t('recon.alloc.cache'), t('recon.alloc.cache_tip'), 'alloc_mseg')" class="full">
         <BarChart v-if="cache.length" :categories="cache.map((c) => t('recon.alloc.instance', { n: c.instance }))"
                   :series="[{ name: t('recon.alloc.cache'), data: cache.map((c) => c.ratio) }]"
                   :format="(v) => pct(v)" :y-max="1" :y-interval="0.25"
@@ -152,7 +152,7 @@ const columns = computed<DataTableColumns<ReconAllocRow>>(() => [
       </NCard>
     </NGi>
     <NGi>
-      <NCard size="small" :title="term(t('recon.alloc.blocks'), t('recon.alloc.blocks_tip'))" class="full">
+      <NCard size="small" :title="term(t('recon.alloc.blocks'), t('recon.alloc.blocks_tip'), 'carriers')" class="full">
         <BarChart :categories="blocks.categories" :series="blocks.series" :format="formatBytes" log />
       </NCard>
     </NGi>

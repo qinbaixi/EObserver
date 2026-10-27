@@ -51,6 +51,14 @@ export const relatedCards = (id: string) => CARDS[id]?.related ?? []
 export const cardForSlug = (slug: string): string | undefined => TERMS[slug]
 // The card for an erts_alloc allocator by name (ll_alloc, eheap_alloc, ...).
 export const cardForAllocator = (type: string): string | undefined => ALLOCATORS[type]
+// The card for a port by its driver name (erlang:port_info(P, name)):
+// sockets, file descriptors, spawned programs (a command line) or drivers.
+export function cardForPort(name: string): string {
+  if (/_inet$/.test(name)) return 'sockets'
+  if (/^\d+\/\d+$/.test(name)) return 'port_fd'
+  if (name === 'forker' || /[\s/]/.test(name)) return 'port_spawn'
+  return 'port_driver'
+}
 // Cards a page offers in its header, by route name.
 export const pageCards = (route: string): string[] => PAGES[route] ?? []
 // Glossary slugs that open a card, for search.

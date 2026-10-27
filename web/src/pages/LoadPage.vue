@@ -207,7 +207,7 @@ const kpi = computed(() => {
         </NCard>
       </NGi>
       <NGi>
-        <NCard :title="term('内存', t('pages.load.memory_tip'))" size="small">
+        <NCard :title="term('内存', t('pages.load.memory_tip'), 'memory_subsystem')" size="small">
           <TimeSeriesChart :series="memSeries" :format="formatBytes" stacked :window-ms="windowMs" />
         </NCard>
       </NGi>

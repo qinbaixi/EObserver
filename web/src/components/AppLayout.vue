@@ -1,14 +1,11 @@
 <script setup lang="ts">
-import { computed, h, ref, watch } from 'vue'
+import { computed, h, ref } from 'vue'
 import { useRoute, useRouter, RouterView } from 'vue-router'
 import {
   NLayout, NLayoutSider, NLayoutHeader, NLayoutContent, NMenu, NIcon, NButton,
   NTooltip, NSpace, NDropdown, NScrollbar, useMessage, useThemeVars, type MenuOption,
 } from 'naive-ui'
-import {
-  MoonOutline, SunnyOutline, LinkOutline, ContrastOutline, SearchOutline, LanguageOutline,
-  EllipsisHorizontalCircleOutline, OptionsOutline, SettingsOutline,
-} from '@vicons/ionicons5'
+import { MoonOutline, SunnyOutline, LinkOutline, ContrastOutline, SearchOutline, LanguageOutline } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
 import { pages, pageTitle } from '../router'
 import { useTheme, type Mode } from '../stores/theme'
@@ -27,9 +24,7 @@ import UpdateChecker from './UpdateChecker.vue'
 import CommandPalette from './CommandPalette.vue'
 import KnowledgeDrawer from './KnowledgeDrawer.vue'
 import BookModal from './BookModal.vue'
-import NavCustomize from './NavCustomize.vue'
 import { useUi } from '../stores/ui'
-import { useNav } from '../stores/nav'
 import { useUrlSync } from '../composables/useUrlSync'
 
 const route = useRoute()
@@ -76,62 +71,16 @@ async function copyLink() {
   }
 }
 
-const nav = useNav()
-const byName = Object.fromEntries(pages.map((p) => [p.name, p]))
-const pageOption = (name: string): MenuOption => {
-  const p = byName[name]
-  return {
+const menuOptions = computed<MenuOption[]>(() =>
+  pages.map((p) => ({
     key: p.name,
     label: () => h('span', { class: 'menu-label' }, [
       pageTitle(p.meta),
       p.meta.milestone ? h('span', { class: 'menu-soon' }, p.meta.milestone) : null,
     ]),
     icon: () => h(NIcon, null, { default: () => h(p.meta.icon) }),
-  }
-}
-const MORE = '__more'
-const CUSTOMIZE = '__customize'
-const customizing = ref(false)
-// The chosen pages, then everything else under "More", whose row has a gear
-// that opens the customize dialog.
-const menuOptions = computed<MenuOption[]>(() => [
-  ...nav.pinned.map(pageOption),
-  {
-    key: MORE,
-    label: () => h('span', { class: 'menu-label menu-more' }, [
-      t('shell.nav_more'),
-      h('span', { class: 'menu-count' }, String(nav.rest.length)),
-      h('span', {
-        class: 'menu-gear',
-        title: t('shell.nav_custom.title'),
-        onClick: (e: MouseEvent) => { e.stopPropagation(); customizing.value = true },
-      }, [h(NIcon, { component: SettingsOutline })]),
-    ]),
-    icon: () => h(NIcon, null, { default: () => h(EllipsisHorizontalCircleOutline) }),
-    // The gear is in the row's label, which a collapsed sidebar hides, so the
-    // popup menu offers the same entry instead.
-    children: [
-      ...nav.rest.map(pageOption),
-      ...(collapsed.value ? [
-        { type: 'divider', key: 'more-divider' },
-        {
-          key: CUSTOMIZE,
-          label: () => h('span', { class: 'menu-custom' }, t('shell.nav_custom.open')),
-          icon: () => h(NIcon, null, { default: () => h(OptionsOutline) }),
-        },
-      ] : []),
-    ],
-  },
-])
-// "More" opens by itself when the current page is in it.
-const expanded = ref<string[]>([])
-watch(() => route.name, (n) => {
-  if (nav.rest.includes(String(n)) && !expanded.value.includes(MORE)) expanded.value = [...expanded.value, MORE]
-}, { immediate: true })
-function onSelect(k: string) {
-  if (k === CUSTOMIZE) customizing.value = true
-  else void router.push({ name: k })
-}
+  })),
+)
 
 // Pages that work without any observed node (the crash dump viewer, the book).
 const nodeFree = computed(() => route.name === 'crashdump' || route.name === 'book')
@@ -149,11 +98,10 @@ const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`)
         <span v-if="!collapsed" class="brand-name">EObserver</span>
       </div>
       <NScrollbar class="nav-scroll">
-      <NMenu class="nav-menu" :value="String(route.name)" :options="menuOptions" :collapsed="collapsed"
-             :collapsed-width="64" :collapsed-icon-size="20"
-             :expanded-keys="expanded" style="padding-bottom: 12px"
-             @update:expanded-keys="(k: string[]) => (expanded = k)"
-             @update:value="onSelect" />
+        <NMenu :value="String(route.name)" :options="menuOptions" :collapsed="collapsed"
+               :collapsed-width="64" :collapsed-icon-size="20"
+               style="padding-bottom: 12px"
+               @update:value="(k: string) => router.push({ name: k })" />
       </NScrollbar>
       <UpdateChecker v-if="settings.version" :collapsed="collapsed" />
     </NLayoutSider>
@@ -212,7 +160,6 @@ const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`)
       </NLayoutContent>
     </NLayout>
     <ConnectDialog />
-    <NavCustomize v-model:show="customizing" />
     <CommandPalette />
     <KnowledgeDrawer />
     <BookModal />
@@ -221,7 +168,7 @@ const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`)
 
 <style scoped>
 /* The logo stays at the top and the version at the bottom; only the menu
-   scrolls when "More" is open and the window is short. */
+   scrolls when the window is too short for it. */
 :deep(.sider-body) {
   display: flex;
   flex-direction: column;
@@ -336,70 +283,5 @@ const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`)
   border-radius: 8px;
   opacity: 0.55;
   border: 1px solid currentColor;
-}
-:deep(.menu-count) {
-  font-size: 11px;
-  line-height: 16px;
-  padding: 0 6px;
-  border-radius: 8px;
-  opacity: 0.5;
-  background: rgba(128, 128, 128, 0.16);
-}
-:deep(.menu-custom) {
-  opacity: 0.7;
-}
-/* The pinned pages are few, so they get room that grows with the window
-   instead of the dense default rows; pages under "More" stay compact. */
-.nav-menu {
-  --nav-row: clamp(42px, 6vh, 56px);
-  --nav-gap: clamp(4px, 1.1vh, 12px);
-}
-.nav-menu > :deep(.n-menu-item),
-.nav-menu > :deep(.n-submenu) {
-  margin-top: var(--nav-gap);
-}
-.nav-menu > :deep(.n-menu-item),
-.nav-menu > :deep(.n-submenu > .n-menu-item),
-.nav-menu > :deep(.n-submenu > .n-menu-item > .n-menu-item-content) {
-  height: var(--nav-row);
-}
-.nav-menu > :deep(.n-menu-item .n-menu-item-content-header),
-.nav-menu > :deep(.n-submenu > .n-menu-item .n-menu-item-content-header) {
-  font-size: 15px;
-}
-.nav-menu > :deep(.n-menu-item .n-menu-item-content__icon),
-.nav-menu > :deep(.n-submenu > .n-menu-item .n-menu-item-content__icon) {
-  font-size: 21px !important;
-}
-.nav-menu > :deep(.n-submenu) {
-  padding-top: var(--nav-gap);
-}
-.nav-menu > :deep(.n-submenu)::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 12px;
-  right: 12px;
-  border-top: 1px solid rgba(128, 128, 128, 0.14);
-}
-:deep(.menu-more) {
-  display: flex;
-  align-items: center;
-  width: 100%;
-}
-:deep(.menu-gear) {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 6px;
-  font-size: 16px;
-  opacity: 0.55;
-}
-:deep(.menu-gear:hover) {
-  opacity: 1;
-  background: rgba(128, 128, 128, 0.16);
 }
 </style>

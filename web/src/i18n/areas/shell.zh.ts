@@ -19,16 +19,6 @@ export default {
     crashdump: { title: '崩溃转储', subtitle: 'Crash Dump' },
     book: { title: 'BEAM Book', subtitle: '知识库' },
   },
-  nav_more: '更多',
-  nav_custom: {
-    title: '自定义侧边栏',
-    open: '自定义侧边栏…',
-    hint: '勾选的页面直接显示在侧边栏（已选 {n} 个，建议 4–6 个），其余收在「更多」里。用箭头调整顺序。',
-    in_more: '在「更多」里',
-    reset: '恢复默认',
-    cancel: '取消',
-    save: '保存',
-  },
   // Each language's name in itself (the same in every language file).
   locale: { zh: '中文', en: 'English' },
   coming_soon: '该页面将在 {milestone} 里程碑实现',

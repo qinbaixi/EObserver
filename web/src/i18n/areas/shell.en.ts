@@ -19,16 +19,6 @@ const en: typeof zh = {
     crashdump: { title: 'Crash Dump', subtitle: '' },
     book: { title: 'BEAM Book', subtitle: 'Knowledge' },
   },
-  nav_more: 'More',
-  nav_custom: {
-    title: 'Customize sidebar',
-    open: 'Customize sidebar…',
-    hint: 'Checked pages show in the sidebar ({n} chosen; 4–6 works best). The rest are under "More". Use the arrows to reorder.',
-    in_more: 'Under "More"',
-    reset: 'Reset to default',
-    cancel: 'Cancel',
-    save: 'Save',
-  },
   locale: { zh: '中文', en: 'English' },
   coming_soon: 'This page arrives in milestone {milestone}',
   layout: {

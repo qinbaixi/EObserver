@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.0.12] - 2026-10-27
+
 ### 新增
 
 - BEAM Book 知识卡片：界面里带书本图标的术语（reductions、运行队列、载体、信箱、调度器等）点击后在右侧弹出知识卡片，展示内置《The BEAM Book》中对应小节的原文段落（中文界面用 Bycc 的中文译本，英文界面用 Erik Stenman 的英文原版），可在相关知识之间跳转。内存分配器页和 Recon 分配器碎片表里的分配器名（ll_alloc、eheap_alloc 等 12 种）也能点开，查看该分配器在书中的讲解。进程状态、端口类型（socket / 外部程序 / 驱动 / 文件描述符）、健康检查与诊断项、追踪事件类型、崩溃原因与监督者、垃圾回收参数、死锁与内存泄漏、定时器、dirty 调度器、链接与监控等数值和标签旁也接入了对应知识；崩溃转储概要里的 Slogan、各项计数和自动疑点同样可以点开。每个页面标题旁新增「相关知识」，Ctrl+K 也能搜到知识卡片。

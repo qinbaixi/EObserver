@@ -1,7 +1,7 @@
 {
   "name": "eobserver-desktop",
   "productName": "EObserver",
-  "version": "0.0.11",
+  "version": "0.0.12",
   "description": "Desktop app for EObserver, a modern observer for Erlang/OTP nodes",
   "license": "Apache-2.0",
   "author": "EObserver authors",

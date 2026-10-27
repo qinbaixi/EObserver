@@ -42,12 +42,15 @@ const images = import.meta.glob<string>('./data/img/*', { eager: true, query: '?
 const CARDS = terms.cards as Record<string, { sections: string[]; related: string[] }>
 const TERMS = terms.terms as Record<string, string>
 const PAGES = terms.pages as Record<string, string[]>
+const ALLOCATORS = terms.allocators as Record<string, string>
 
 export const cardIds = Object.keys(CARDS)
 export const hasCard = (id: string) => id in CARDS
 export const relatedCards = (id: string) => CARDS[id]?.related ?? []
 // The card a glossary entry (by slug) opens, if any.
 export const cardForSlug = (slug: string): string | undefined => TERMS[slug]
+// The card for an erts_alloc allocator by name (ll_alloc, eheap_alloc, ...).
+export const cardForAllocator = (type: string): string | undefined => ALLOCATORS[type]
 // Cards a page offers in its header, by route name.
 export const pageCards = (route: string): string[] => PAGES[route] ?? []
 // Glossary slugs that open a card, for search.

@@ -8,7 +8,7 @@ All notable changes to this project are documented here. The format follows
 
 ### 新增
 
-- BEAM Book 知识卡片：界面里带书本图标的术语（reductions、运行队列、载体、信箱、调度器等）点击后在右侧弹出知识卡片，展示内置《The BEAM Book》中对应小节的原文段落（中文界面用 Bycc 的中文译本，英文界面用 Erik Stenman 的英文原版），可在相关知识之间跳转。每个页面标题旁新增「相关知识」，Ctrl+K 也能搜到知识卡片。
+- BEAM Book 知识卡片：界面里带书本图标的术语（reductions、运行队列、载体、信箱、调度器等）点击后在右侧弹出知识卡片，展示内置《The BEAM Book》中对应小节的原文段落（中文界面用 Bycc 的中文译本，英文界面用 Erik Stenman 的英文原版），可在相关知识之间跳转。内存分配器页和 Recon 分配器碎片表里的分配器名（ll_alloc、eheap_alloc 等 12 种）也能点开，查看该分配器在书中的讲解。每个页面标题旁新增「相关知识」，Ctrl+K 也能搜到知识卡片。
 - 内置全书阅读器：侧边栏新增「BEAM Book」，离线阅读整本书，带目录、章节跳转、书内链接和脚注，可随时切换中英文对照；从知识卡片打开时直接定位到对应小节。
 
 ### 修复

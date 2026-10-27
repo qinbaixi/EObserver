@@ -5,6 +5,8 @@ import { NButton, NAlert, NIcon, NDataTable, NCard, NGrid, NGi, NText, type Data
 import { PlayOutline } from '@vicons/ionicons5'
 import { formatBytes, formatNumber } from '../../api/format'
 import { term } from '../../api/term'
+import KnowledgeLink from '../KnowledgeLink.vue'
+import { cardForAllocator } from '../../beambook'
 import { termLabel } from '../../api/glossary'
 import type { ReconAllocReport, ReconAllocRow } from '../../api/types'
 import { useRecon } from '../../stores/recon'
@@ -110,7 +112,7 @@ function group(k: Kind, label: string) {
 const columns = computed<DataTableColumns<ReconAllocRow>>(() => [
   { key: 'type', title: term('分配器'), width: 140, fixed: 'left',
     sorter: (a, b) => a.type.localeCompare(b.type) || a.instance - b.instance,
-    render: (r) => h('b', { class: 'mono' }, r.type) },
+    render: (r) => h('b', { class: 'mono' }, h(KnowledgeLink, { text: r.type, card: cardForAllocator(r.type) })) },
   { key: 'instance', title: term('实例'), width: 70, align: 'right', sorter: (a, b) => a.instance - b.instance,
     render: (r) => mono(String(r.instance), 'mono') },
   group('mbcs', '多块载体'),

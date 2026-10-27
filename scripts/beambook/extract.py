@@ -255,8 +255,9 @@ def main():
             if len(zb) != len(eb):
                 problems.append(f'{cid}: {sid} has {len(zb)} zh blocks, {len(eb)} en blocks')
             n, used = 0, 0
+            budget = card.get('budget', CARD_BUDGET)
             for b in zb:
-                if n and used + len(text(b)) > CARD_BUDGET:
+                if n and used + len(text(b)) > budget:
                     break
                 used += len(text(b))
                 n += 1

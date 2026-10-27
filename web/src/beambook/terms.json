@@ -1,5 +1,5 @@
 {
-  "_comment": "Knowledge cards drawn from The BEAM Book. cards: card id -> book sections (heading ids, same in both languages) whose opening blocks make up the card, plus related cards. terms: glossary slug (i18n/areas/shell.*.ts glossary) -> card id. scripts/beambook/extract.py reads this file; rerun it after changing sections. pages: route name -> cards offered by the page header.",
+  "_comment": "Knowledge cards drawn from The BEAM Book. cards: card id -> book sections (heading ids, same in both languages) whose opening blocks make up the card, plus related cards. terms: glossary slug (i18n/areas/shell.*.ts glossary) -> card id. scripts/beambook/extract.py reads this file; rerun it after changing sections. pages: route name -> cards offered by the page header. allocators: erts_alloc allocator name -> its card. budget: Chinese characters a card takes per section (default 700).",
   "cards": {
     "erts": {
       "sections": [
@@ -218,12 +218,15 @@
     "allocators": {
       "sections": [
         "SS-Memory_Allocators",
-        "_the_basic_allocator_sys_alloc",
-        "_the_heap_allocator_eheap_alloc"
+        "_the_memory_allocator_framework_alloc_util"
       ],
       "related": [
         "carriers",
         "alloc_instances",
+        "alloc_eheap",
+        "alloc_binary",
+        "alloc_ll",
+        "alloc_ets",
         "memory_subsystem"
       ]
     },
@@ -247,6 +250,126 @@
         "carriers",
         "scheduler"
       ]
+    },
+    "alloc_sys": {
+      "sections": [
+        "_the_basic_allocator_sys_alloc"
+      ],
+      "related": [
+        "allocators",
+        "carriers"
+      ],
+      "budget": 2000
+    },
+    "alloc_mseg": {
+      "sections": [
+        "_the_memory_segment_allocator_mseg_alloc"
+      ],
+      "related": [
+        "allocators",
+        "carriers"
+      ],
+      "budget": 2000
+    },
+    "alloc_temp": {
+      "sections": [
+        "_the_temporary_allocator_temp_alloc"
+      ],
+      "related": [
+        "allocators",
+        "carriers"
+      ],
+      "budget": 2000
+    },
+    "alloc_eheap": {
+      "sections": [
+        "_the_heap_allocator_eheap_alloc"
+      ],
+      "related": [
+        "allocators",
+        "carriers"
+      ],
+      "budget": 2000
+    },
+    "alloc_binary": {
+      "sections": [
+        "_the_binary_allocator_binary_alloc"
+      ],
+      "related": [
+        "allocators",
+        "carriers"
+      ],
+      "budget": 2000
+    },
+    "alloc_ets": {
+      "sections": [
+        "_the_ets_allocator_ets_alloc"
+      ],
+      "related": [
+        "allocators",
+        "carriers"
+      ],
+      "budget": 2000
+    },
+    "alloc_driver": {
+      "sections": [
+        "_the_driver_allocator_driver_alloc"
+      ],
+      "related": [
+        "allocators",
+        "carriers"
+      ],
+      "budget": 2000
+    },
+    "alloc_sl": {
+      "sections": [
+        "_the_short_lived_allocator_sl_alloc"
+      ],
+      "related": [
+        "allocators",
+        "carriers"
+      ],
+      "budget": 2000
+    },
+    "alloc_ll": {
+      "sections": [
+        "_the_long_lived_allocator_ll_alloc"
+      ],
+      "related": [
+        "allocators",
+        "carriers"
+      ],
+      "budget": 2000
+    },
+    "alloc_fix": {
+      "sections": [
+        "_the_fixed_size_allocator_fix_alloc"
+      ],
+      "related": [
+        "allocators",
+        "carriers"
+      ],
+      "budget": 2000
+    },
+    "alloc_std": {
+      "sections": [
+        "_the_standard_allocator_std_alloc"
+      ],
+      "related": [
+        "allocators",
+        "carriers"
+      ],
+      "budget": 2000
+    },
+    "alloc_literal": {
+      "sections": [
+        "_the_literal_allocator_literal_alloc"
+      ],
+      "related": [
+        "allocators",
+        "carriers"
+      ],
+      "budget": 2000
     },
     "atom": {
       "sections": [
@@ -573,5 +696,19 @@
       "let_it_crash",
       "process_memory"
     ]
+  },
+  "allocators": {
+    "sys_alloc": "alloc_sys",
+    "mseg_alloc": "alloc_mseg",
+    "temp_alloc": "alloc_temp",
+    "eheap_alloc": "alloc_eheap",
+    "binary_alloc": "alloc_binary",
+    "ets_alloc": "alloc_ets",
+    "driver_alloc": "alloc_driver",
+    "sl_alloc": "alloc_sl",
+    "ll_alloc": "alloc_ll",
+    "fix_alloc": "alloc_fix",
+    "std_alloc": "alloc_std",
+    "literal_alloc": "alloc_literal"
   }
 }

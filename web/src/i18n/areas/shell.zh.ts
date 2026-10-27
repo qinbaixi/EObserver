@@ -16,6 +16,7 @@ export default {
     sockets: { title: 'Sockets', subtitle: 'Sockets' },
     tables: { title: '表', subtitle: 'ETS / Mnesia' },
     cluster: { title: '集群拓扑', subtitle: 'Cluster' },
+    crashdump: { title: '崩溃转储', subtitle: 'Crash Dump' },
   },
   // Each language's name in itself (the same in every language file).
   locale: { zh: '中文', en: 'English' },

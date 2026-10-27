@@ -25,8 +25,10 @@ const en: typeof zh = {
       tables: 'Tables',
       apps: 'Applications',
       actions: 'Actions',
+      dumps: 'Crash dumps',
     },
     current: 'current',
+    dump_open: 'open',
     not_running: 'not running',
     status: {
       connected: 'Connected',
@@ -43,12 +45,15 @@ const en: typeof zh = {
       connect_sub: 'Add a node to observe',
       locale: 'Switch language',
       locale_sub: 'Show the interface in {lang}',
+      dump: 'Open a crash dump',
+      dump_sub: 'Read an erl_crash.dump; no node needed',
     },
     keywords: {
       theme: 'theme dark light',
       health: 'health check diagnosis',
       connect: 'connect add node',
       locale: 'language locale english chinese',
+      dump: 'crash dump erl_crash 崩溃 转储',
     },
   },
   diag: {

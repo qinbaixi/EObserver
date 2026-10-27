@@ -17,6 +17,9 @@ const TEXTS = {
     stopped: 'EObserver 意外停止（退出码 {code}）。',
     startTimeout: 'EObserver 在 60 秒内没有启动',
     github: 'GitHub 返回 {status}',
+    dumpTitle: '打开崩溃转储',
+    dumpFilter: '崩溃转储 (*.dump)',
+    allFiles: '所有文件',
   },
   en: {
     lang: 'en',
@@ -29,6 +32,9 @@ const TEXTS = {
     stopped: 'EObserver stopped unexpectedly (exit code {code}).',
     startTimeout: 'EObserver did not start within 60 seconds',
     github: 'GitHub returned {status}',
+    dumpTitle: 'Open crash dump',
+    dumpFilter: 'Crash dumps (*.dump)',
+    allFiles: 'All files',
   },
 }
 

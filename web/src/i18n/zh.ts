@@ -23,8 +23,10 @@ export default {
       tables: '表',
       apps: '应用',
       actions: '操作',
+      dumps: '崩溃转储',
     },
     current: '当前',
+    dump_open: '已打开',
     not_running: '未运行',
     status: {
       connected: '已连接',
@@ -41,6 +43,8 @@ export default {
       connect_sub: '添加一个要观察的节点',
       locale: '切换语言',
       locale_sub: '界面改用 {lang}',
+      dump: '打开崩溃转储',
+      dump_sub: '查看 erl_crash.dump，不需要连接节点',
     },
     // Extra words each action is found by (searched in both languages).
     keywords: {
@@ -48,6 +52,7 @@ export default {
       health: '体检 诊断',
       connect: '连接 添加 节点',
       locale: '语言 中文 英文',
+      dump: '崩溃 转储 dump crash erl_crash',
     },
   },
   diag: {

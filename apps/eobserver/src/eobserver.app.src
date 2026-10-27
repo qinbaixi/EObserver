@@ -1,7 +1,7 @@
 {application, eobserver, [
     {description, "A modern web UI for observing Erlang nodes"},
     {vsn, "0.0.10"},
-    {registered, [eobs_sup, eobs_nodes, eobs_node_sup]},
+    {registered, [eobs_sup, eobs_nodes, eobs_node_sup, eobs_dump_sup, eobs_dump_files]},
     {mod, {eobs_app, []}},
     {applications, [kernel, stdlib, cowboy, jsx, eobserver_agent]},
     {env, [{http_ip, {127, 0, 0, 1}}, {http_port, 8090}]},

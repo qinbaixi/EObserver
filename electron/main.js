@@ -208,6 +208,19 @@ async function latestRelease() {
 function registerIpc() {
   // The web UI's language, sent on load and whenever it changes.
   ipcMain.on('locale:set', (_e, l) => setLocale(app, l))
+  // Native open dialog for the crash dump viewer; resolves to a path or null.
+  ipcMain.handle('dump:open', async () => {
+    const opts = {
+      title: tr('dumpTitle'),
+      properties: ['openFile'],
+      filters: [
+        { name: tr('dumpFilter'), extensions: ['dump'] },
+        { name: tr('allFiles'), extensions: ['*'] },
+      ],
+    }
+    const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+    return res.canceled || !res.filePaths.length ? null : res.filePaths[0]
+  })
   ipcMain.handle('update:check', async () => {
     const current = app.getVersion()
     if (canSelfUpdate()) {

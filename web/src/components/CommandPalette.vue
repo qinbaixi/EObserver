@@ -2,10 +2,10 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { NModal, NInput, NIcon, NSpin, useThemeVars } from 'naive-ui'
+import { NModal, NInput, NIcon, NSpin, useThemeVars, useMessage } from 'naive-ui'
 import {
   SearchOutline, ServerOutline, GitNetworkOutline, GridOutline, AppsOutline,
-  MoonOutline, SunnyOutline, MedkitOutline, AddCircleOutline, LanguageOutline,
+  MoonOutline, SunnyOutline, MedkitOutline, AddCircleOutline, LanguageOutline, BugOutline,
 } from '@vicons/ionicons5'
 import { pages, pageTitle, pageSubtitle } from '../router'
 import { useLocale } from '../stores/locale'
@@ -15,6 +15,9 @@ import { useTheme } from '../stores/theme'
 import { useUi } from '../stores/ui'
 import type { AppInfo, EtsTable, MnesiaTable, ProcessPage, ProcessRow } from '../api/types'
 import StatusDot from './StatusDot.vue'
+import { useDumps } from '../stores/dump'
+import { basename } from '../api/dump'
+import { errorText } from '../api/errors'
 
 // Ctrl+K / ⌘K search over pages, nodes, actions and the current node's
 // processes, tables and applications. The node is only asked while the
@@ -22,7 +25,7 @@ import StatusDot from './StatusDot.vue'
 // bounded requests: one node.processes page of 20 per (debounced) query,
 // and the ETS / Mnesia / application lists once per opening.
 
-type Group = 'pages' | 'nodes' | 'processes' | 'tables' | 'apps' | 'actions'
+type Group = 'pages' | 'nodes' | 'processes' | 'tables' | 'apps' | 'actions' | 'dumps'
 
 interface Item {
   key: string
@@ -37,8 +40,8 @@ interface Item {
 }
 
 // Short groups first so the (up to 20) processes do not push them out of view.
-const GROUPS: Group[] = ['pages', 'nodes', 'actions', 'apps', 'tables', 'processes']
-const LIMIT: Record<Group, number> = { pages: 20, nodes: 8, processes: 20, tables: 10, apps: 10, actions: 10 }
+const GROUPS: Group[] = ['pages', 'nodes', 'actions', 'dumps', 'apps', 'tables', 'processes']
+const LIMIT: Record<Group, number> = { pages: 20, nodes: 8, processes: 20, tables: 10, apps: 10, actions: 10, dumps: 8 }
 const PROC_LIMIT = 20
 const DEBOUNCE_MS = 250
 
@@ -48,6 +51,8 @@ const nodes = useNodes()
 const theme = useTheme()
 const ui = useUi()
 const lang = useLocale()
+const dumps = useDumps()
+const message = useMessage()
 
 const query = ref('')
 const q = computed(() => query.value.trim())
@@ -166,6 +171,23 @@ watch([q, node, () => ui.paletteOpen], ([text, n, open]) => {
 
 onBeforeUnmount(() => { stopProcs(); stopLists() })
 
+// Open crash dumps and recently opened ones (from the EObserver backend,
+// no node needed), refreshed each time the palette opens.
+watch(() => ui.paletteOpen, (open) => {
+  if (!open) return
+  void dumps.refresh()
+  void dumps.loadRecent()
+})
+
+async function openDump(path: string) {
+  try {
+    const id = await dumps.open(path)
+    void router.push({ path: '/crashdump', query: { dump: id } })
+  } catch (e) {
+    message.error(errorText(e))
+  }
+}
+
 // --- results ----------------------------------------------------------------
 
 function go(path: string, query: Record<string, string> = {}) {
@@ -220,8 +242,23 @@ const items = computed<Item[]>(() => {
           score(text, a.name, a.description))
     }
   }
-  // Actions match their title and keywords in either language.
   const both = (key: string) => [t(key), t(key, {}, { locale: other })]
+  // Crash dumps: the open ones, then recent files (only while typing).
+  const openPaths = new Set(dumps.list.map((d) => d.path))
+  for (const d of dumps.list) {
+    add({ key: `dump:${d.id}`, group: 'dumps', title: basename(d.path), subtitle: d.path, icon: BugOutline,
+          tag: t('palette.dump_open'), run: () => void router.push({ path: '/crashdump', query: { dump: d.id } }) },
+        text ? score(text, basename(d.path), d.path) : 0)
+  }
+  if (text) {
+    for (const r of dumps.recent) {
+      if (openPaths.has(r.path)) continue
+      add({ key: `recent:${r.path}`, group: 'dumps', title: basename(r.path), subtitle: r.path, icon: BugOutline,
+            run: () => void openDump(r.path) },
+          score(text, basename(r.path), r.path, ...both('palette.keywords.dump')))
+    }
+  }
+  // Actions match their title and keywords in either language.
   const themeTitle = theme.isDark ? t('palette.actions.theme_light') : t('palette.actions.theme_dark')
   add({ key: 'act:theme', group: 'actions', title: themeTitle, icon: theme.isDark ? SunnyOutline : MoonOutline,
         run: () => theme.setMode(theme.isDark ? 'light' : 'dark') },
@@ -232,6 +269,9 @@ const items = computed<Item[]>(() => {
           run: () => go('/diagnosis', { run: '1' }) },
         score(text, ...both('palette.actions.health'), ...both('palette.keywords.health')))
   }
+  add({ key: 'act:dump', group: 'actions', title: t('palette.actions.dump'),
+        subtitle: t('palette.actions.dump_sub'), icon: BugOutline, run: () => void router.push({ path: '/crashdump' }) },
+      score(text, ...both('palette.actions.dump'), ...both('palette.keywords.dump')))
   add({ key: 'act:connect', group: 'actions', title: t('palette.actions.connect'),
         subtitle: t('palette.actions.connect_sub'), icon: AddCircleOutline, run: () => ui.openConnect() },
       score(text, ...both('palette.actions.connect'), ...both('palette.keywords.connect')))

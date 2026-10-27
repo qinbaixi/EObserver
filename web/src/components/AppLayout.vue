@@ -80,6 +80,9 @@ const menuOptions = computed<MenuOption[]>(() =>
   })),
 )
 
+// Pages that work without any observed node (the crash dump viewer).
+const nodeFree = computed(() => route.name === 'crashdump')
+
 const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`))
 </script>
 
@@ -101,7 +104,7 @@ const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`)
     <NLayout>
       <NLayoutHeader bordered class="header" :style="{ '--search-border': themeVars.borderColor }">
         <div class="header-left">
-          <NodeSwitcher />
+          <NodeSwitcher v-if="!nodeFree" />
         </div>
         <NSpace align="center" :size="12">
           <button type="button" class="search-hint" :title="t('palette.open')" @click="ui.paletteOpen = true">
@@ -147,7 +150,7 @@ const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`)
       </NLayoutHeader>
       <NLayoutContent class="content" :native-scrollbar="false">
         <div class="content-inner">
-          <WelcomePanel v-if="nodes.loaded && nodes.list.length === 0 && !trace.replay" />
+          <WelcomePanel v-if="nodes.loaded && nodes.list.length === 0 && !trace.replay && !nodeFree" />
           <RouterView v-else />
         </div>
       </NLayoutContent>

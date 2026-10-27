@@ -11,6 +11,9 @@ interface DesktopBridge {
   platform: string
   // Desktop builds from 0.0.8 on: keeps menus and dialogs in the UI language.
   setLocale?: (locale: string) => void
+  // Desktop builds from 0.0.11 on: crash dump open dialog and drag & drop.
+  openDumpFile?: () => Promise<string | null>
+  pathForFile?: (file: File) => string
   update: {
     check: () => Promise<UpdateInfo>
     download: () => Promise<boolean>

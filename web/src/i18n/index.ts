@@ -9,6 +9,8 @@ import procsZh from './areas/procs.zh'
 import procsEn from './areas/procs.en'
 import reconZh from './areas/recon.zh'
 import reconEn from './areas/recon.en'
+import crashdumpZh from './areas/crashdump.zh'
+import crashdumpEn from './areas/crashdump.en'
 
 export type Locale = 'zh' | 'en'
 export const LOCALES: Locale[] = ['zh', 'en']
@@ -35,14 +37,14 @@ document.documentElement.lang = htmlLang(locale)
 // Each area file owns one top-level key: shell (layout, nodes, connect,
 // shared components), pages (system / load / allocators / applications /
 // ports / sockets / cluster), procs (processes, tables, trace basics),
-// recon (the Recon toolbox page).
+// recon (the Recon toolbox page), crashdump (the crash dump viewer).
 export const i18n = createI18n({
   legacy: false,
   locale,
   fallbackLocale: 'zh',
   messages: {
-    zh: { ...zh, shell: shellZh, pages: pagesZh, procs: procsZh, recon: reconZh },
-    en: { ...en, shell: shellEn, pages: pagesEn, procs: procsEn, recon: reconEn },
+    zh: { ...zh, shell: shellZh, pages: pagesZh, procs: procsZh, recon: reconZh, crashdump: crashdumpZh },
+    en: { ...en, shell: shellEn, pages: pagesEn, procs: procsEn, recon: reconEn, crashdump: crashdumpEn },
   },
 })
 

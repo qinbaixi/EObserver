@@ -153,8 +153,81 @@ handle(<<"recon.scheduler_usage">>, #{<<"node">> := Node} = Params) ->
     Seconds = max(1, min(30, int(maps:get(<<"seconds">>, Params, 5), 5))),
     unwrap(eobs_node:call(to_node(Node), recon_scheduler_usage, [node(), Seconds],
                           Seconds * 1000 + 25000));
+%% crash dumps: read-only, parsed in the tool itself (never on a node)
+handle(<<"dump.browse">>, Params) ->
+    eobs_dump_files:browse(maps:get(<<"path">>, Params, null));
+handle(<<"dump.recent">>, _Params) ->
+    {ok, eobs_dump_files:recent()};
+handle(<<"dump.open">>, #{<<"path">> := Path}) when is_binary(Path) ->
+    case eobs_dump:open(Path) of
+        {ok, Id} -> with_dump(Id, fun(H) -> {ok, #{id => Id, info => eobs_dump:info(H)}} end);
+        Error -> Error
+    end;
+handle(<<"dump.list">>, _Params) ->
+    {ok, eobs_dump:list()};
+handle(<<"dump.close">>, #{<<"id">> := Id}) ->
+    eobs_dump:close(Id);
+handle(<<"dump.cancel">>, #{<<"id">> := Id}) ->
+    eobs_dump:cancel(Id);
+handle(<<"dump.info">>, #{<<"id">> := Id}) ->
+    with_dump(Id, fun(H) -> {ok, eobs_dump:info(H)} end);
+handle(<<"dump.overview">>, #{<<"id">> := Id}) ->
+    dump_view(Id, overview, []);
+handle(<<"dump.query">>, #{<<"id">> := Id, <<"kind">> := Kind} = Params) when is_binary(Kind) ->
+    Opts = #{offset => int(maps:get(<<"offset">>, Params, 0), 0),
+             limit => min(1000, int(maps:get(<<"limit">>, Params, 50), 50)),
+             sort => text(maps:get(<<"sort">>, Params, null)),
+             order => enum(maps:get(<<"order">>, Params, <<"desc">>), [asc, desc], desc),
+             filter => case text(maps:get(<<"filter">>, Params, <<>>)) of
+                           null -> <<>>;
+                           F -> F
+                       end},
+    dump_view(Id, query, [Kind, Opts]);
+handle(<<"dump.process">>, #{<<"id">> := Id, <<"pid">> := Pid}) when is_binary(Pid) ->
+    dump_view(Id, process, [Pid]);
+handle(<<"dump.process_part">>, #{<<"id">> := Id, <<"pid">> := Pid, <<"part">> := Part} = Params)
+  when is_binary(Pid), is_binary(Part) ->
+    dump_view(Id, process_part, [Pid, Part, int(maps:get(<<"offset">>, Params, 0), 0),
+                                 min(1000, int(maps:get(<<"limit">>, Params, 100), 100))]);
+handle(<<"dump.detail">>, #{<<"id">> := Id, <<"kind">> := Kind, <<"key">> := Key})
+  when is_binary(Kind), is_binary(Key) ->
+    dump_view(Id, detail, [Kind, Key]);
+handle(<<"dump.expand">>, #{<<"id">> := Id, <<"token">> := Token}) ->
+    dump_view(Id, expand, [Token]);
+handle(<<"dump.search">>, #{<<"id">> := Id, <<"q">> := Q}) when is_binary(Q) ->
+    dump_view(Id, search, [Q]);
 handle(Method, _Params) ->
     {error, {unknown_method, Method}}.
+
+%% Runs Fun on an open dump; a dump closed meanwhile is not found.
+with_dump(Id, Fun) ->
+    case eobs_dump:handle(Id) of
+        {ok, H} ->
+            try Fun(H)
+            catch error:badarg:Stack ->
+                case eobs_dump:handle(Id) of
+                    {ok, _} -> erlang:raise(error, badarg, Stack);
+                    Error -> Error
+                end
+            end;
+        Error ->
+            Error
+    end.
+
+%% Content of a dump comes from eobs_dump_view, which returns a value,
+%% {ok, Value} or {error, Reason}.
+dump_view(Id, Fun, Args) ->
+    with_dump(Id, fun(H) ->
+                          case apply(eobs_dump_view, Fun, [H | Args]) of
+                              ok -> ok;
+                              {ok, _} = Ok -> Ok;
+                              {error, _} = Error -> Error;
+                              Value -> {ok, Value}
+                          end
+                  end).
+
+text(B) when is_binary(B) -> B;
+text(_) -> null.
 
 %% Top N size, 1..50 (default 20).
 recon_n(Params) ->

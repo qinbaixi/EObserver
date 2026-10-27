@@ -1,9 +1,9 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHistory, type RouteComponent } from 'vue-router'
 import type { Component } from 'vue'
 import {
   SpeedometerOutline, PulseOutline, HardwareChipOutline, AppsOutline,
   GitNetworkOutline, SwapHorizontalOutline, WifiOutline, GridOutline, ShareSocialOutline,
-  ChatbubblesOutline, MedkitOutline, AlbumsOutline, DocumentTextOutline, ConstructOutline,
+  ChatbubblesOutline, MedkitOutline, AlbumsOutline, DocumentTextOutline, ConstructOutline, BugOutline,
 } from '@vicons/ionicons5'
 import OverviewPage from './pages/OverviewPage.vue'
 import SystemPage from './pages/SystemPage.vue'
@@ -55,11 +55,15 @@ export const pages: { path: string; name: string; meta: PageMeta }[] = [
   { path: '/sockets', name: 'sockets', meta: meta('sockets', WifiOutline) },
   { path: '/tables', name: 'tables', meta: meta('tables', GridOutline) },
   { path: '/cluster', name: 'cluster', meta: meta('cluster', ShareSocialOutline) },
+  // Reads a crash dump file on the EObserver machine; needs no node.
+  { path: '/crashdump', name: 'crashdump', meta: meta('crashdump', BugOutline) },
 ]
 
-const components: Record<string, Component> = {
+// The crash dump viewer is loaded on first use (it needs no node and most
+// sessions never open it).
+const components: Record<string, RouteComponent | (() => Promise<RouteComponent>)> = {
   overview: OverviewPage, system: SystemPage, load: LoadPage, processes: ProcessesPage, trace: TracePage, diagnosis: DiagnosisPage, recon: ReconPage, logs: LogsPage, applications: ApplicationsPage,
-  ports: PortsPage, sockets: SocketsPage, tables: TablesPage, allocators: AllocatorsPage, cluster: ClusterPage,
+  ports: PortsPage, sockets: SocketsPage, tables: TablesPage, allocators: AllocatorsPage, cluster: ClusterPage, crashdump: () => import('./pages/CrashDumpPage.vue').then((m) => m.default),
 }
 
 export const router = createRouter({

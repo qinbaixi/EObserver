@@ -2749,7 +2749,7 @@ lf_read(#{path := P}, Pos, Dir, Bytes) ->
                    entries => lf_entries(Body, Start)}};
         fwd ->
             Start = case Pos of
-                        N when is_integer(N) -> min(N, Size);
+                        N when is_integer(N) -> lf_entry_start(P, min(N, Size));
                         _ -> 0
                     end,
             {ok, Bin} = lf_pread(P, Start, min(Bytes, Size - Start)),
@@ -2759,6 +2759,30 @@ lf_read(#{path := P}, Pos, Dir, Bytes) ->
                    end,
             {ok, #{size => Size, start => Start, stop => Start + byte_size(Body), gz => false,
                    entries => lf_entries(Body, Start)}}
+    end.
+
+%% A page that would start inside a multi-line entry (a stack trace
+%% printed by lager, a report) starts at that entry's first line instead,
+%% looking back at most LF_PROBE bytes.
+lf_entry_start(_P, 0) ->
+    0;
+lf_entry_start(P, Pos) ->
+    {ok, Re} = lf_header_re(),
+    {ok, Line} = lf_pread(P, Pos, 512),
+    case lf_header(Line, Re) of
+        {ok, _} ->
+            Pos;
+        none ->
+            From = max(0, Pos - ?LF_PROBE),
+            {ok, Bin} = lf_pread(P, From, Pos - From),
+            {Start, Body} = case From of
+                                0 -> {0, Bin};
+                                _ -> lf_from_first_nl(From, Bin)
+                            end,
+            case [At || {At, L} <- lf_lines(Body, Start), lf_header(L, Re) =/= none] of
+                [] -> Pos;
+                Heads -> lists:last(Heads)
+            end
     end.
 
 %% Drops a partial first line (unless the chunk is one long line).

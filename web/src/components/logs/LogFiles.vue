@@ -187,8 +187,9 @@ async function jump() {
 }
 
 async function gotoPos(pos: number) {
-  highlight.value = pos
   await read(pos, 'fwd', 'replace')
+  // A hit inside a multi-line entry: the page starts at that entry.
+  highlight.value = start.value
   void scrollTo('top')
 }
 

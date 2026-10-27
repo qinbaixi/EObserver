@@ -1133,6 +1133,10 @@ log_files(Config) ->
     {ok, #{pos := At}} = Req(<<"logfile.seek">>, #{<<"path">> => DebugBin, <<"time">> => <<"2026-10-27 12:00">>}),
     {ok, #{entries := [#{t := <<"2026-10-27 12:00:0", _/binary>>, pos := At} | _]}} =
         Req(<<"logfile.read">>, #{<<"path">> => DebugBin, <<"pos">> => At, <<"dir">> => <<"fwd">>}),
+    %% A page asked to start inside a multi-line entry starts at its first line.
+    #{pos := CrashPos} = lists:last(Last),
+    {ok, #{start := CrashPos, entries := [#{pos := CrashPos, text := Tail}]}} =
+        Req(<<"logfile.read">>, #{<<"path">> => DebugBin, <<"pos">> => Size - 10, <<"dir">> => <<"fwd">>}),
     %% Searching backwards from the end, with a level.
     {ok, #{hits := [#{text := Hit, level := error} | _] = Hits}} =
         Req(<<"logfile.search">>, #{<<"path">> => DebugBin, <<"pos">> => null, <<"dir">> => <<"back">>,

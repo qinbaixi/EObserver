@@ -129,6 +129,7 @@ check() ->
 %% else can be read.
 logfile_smoke() ->
     File = filename:absname("eobs_smoke.log"),
+    _ = file:delete(File),
     ok = logger:add_handler(eobs_smoke_file, logger_std_h,
                             #{level => notice, config => #{file => File}}),
     logger:notice("smoke file line ~p", [1]),

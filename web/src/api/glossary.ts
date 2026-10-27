@@ -26,3 +26,8 @@ export function termTip(label: string): string | undefined {
   const slug = byLabel.get(label)
   return slug ? TEXTS[currentLocale()][slug].tip : undefined
 }
+
+// The glossary slug of a label (Chinese or English), if it has one.
+export function termSlug(label: string): string | undefined {
+  return byLabel.get(label)
+}

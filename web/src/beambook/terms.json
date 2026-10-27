@@ -1,0 +1,577 @@
+{
+  "_comment": "Knowledge cards drawn from The BEAM Book. cards: card id -> book sections (heading ids, same in both languages) whose opening blocks make up the card, plus related cards. terms: glossary slug (i18n/areas/shell.*.ts glossary) -> card id. scripts/beambook/extract.py reads this file; rerun it after changing sections. pages: route name -> cards offered by the page header.",
+  "cards": {
+    "erts": {
+      "sections": [
+        "_erts_and_the_erlang_runtime_system",
+        "_layers_in_the_execution_environment"
+      ],
+      "related": [
+        "beam",
+        "scheduler",
+        "process",
+        "memory_subsystem"
+      ]
+    },
+    "beam": {
+      "sections": [
+        "_the_erlang_virtual_machine_beam",
+        "_the_beam_interpreter",
+        "_the_real_beam"
+      ],
+      "related": [
+        "erts",
+        "reductions",
+        "tagging"
+      ]
+    },
+    "tagging": {
+      "sections": [
+        "_the_tagging_scheme",
+        "_the_primary_tag",
+        "_immediates"
+      ],
+      "related": [
+        "beam",
+        "heap",
+        "binary"
+      ]
+    },
+    "process": {
+      "sections": [
+        "_processes",
+        "_processes_are_just_memory"
+      ],
+      "related": [
+        "pcb",
+        "process_memory",
+        "mailbox",
+        "process_state"
+      ]
+    },
+    "pcb": {
+      "sections": [
+        "_the_pcb"
+      ],
+      "related": [
+        "process",
+        "process_state",
+        "heap"
+      ]
+    },
+    "process_memory": {
+      "sections": [
+        "_process_memory",
+        "_term_sharing"
+      ],
+      "related": [
+        "heap",
+        "stack",
+        "gc",
+        "mailbox"
+      ]
+    },
+    "process_state": {
+      "sections": [
+        "_the_process_state_or_status"
+      ],
+      "related": [
+        "scheduler",
+        "run_queue",
+        "reductions"
+      ]
+    },
+    "process_dictionary": {
+      "sections": [
+        "_the_process_dictionary"
+      ],
+      "related": [
+        "process",
+        "pcb"
+      ]
+    },
+    "mailbox": {
+      "sections": [
+        "_mailboxes_and_message_passing",
+        "_sending_messages_in_parallel",
+        "_mailbox_overflow"
+      ],
+      "related": [
+        "message_passing",
+        "process_memory",
+        "gc"
+      ]
+    },
+    "message_passing": {
+      "sections": [
+        "_lock_free_message_passing",
+        "_the_process_of_sending_a_message_to_a_process",
+        "_receiving_a_message"
+      ],
+      "related": [
+        "mailbox",
+        "tracing",
+        "dist_protocol"
+      ]
+    },
+    "heap": {
+      "sections": [
+        "_memory_handling",
+        "_heap_growth",
+        "_interaction_between_stack_and_heap"
+      ],
+      "related": [
+        "stack",
+        "gc",
+        "process_memory"
+      ]
+    },
+    "stack": {
+      "sections": [
+        "_working_memory_a_stack_machine_it_is_not",
+        "_stack_growth"
+      ],
+      "related": [
+        "heap",
+        "beam"
+      ]
+    },
+    "gc": {
+      "sections": [
+        "_the_garbage_collector_gc",
+        "_generations_in_erlangs_garbage_collection",
+        "_practical_implications_and_considerations"
+      ],
+      "related": [
+        "heap",
+        "process_memory",
+        "binary"
+      ]
+    },
+    "scheduler": {
+      "sections": [
+        "_scheduling",
+        "_concurrency_parallelism_and_preemptive_multitasking",
+        "_the_scheduler_loop"
+      ],
+      "related": [
+        "reductions",
+        "run_queue",
+        "load_balancing",
+        "process_state"
+      ]
+    },
+    "reductions": {
+      "sections": [
+        "_reductions",
+        "_how_many_reductions_will_you_get",
+        "_what_is_a_reduction_really"
+      ],
+      "related": [
+        "scheduler",
+        "process_switch",
+        "bif"
+      ]
+    },
+    "run_queue": {
+      "sections": [
+        "_process_queues",
+        "_the_ready_queue"
+      ],
+      "related": [
+        "scheduler",
+        "process_state",
+        "load_balancing"
+      ]
+    },
+    "load_balancing": {
+      "sections": [
+        "_load_balancing",
+        "_task_stealing",
+        "_migration"
+      ],
+      "related": [
+        "scheduler",
+        "run_queue"
+      ]
+    },
+    "process_switch": {
+      "sections": [
+        "_process_switching"
+      ],
+      "related": [
+        "reductions",
+        "scheduler"
+      ]
+    },
+    "memory_subsystem": {
+      "sections": [
+        "_the_memory_subsystem"
+      ],
+      "related": [
+        "allocators",
+        "process_memory",
+        "binary",
+        "atom"
+      ]
+    },
+    "allocators": {
+      "sections": [
+        "SS-Memory_Allocators",
+        "_the_basic_allocator_sys_alloc",
+        "_the_heap_allocator_eheap_alloc"
+      ],
+      "related": [
+        "carriers",
+        "alloc_instances",
+        "memory_subsystem"
+      ]
+    },
+    "carriers": {
+      "sections": [
+        "_the_memory_allocator_framework_alloc_util",
+        "_the_memory_segment_allocator_mseg_alloc",
+        "_recommendations"
+      ],
+      "related": [
+        "allocators",
+        "alloc_instances"
+      ]
+    },
+    "alloc_instances": {
+      "sections": [
+        "_per_scheduler_allocator_instances"
+      ],
+      "related": [
+        "allocators",
+        "carriers",
+        "scheduler"
+      ]
+    },
+    "atom": {
+      "sections": [
+        "_the_atom_table"
+      ],
+      "related": [
+        "memory_subsystem",
+        "tagging"
+      ]
+    },
+    "binary": {
+      "sections": [
+        "_binaries",
+        "SS-Binaries",
+        "_the_binary_allocator_binary_alloc"
+      ],
+      "related": [
+        "gc",
+        "allocators",
+        "process_memory"
+      ]
+    },
+    "code": {
+      "sections": [
+        "_code",
+        "_hot_code_loading"
+      ],
+      "related": [
+        "beam",
+        "memory_subsystem"
+      ]
+    },
+    "ets": {
+      "sections": [
+        "_the_ets_allocator_ets_alloc"
+      ],
+      "related": [
+        "allocators",
+        "memory_subsystem"
+      ]
+    },
+    "ports": {
+      "sections": [
+        "_ports_2",
+        "_different_types_of_ports",
+        "_port_scheduling"
+      ],
+      "related": [
+        "port_queue",
+        "sockets",
+        "scheduler"
+      ]
+    },
+    "port_queue": {
+      "sections": [
+        "_flow_control_in_erlang_ports"
+      ],
+      "related": [
+        "ports",
+        "sockets"
+      ]
+    },
+    "sockets": {
+      "sections": [
+        "_sockets_udp_and_tcp"
+      ],
+      "related": [
+        "ports",
+        "port_queue"
+      ]
+    },
+    "group_leader": {
+      "sections": [
+        "_io_protocol",
+        "_group_leader"
+      ],
+      "related": [
+        "process",
+        "ports"
+      ]
+    },
+    "node": {
+      "sections": [
+        "_the_erlang_node",
+        "_nodes_and_connections"
+      ],
+      "related": [
+        "epmd",
+        "dist_protocol",
+        "dist_port"
+      ]
+    },
+    "epmd": {
+      "sections": [
+        "_erlang_port_mapper_daemon_epmd"
+      ],
+      "related": [
+        "node",
+        "dist_protocol"
+      ]
+    },
+    "dist_protocol": {
+      "sections": [
+        "_the_erlang_distribution_protocol",
+        "_processes_in_distributed_erlang",
+        "_distribution_in_a_large_scale_system"
+      ],
+      "related": [
+        "node",
+        "epmd",
+        "dist_port"
+      ]
+    },
+    "dist_port": {
+      "sections": [
+        "_dist_port"
+      ],
+      "related": [
+        "dist_protocol",
+        "ports",
+        "port_queue"
+      ]
+    },
+    "bif": {
+      "sections": [
+        "_built_in_functions_bifs",
+        "_one_calm_night_a_tale_of_term_to_binary_and_non_yielding_bifs"
+      ],
+      "related": [
+        "nif",
+        "reductions",
+        "scheduler"
+      ]
+    },
+    "nif": {
+      "sections": [
+        "_introduction",
+        "_nifs"
+      ],
+      "related": [
+        "bif",
+        "scheduler"
+      ]
+    },
+    "crash_dump": {
+      "sections": [
+        "_crash_dumps_in_erlang",
+        "_understanding_and_reading_crash_dumps",
+        "_basic_structure_of_a_crash_dump"
+      ],
+      "related": [
+        "let_it_crash",
+        "process",
+        "memory_subsystem"
+      ]
+    },
+    "let_it_crash": {
+      "sections": [
+        "_overview_and_rationale",
+        "_designing_systems_with_supervisor_trees"
+      ],
+      "related": [
+        "crash_dump",
+        "process"
+      ]
+    },
+    "tracing": {
+      "sections": [
+        "_erlang_trace_erl_tracer",
+        "_sequential_tracing_seq_trace",
+        "_comparison_and_use_cases"
+      ],
+      "related": [
+        "message_passing",
+        "recon"
+      ]
+    },
+    "recon": {
+      "sections": [
+        "_recon_and_redbug",
+        "_fundamentals_of_beam_performance"
+      ],
+      "related": [
+        "tracing",
+        "scheduler",
+        "allocators"
+      ]
+    }
+  },
+  "terms": {
+    "erts": "erts",
+    "emulator": "beam",
+    "wordsize": "tagging",
+    "schedulers": "scheduler",
+    "sched_util": "scheduler",
+    "sched_util_each": "load_balancing",
+    "dirty_cpu": "nif",
+    "dirty_io": "nif",
+    "mem_total": "memory_subsystem",
+    "total_memory": "memory_subsystem",
+    "mem_processes": "process_memory",
+    "memory": "process_memory",
+    "mem_atom": "atom",
+    "mem_binary": "binary",
+    "mem_code": "code",
+    "mem_ets": "ets",
+    "ets_tables": "ets",
+    "run_queue": "run_queue",
+    "priority": "run_queue",
+    "reductions": "reductions",
+    "reductions_rate": "reductions",
+    "reds": "reductions",
+    "context_switches": "process_switch",
+    "gc_count": "gc",
+    "gc_reclaimed": "gc",
+    "ports": "ports",
+    "os_pid": "ports",
+    "io_in": "ports",
+    "io_throughput": "ports",
+    "io_in_total": "ports",
+    "io_out_total": "ports",
+    "queue": "port_queue",
+    "process_count": "process",
+    "message_queue": "mailbox",
+    "status": "process_state",
+    "heap": "heap",
+    "stack": "stack",
+    "group_leader": "group_leader",
+    "allocator": "allocators",
+    "instances": "alloc_instances",
+    "blocks": "carriers",
+    "carriers": "carriers",
+    "utilization": "carriers",
+    "mbc": "carriers",
+    "sbc": "carriers",
+    "peak": "carriers",
+    "overall_util": "carriers",
+    "carrier_size": "carriers",
+    "carrier_util": "carriers"
+  },
+  "pages": {
+    "overview": [
+      "erts",
+      "node",
+      "scheduler"
+    ],
+    "system": [
+      "erts",
+      "beam",
+      "scheduler",
+      "memory_subsystem"
+    ],
+    "load": [
+      "scheduler",
+      "reductions",
+      "run_queue",
+      "load_balancing",
+      "memory_subsystem"
+    ],
+    "allocators": [
+      "allocators",
+      "carriers",
+      "alloc_instances",
+      "memory_subsystem"
+    ],
+    "applications": [
+      "let_it_crash",
+      "group_leader",
+      "code"
+    ],
+    "diagnosis": [
+      "mailbox",
+      "gc",
+      "binary",
+      "reductions"
+    ],
+    "recon": [
+      "recon",
+      "process_memory",
+      "binary",
+      "allocators",
+      "scheduler"
+    ],
+    "logs": [
+      "let_it_crash",
+      "crash_dump"
+    ],
+    "processes": [
+      "process",
+      "pcb",
+      "process_state",
+      "mailbox",
+      "gc",
+      "process_dictionary"
+    ],
+    "trace": [
+      "tracing",
+      "message_passing",
+      "mailbox"
+    ],
+    "ports": [
+      "ports",
+      "port_queue",
+      "bif",
+      "nif"
+    ],
+    "sockets": [
+      "sockets",
+      "ports",
+      "port_queue"
+    ],
+    "tables": [
+      "ets",
+      "memory_subsystem"
+    ],
+    "cluster": [
+      "node",
+      "epmd",
+      "dist_protocol",
+      "dist_port"
+    ],
+    "crashdump": [
+      "crash_dump",
+      "let_it_crash",
+      "process_memory"
+    ]
+  }
+}

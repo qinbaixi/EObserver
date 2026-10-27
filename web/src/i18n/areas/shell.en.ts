@@ -17,6 +17,7 @@ const en: typeof zh = {
     tables: { title: 'Tables', subtitle: 'ETS / Mnesia' },
     cluster: { title: 'Cluster', subtitle: '' },
     crashdump: { title: 'Crash Dump', subtitle: '' },
+    book: { title: 'BEAM Book', subtitle: 'Knowledge' },
   },
   locale: { zh: '中文', en: 'English' },
   coming_soon: 'This page arrives in milestone {milestone}',

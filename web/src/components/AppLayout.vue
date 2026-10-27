@@ -22,6 +22,8 @@ import WelcomePanel from './WelcomePanel.vue'
 import ConnectDialog from './ConnectDialog.vue'
 import UpdateChecker from './UpdateChecker.vue'
 import CommandPalette from './CommandPalette.vue'
+import KnowledgeDrawer from './KnowledgeDrawer.vue'
+import BookModal from './BookModal.vue'
 import { useUi } from '../stores/ui'
 import { useUrlSync } from '../composables/useUrlSync'
 
@@ -80,8 +82,8 @@ const menuOptions = computed<MenuOption[]>(() =>
   })),
 )
 
-// Pages that work without any observed node (the crash dump viewer).
-const nodeFree = computed(() => route.name === 'crashdump')
+// Pages that work without any observed node (the crash dump viewer, the book).
+const nodeFree = computed(() => route.name === 'crashdump' || route.name === 'book')
 
 const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`))
 </script>
@@ -157,6 +159,8 @@ const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`)
     </NLayout>
     <ConnectDialog />
     <CommandPalette />
+    <KnowledgeDrawer />
+    <BookModal />
   </NLayout>
 </template>
 

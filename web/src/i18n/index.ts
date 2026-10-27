@@ -11,6 +11,8 @@ import reconZh from './areas/recon.zh'
 import reconEn from './areas/recon.en'
 import crashdumpZh from './areas/crashdump.zh'
 import crashdumpEn from './areas/crashdump.en'
+import bookZh from './areas/book.zh'
+import bookEn from './areas/book.en'
 
 export type Locale = 'zh' | 'en'
 export const LOCALES: Locale[] = ['zh', 'en']
@@ -37,14 +39,15 @@ document.documentElement.lang = htmlLang(locale)
 // Each area file owns one top-level key: shell (layout, nodes, connect,
 // shared components), pages (system / load / allocators / applications /
 // ports / sockets / cluster), procs (processes, tables, trace basics),
-// recon (the Recon toolbox page), crashdump (the crash dump viewer).
+// recon (the Recon toolbox page), crashdump (the crash dump viewer), book
+// (BEAM Book knowledge cards and reader).
 export const i18n = createI18n({
   legacy: false,
   locale,
   fallbackLocale: 'zh',
   messages: {
-    zh: { ...zh, shell: shellZh, pages: pagesZh, procs: procsZh, recon: reconZh, crashdump: crashdumpZh },
-    en: { ...en, shell: shellEn, pages: pagesEn, procs: procsEn, recon: reconEn, crashdump: crashdumpEn },
+    zh: { ...zh, shell: shellZh, pages: pagesZh, procs: procsZh, recon: reconZh, crashdump: crashdumpZh, book: bookZh },
+    en: { ...en, shell: shellEn, pages: pagesEn, procs: procsEn, recon: reconEn, crashdump: crashdumpEn, book: bookEn },
   },
 })
 

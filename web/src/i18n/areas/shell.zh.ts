@@ -17,6 +17,7 @@ export default {
     tables: { title: '表', subtitle: 'ETS / Mnesia' },
     cluster: { title: '集群拓扑', subtitle: 'Cluster' },
     crashdump: { title: '崩溃转储', subtitle: 'Crash Dump' },
+    book: { title: 'BEAM Book', subtitle: '知识库' },
   },
   // Each language's name in itself (the same in every language file).
   locale: { zh: '中文', en: 'English' },

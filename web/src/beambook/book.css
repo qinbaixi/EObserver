@@ -1,0 +1,107 @@
+/* Book text (Asciidoctor markup from scripts/beambook/extract.py), used in
+   knowledge cards and the reader. Colours come from --bb-* variables the
+   containing component sets from the naive-ui theme. */
+.bb-content {
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--bb-text);
+  overflow-wrap: anywhere;
+}
+.bb-content h2, .bb-content h3, .bb-content h4, .bb-content h5, .bb-content h6 {
+  line-height: 1.4;
+  font-weight: 650;
+  margin: 1.6em 0 0.6em;
+  scroll-margin-top: 12px;
+}
+.bb-content h2 { font-size: 22px; margin-top: 0.4em; }
+.bb-content h3 { font-size: 18px; }
+.bb-content h4 { font-size: 16px; }
+.bb-content h5, .bb-content h6 { font-size: 14px; }
+.bb-content p { margin: 0 0 0.9em; }
+.bb-content a { color: var(--bb-accent); text-decoration: none; }
+.bb-content a:hover { text-decoration: underline; }
+.bb-content code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bb-code-bg);
+}
+.bb-content pre {
+  margin: 0 0 1em;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--bb-code-bg);
+  overflow-x: auto;
+  white-space: pre;
+  line-height: 1.5;
+}
+.bb-content pre code { padding: 0; background: none; font-size: 12.5px; }
+.bb-content .title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--bb-muted);
+  margin: 0 0 4px;
+}
+.bb-content .imageblock .title { margin: 6px 0 0; text-align: center; font-weight: 500; }
+.bb-content .imageblock { margin: 0 0 1.2em; }
+.bb-content .imageblock .content {
+  text-align: center;
+  /* Diagrams are drawn black on white; keep them legible in dark mode. */
+  background: #fff;
+  border-radius: 6px;
+  padding: 8px;
+}
+.bb-content img { max-width: 100%; height: auto; }
+.bb-content ul, .bb-content ol { margin: 0 0 1em; padding-left: 1.6em; }
+.bb-content li > p { margin: 0 0 0.3em; }
+.bb-content dl dt { font-weight: 600; margin-top: 0.5em; }
+.bb-content dl dd { margin: 0 0 0.5em 1.4em; }
+.bb-content table.tableblock {
+  border-collapse: collapse;
+  margin: 0 0 1em;
+  font-size: 13px;
+  display: block;
+  overflow-x: auto;
+}
+.bb-content table.tableblock th, .bb-content table.tableblock td {
+  border: 1px solid var(--bb-border);
+  padding: 4px 8px;
+  vertical-align: top;
+}
+.bb-content table.tableblock p { margin: 0; }
+/* Admonitions (note / tip / warning / version) are one-row tables. */
+.bb-content .admonitionblock { margin: 0 0 1em; }
+.bb-content .admonitionblock > table { width: 100%; border-collapse: collapse; }
+.bb-content .admonitionblock td.icon { display: none; }
+.bb-content .admonitionblock td.content {
+  border-left: 3px solid var(--bb-accent);
+  background: var(--bb-callout-bg);
+  border-radius: 0 6px 6px 0;
+  padding: 8px 12px;
+}
+.bb-content .admonitionblock.warning td.content { border-left-color: #d03050; }
+.bb-content .admonitionblock.tip td.content { border-left-color: #18a058; }
+.bb-content .admonitionblock td.content > :last-child,
+.bb-content .sidebarblock .content > :last-child { margin-bottom: 0; }
+.bb-content .sidebarblock, .bb-content .exampleblock > .content, .bb-content .quoteblock {
+  border: 1px solid var(--bb-border);
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin: 0 0 1em;
+}
+.bb-content .footnotes { font-size: 12.5px; color: var(--bb-muted); margin-top: 2em; }
+.bb-content .footnotes hr { border: none; border-top: 1px solid var(--bb-border); }
+.bb-content sup.footnote { font-size: 0.75em; }
+.bb-content .bb-flash { animation: bb-flash 1.6s ease-out; border-radius: 4px; }
+@keyframes bb-flash {
+  from { background: var(--bb-flash); }
+  to { background: transparent; }
+}
+/* Rouge syntax highlighting. */
+.bb-content .c, .bb-content .c1, .bb-content .cm { color: var(--bb-muted); font-style: italic; }
+.bb-content .k, .bb-content .kt, .bb-content .kd { color: var(--bb-kw); }
+.bb-content .s, .bb-content .s1, .bb-content .s2, .bb-content .ss { color: var(--bb-str); }
+.bb-content .mi, .bb-content .mf, .bb-content .mh { color: var(--bb-num); }
+.bb-content .nf, .bb-content .nb { color: var(--bb-fn); }
+.bb-content .nv { color: var(--bb-var); }

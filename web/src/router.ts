@@ -4,6 +4,7 @@ import {
   SpeedometerOutline, PulseOutline, HardwareChipOutline, AppsOutline,
   GitNetworkOutline, SwapHorizontalOutline, WifiOutline, GridOutline, ShareSocialOutline,
   ChatbubblesOutline, MedkitOutline, AlbumsOutline, DocumentTextOutline, ConstructOutline, BugOutline,
+  LibraryOutline,
 } from '@vicons/ionicons5'
 import OverviewPage from './pages/OverviewPage.vue'
 import SystemPage from './pages/SystemPage.vue'
@@ -57,13 +58,16 @@ export const pages: { path: string; name: string; meta: PageMeta }[] = [
   { path: '/cluster', name: 'cluster', meta: meta('cluster', ShareSocialOutline) },
   // Reads a crash dump file on the EObserver machine; needs no node.
   { path: '/crashdump', name: 'crashdump', meta: meta('crashdump', BugOutline) },
+  // The bundled BEAM Book; needs no node either.
+  { path: '/book', name: 'book', meta: meta('book', LibraryOutline) },
 ]
 
-// The crash dump viewer is loaded on first use (it needs no node and most
-// sessions never open it).
+// The crash dump viewer and the book are loaded on first use (they need no
+// node and most sessions never open them).
 const components: Record<string, RouteComponent | (() => Promise<RouteComponent>)> = {
   overview: OverviewPage, system: SystemPage, load: LoadPage, processes: ProcessesPage, trace: TracePage, diagnosis: DiagnosisPage, recon: ReconPage, logs: LogsPage, applications: ApplicationsPage,
   ports: PortsPage, sockets: SocketsPage, tables: TablesPage, allocators: AllocatorsPage, cluster: ClusterPage, crashdump: () => import('./pages/CrashDumpPage.vue').then((m) => m.default),
+  book: () => import('./pages/BookPage.vue').then((m) => m.default),
 }
 
 export const router = createRouter({

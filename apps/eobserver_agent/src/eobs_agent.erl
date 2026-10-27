@@ -29,7 +29,7 @@
 
 %% Bump whenever the exported API or return shapes change, so the tool
 %% replaces an older copy that is still loaded on the target.
--define(VERSION, 16).
+-define(VERSION, 17).
 
 %% Long-lived helper process on the observed node. It keeps
 %% scheduler_wall_time enabled, builds process lists while holding the
@@ -2569,14 +2569,61 @@ lf_files() ->
                        end, [], Lager ++ Crash ++ Logger),
     lists:append([lf_rotations(F, S, L) || {F, S, L} <- Seen]).
 
+%% Files of lager's file backends in Sink. The path a backend writes to
+%% is in its state (lager_file_backend keeps the expanded name there, and
+%% so do the renamed copies many projects use); the handler id
+%% {lager_file_backend, File} is the fallback when the state can't be read.
 lf_lager_files(Sink) ->
-    case bounded(fun() -> gen_event:which_handlers(Sink) end, ?LAGER_CALL_MS) of
-        Handlers when is_list(Handlers) ->
-            [{lf_lager_path(F), lager, lf_lager_level(Sink, Id)}
-             || {lager_file_backend, F} = Id <- Handlers, is_list(F)];
-        _ ->
+    Handlers = case bounded(fun() -> gen_event:which_handlers(Sink) end, ?LAGER_CALL_MS) of
+                   Hs when is_list(Hs) -> [H || H <- Hs, H =/= ?LAGER_ID];
+                   _ -> []
+               end,
+    FromState = [{P, Id} || {Id, State} <- lf_handler_states(Sink),
+                            lists:member(Id, Handlers),
+                            P <- lf_state_paths(State)],
+    FromId = [{lf_lager_path(F), Id} || {_, F0} = Id <- Handlers,
+                                        F <- [lf_name(F0)], F =/= none,
+                                        not lists:keymember(Id, 2, FromState)],
+    [{P, lager, lf_lager_level(Sink, Id)} || {P, Id} <- FromState ++ FromId].
+
+%% [{HandlerId, State}] of the sink's handlers, through sys:get_state in a
+%% process of its own with a capped heap; [] when that fails.
+lf_handler_states(Sink) ->
+    {Pid, Ref} = spawn_opt(fun() -> exit({done, sys:get_state(Sink, ?LAGER_CALL_MS)}) end,
+                           [monitor, {max_heap_size, #{size => 1000000, kill => true,
+                                                       error_logger => false}}]),
+    receive
+        {'DOWN', Ref, process, Pid, {done, L}} when is_list(L) ->
+            [{case Id of false -> Mod; _ -> {Mod, Id} end, State} || {Mod, Id, State} <- L];
+        {'DOWN', Ref, process, Pid, _} ->
             []
+    after ?LAGER_CALL_MS + 500 ->
+        exit(Pid, kill),
+        erlang:demonitor(Ref, [flush]),
+        []
     end.
+
+%% Top-level fields of a handler state that name an existing file.
+lf_state_paths(State) when is_tuple(State), tuple_size(State) > 1 ->
+    lists:usort([P || E <- tl(tuple_to_list(State)),
+                      F <- [lf_name(E)], F =/= none,
+                      P <- [lf_lager_path(F)],
+                      filelib:is_regular(P)]);
+lf_state_paths(_) ->
+    [].
+
+lf_name(B) when is_binary(B), byte_size(B) > 0, byte_size(B) < 4096 ->
+    case unicode:characters_to_list(B) of
+        L when is_list(L) -> lf_name(L);
+        _ -> none
+    end;
+lf_name([C | _] = L) when is_integer(C) ->
+    case catch length(L) < 4096 andalso io_lib:printable_unicode_list(L) of
+        true -> L;
+        _ -> none
+    end;
+lf_name(_) ->
+    none.
 
 %% As lager's own expand_path: relative to log_root, then absolute.
 lf_lager_path(File) ->

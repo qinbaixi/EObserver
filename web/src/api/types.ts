@@ -553,6 +553,8 @@ export interface LogLine {
   level: LogLevel
   module: string | null
   pid: string | null
+  /** logger: OTP logger; lager: one of lager's sinks */
+  source?: 'logger' | 'lager'
   text: string
 }
 
@@ -600,6 +602,10 @@ export interface LogsData {
   started: number
   now: number
   primary_level: string | null
+  /** Whether the agent also collects from lager. */
+  lager?: boolean
+  /** The least severe level lager lets through, when it collects from lager. */
+  lager_level?: string | null
   received: number
   lost: number
   dropped: number

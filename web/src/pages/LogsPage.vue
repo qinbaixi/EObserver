@@ -44,9 +44,19 @@ const primaryLevel = computed(() => {
   return l && l !== 'all' && l !== 'debug' ? l : null
 })
 
+// With lager attached, the logger level only concerns logger calls.
+const lagerNote = computed(() => {
+  if (!s.value?.lager) return ''
+  const l = s.value.lager_level
+  return l && l !== 'debug' ? t('logs.lager_level', { level: l }) : t('logs.lager')
+})
+
 const intro = computed(() =>
   t('logs.only_since', { time: s.value ? formatTime(s.value.started * 1000).slice(0, 8) : '…' })
-  + (primaryLevel.value ? t('logs.primary_level', { level: primaryLevel.value }) : ''))
+  + lagerNote.value
+  + (primaryLevel.value
+    ? t(s.value?.lager ? 'logs.primary_level_otp' : 'logs.primary_level', { level: primaryLevel.value })
+    : ''))
 </script>
 
 <template>

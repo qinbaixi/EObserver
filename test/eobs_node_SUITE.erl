@@ -18,7 +18,7 @@
          message_trace/1, message_trace_limits/1,
          trace_call_stats/1, trace_call_stats_limits/1,
          diagnosis/1, diagnosis_many_processes/1,
-         logs_and_crashes/1, logs_flood/1, logs_removed_with_tool/1,
+         logs_and_crashes/1, logs_flood/1, logs_removed_with_tool/1, logs_lager/1,
          recon_toolbox/1, recon_many_processes/1]).
 
 all() ->
@@ -29,7 +29,7 @@ all() ->
      http_password_and_origin, local_discovery, saved_cookies, saved_nodes,
      message_trace, message_trace_limits, trace_call_stats, trace_call_stats_limits,
      diagnosis, diagnosis_many_processes,
-     logs_and_crashes, logs_flood, logs_removed_with_tool,
+     logs_and_crashes, logs_flood, logs_removed_with_tool, logs_lager,
      recon_toolbox, recon_many_processes].
 
 init_per_suite(Config) ->
@@ -1013,6 +1013,93 @@ logs_removed_with_tool(Config) ->
     ?assertNot(peer:call(Peer, erlang, is_process_alive, [Collector])),
     %% The node keeps logging without it.
     ok = peer:call(Peer, logger, error, ["after the tool left", []]).
+
+%% A node that logs with lager. lager itself is not a dependency, so the
+%% target gets what the agent relies on: the default sink (a gen_event
+%% manager taking {log, #lager_msg{}}), lager's level in persistent_term,
+%% and error_logger_lager_h, through which lager takes over error_logger
+%% and so logger events.
+logs_lager(Config) ->
+    Node = ?config(target, Config),
+    Peer = ?config(peer, Config),
+    {ok, Mod, Bin} = compile:forms(scan_forms(lager_redirect_source()), [binary]),
+    {module, Mod} = peer:call(Peer, code, load_binary, [Mod, "error_logger_lager_h.erl", Bin]),
+    ok = peer:call(Peer, erlang, apply,
+                   [fun() ->
+                            {ok, Sink} = gen_event:start({local, lager_event}),
+                            unlink(Sink),
+                            %% info and up
+                            persistent_term:put({lager_config, {lager_event, loglevel}}, {127, []}),
+                            _ = error_logger:start(),
+                            ok = logger:add_handler(error_logger, error_logger,
+                                                    #{level => info, filter_default => log}),
+                            ok = logger:remove_handler(default),
+                            ok = gen_event:add_handler(error_logger, error_logger_lager_h, [])
+                    end, []]),
+    connect(Node),
+    {#{status := running, lager := true, lager_level := info}, S0} = logs_collect(Node, undefined),
+    Ours = {eobs_agent, eobs_agent_logs},
+    ?assert(lists:member(Ours, peer:call(Peer, gen_event, which_handlers, [lager_event]))),
+    %% Recomputing lager's level as lager does keeps it: our mask is empty.
+    {mask, 0} = peer:call(Peer, gen_event, call, [lager_event, Ours, get_loglevel]),
+    Notify = fun(Level, Meta, Text) ->
+                     Msg = {lager_msg, [], Meta, Level, {"", ""}, os:timestamp(), Text},
+                     ok = peer:call(Peer, gen_event, notify, [lager_event, {log, Msg}])
+             end,
+    Notify(info, [{module, eobs_ct}, {pid, "<0.1.0>"}], "lager info 1"),
+    Notify(error, [{pid, self()}], ["lager ", <<"error">>]),
+    %% UTF-8 bytes formatted with ~s: decoded for display.
+    Notify(info, [], binary_to_list(<<"lager ", (unicode:characters_to_binary([20013, 25991]))/binary>>)),
+    %% error_logger, which lager redirects: shown once, from lager. A
+    %% logger call is not passed on to lager: shown from logger.
+    peer:call(Peer, error_logger, error_msg, ["error_logger error", []]),
+    peer:call(Peer, logger, error, ["logger error", []]),
+    peer:call(Peer, erlang, spawn, [erlang, error, [lager_crash]]),
+    Texts = fun(Logs) -> [T || #{text := T} <- Logs] end,
+    Done = fun({Logs, Crashes, _}) ->
+                   lists:member(<<"error_logger error">>, Texts(Logs))
+                       andalso lists:member(<<"logger error">>, Texts(Logs))
+                       andalso map_size(Crashes) =:= 1
+           end,
+    {{Logs, Crashes, _}, _} = logs_until(Node, S0, {[], #{}, #{}}, Done),
+    [#{level := info, module := eobs_ct, pid := <<"<0.1.0>">>, source := lager}] =
+        [L || #{text := <<"lager info 1">>} = L <- Logs],
+    [#{level := error, source := lager}] = [L || #{text := <<"lager error">>} = L <- Logs],
+    ?assert(lists:member(unicode:characters_to_binary([$l, $a, $g, $e, $r, $\s, 20013, 25991]), Texts(Logs))),
+    [#{source := lager}] = [L || #{text := <<"error_logger error">>} = L <- Logs],
+    [#{source := logger}] = [L || #{text := <<"logger error">>} = L <- Logs],
+    [#{source := lager}] = [L || #{text := <<"Error in process", _/binary>>} = L <- Logs],
+    [#{reason := <<"lager_crash">>}] = maps:values(Crashes),
+    %% Disconnecting takes the backend out of lager again.
+    ok = eobs_nodes:disconnect(Node),
+    ?assertEqual([], peer:call(Peer, gen_event, which_handlers, [lager_event])),
+    ok = peer:call(Peer, logger, error, ["after the tool left", []]).
+
+%% Forwards error_logger events to the sink, as lager's handler does.
+lager_redirect_source() ->
+    "-module(error_logger_lager_h).\n"
+    "-export([init/1, handle_event/2, handle_call/2, handle_info/2, terminate/2, code_change/3]).\n"
+    "init(_) -> {ok, []}.\n"
+    "handle_event({Type, _GL, {Pid, Format, Args}}, S) when Type =:= error; Type =:= info_msg ->\n"
+    "    Level = case Type of error -> error; _ -> info end,\n"
+    "    gen_event:notify(lager_event, {log, {lager_msg, [], [{pid, Pid}], Level, {\"\", \"\"},\n"
+    "                                          os:timestamp(), io_lib:format(Format, Args)}}),\n"
+    "    {ok, S};\n"
+    "handle_event(_, S) -> {ok, S}.\n"
+    "handle_call(_, S) -> {ok, ok, S}.\n"
+    "handle_info(_, S) -> {ok, S}.\n"
+    "terminate(_, _) -> ok.\n"
+    "code_change(_, S, _) -> {ok, S}.\n".
+
+scan_forms(Source) ->
+    {ok, Tokens, _} = erl_scan:string(Source),
+    {Forms, []} = lists:foldl(fun({dot, _} = Dot, {Acc, Cur}) ->
+                                      {ok, F} = erl_parse:parse_form(lists:reverse([Dot | Cur])),
+                                      {[F | Acc], []};
+                                 (T, {Acc, Cur}) ->
+                                      {Acc, [T | Cur]}
+                              end, {[], []}, Tokens),
+    lists:reverse(Forms).
 
 wait_registered(Peer, Name) ->
     case peer:call(Peer, erlang, whereis, [Name]) of

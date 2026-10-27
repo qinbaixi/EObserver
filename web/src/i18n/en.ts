@@ -205,6 +205,9 @@ const en: typeof zh = {
     lost: '{n} lines were overwritten before they were read (the node keeps the latest 2000)',
     collector_restarts: 'The collector was restarted {n} times after overload',
     primary_level: ' The node\'s logger level is {level}; less severe events are never produced.',
+    primary_level_otp: ' The node\'s OTP logger level is {level}; less severe logger events are never produced.',
+    lager: ' lager logs are collected too.',
+    lager_level: ' lager logs are collected too; lager\'s level is {level}, so less severe lager events are never produced.',
     level: {
       emergency: 'emergency',
       alert: 'alert',
@@ -261,6 +264,7 @@ const en: typeof zh = {
       empty: 'No log lines yet',
       empty_filtered: 'No lines match the filters',
       detail_tip: 'Click a line to see all of it.',
+      source: 'Source',
     },
   },
   trace: {

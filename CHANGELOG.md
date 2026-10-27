@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### 新增
+
+- 实时日志支持 lager：目标节点运行 lager 时，用 `lager:log`、`lager:info` 等（以及 lager 的 parse transform）输出的日志也会出现在「日志 > 实时日志」里，新增「来源」列区分 logger / lager。打开日志页时临时挂到 lager 的各个 sink 上，不改变 lager 的日志级别（lager 本来不输出的 debug 不会因此开启），离开页面或断开连接后自动移除。lager 接管 error_logger 时同一条日志不会重复显示。页面说明里会给出 lager 的级别。
+- lager 用 `~s` 输出 UTF-8 中文时，日志文件里是乱码，实时日志里会按 UTF-8 正确显示。
+
 ## [0.0.12] - 2026-10-27
 
 ### 新增

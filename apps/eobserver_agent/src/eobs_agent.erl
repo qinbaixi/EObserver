@@ -21,10 +21,14 @@
 -export([logs_events/2, logs_stop/0]).
 %% logger handler callback, called by logger in the logging process.
 -export([log/2]).
+%% gen_event callbacks: the agent is also a lager backend while the Logs
+%% page is open, called in lager's event manager process.
+-export([init/1, handle_event/2, handle_call/2, handle_info/2, terminate/2,
+         code_change/3]).
 
 %% Bump whenever the exported API or return shapes change, so the tool
 %% replaces an older copy that is still loaded on the target.
--define(VERSION, 14).
+-define(VERSION, 15).
 
 %% Long-lived helper process on the observed node. It keeps
 %% scheduler_wall_time enabled, builds process lists while holding the
@@ -1695,6 +1699,20 @@ one_line(Bin, Max) ->
 %%   - the keeper removes the handler and stops when the tool node goes
 %%     away or after LOG_IDLE_MS without being read; logger itself removes
 %%     a handler that crashes.
+%%
+%% lager does not log through logger: lager:log and the lager parse
+%% transform send to lager's own gen_event managers (sinks). When lager
+%% runs, the keeper also adds the agent to every sink as a gen_event
+%% handler that does the same as log/2 (one counted send, nothing else).
+%% It answers lager's get_loglevel with an empty mask, so lager's levels
+%% stay as they are: we see what lager already produces, and lager:debug
+%% calls that lager filters out stay as cheap as before. Every call to a
+%% sink is made from a helper with a timeout, since a sink may be busy.
+%% When lager redirects error_logger into itself, the logger events that
+%% error_logger takes (those with error_logger metadata: error_logger
+%% calls, OTP's own reports, crashes) reach us twice; their lines then
+%% come from lager only, and the logger events serve the crash records.
+%% Other logger calls are not passed on to lager, so they still show.
 %%--------------------------------------------------------------------
 
 %% Registered name of the keeper, and the handler id.
@@ -1714,6 +1732,10 @@ one_line(Bin, Max) ->
 -define(LOG_TIMES, 10).
 %% A collector killed by its heap limit is replaced after this long.
 -define(LOG_RESTART_MS, 10000).
+%% Longest wait for a lager event manager to add or remove our handler.
+-define(LAGER_CALL_MS, 5000).
+%% Our handler id in lager's event managers.
+-define(LAGER_ID, {?MODULE, ?LOGS}).
 %% Slots of the atomics array shared by the handler and the collector.
 -define(A_INFLIGHT, 1).
 -define(A_MAXSEV, 2).
@@ -1788,6 +1810,63 @@ log(#{level := Level} = Event, #{config := #{ref := Ref, collector := Pid}}) ->
 log(_Event, _Config) ->
     ok.
 
+%% The lager backend. Runs in the sink's event manager: keep it tiny too.
+init({Ref, Collector}) ->
+    {ok, #{ref => Ref, collector => Collector}}.
+
+handle_event({log, Msg}, #{ref := Ref, collector := Pid} = St)
+  when tuple_size(Msg) =:= 7, element(1, Msg) =:= lager_msg ->
+    MaxSev = atomics:get(Ref, ?A_MAXSEV),
+    Kept = case severity(element(4, Msg)) =< MaxSev of
+               true ->
+                   case atomics:add_get(Ref, ?A_INFLIGHT, 1) > ?LOG_BACKLOG of
+                       false ->
+                           Pid ! {?LOGS, {lager, Msg}},
+                           ok;
+                       true ->
+                           atomics:sub(Ref, ?A_INFLIGHT, 1),
+                           lager_dropped(Ref, ?A_DROPPED, Pid)
+                   end;
+               false when MaxSev =:= ?SEV_NONE ->
+                   lager_dropped(Ref, ?A_DROPPED, Pid);
+               false ->
+                   lager_dropped(Ref, ?A_LIMITED, Pid)
+           end,
+    case Kept of
+        ok -> {ok, St};
+        gone -> remove_handler
+    end;
+handle_event(_Event, St) ->
+    {ok, St}.
+
+%% lager ORs the masks of all its backends into the level its callers
+%% check; an empty one leaves that level alone.
+handle_call(get_loglevel, St) ->
+    {ok, {mask, 0}, St};
+handle_call(_Request, St) ->
+    {ok, {error, bad_request}, St}.
+
+handle_info(_Info, St) ->
+    {ok, St}.
+
+terminate(_Arg, _St) ->
+    ok.
+
+code_change(_OldVsn, St, _Extra) ->
+    {ok, St}.
+
+%% As log_dropped/3, but a gen_event handler removes itself by returning.
+lager_dropped(Ref, Slot, Pid) ->
+    case atomics:add_get(Ref, Slot, 1) band 1023 of
+        0 ->
+            case is_process_alive(Pid) of
+                true -> ok;
+                false -> gone
+            end;
+        _ ->
+            ok
+    end.
+
 %% Every 1024th drop checks that the collector is still there: one that
 %% was killed with its keeper leaves nobody to remove the handler, and
 %% the error makes logger remove it.
@@ -1811,6 +1890,80 @@ remove_log_handler() ->
     case catch logger:get_handler_config(?LOGS) of
         {ok, #{module := ?MODULE}} -> _ = logger:remove_handler(?LOGS), ok;
         _ -> ok
+    end,
+    [bounded(fun() -> gen_event:delete_handler(Sink, ?LAGER_ID, stop) end, ?LAGER_CALL_MS)
+     || Sink <- lager_sinks()],
+    ok.
+
+%% The running lager sinks: the default one, the one error_logger events
+%% may be redirected to, and any extra sinks lager knows about.
+lager_sinks() ->
+    Known = case lager_config({'_global', handlers}) of
+                Handlers when is_list(Handlers) ->
+                    [Sink || {_Handler, _Watcher, Sink} <- Handlers, is_atom(Sink)];
+                _ ->
+                    []
+            end,
+    [Sink || Sink <- lists:usort([lager_event, error_logger_lager_event | Known]),
+             is_pid(whereis(Sink))].
+
+%% Adds the lager backend to every sink; returns the sinks it is in.
+lager_attach(Ref, Collector) ->
+    [Sink || Sink <- lager_sinks(),
+             bounded(fun() -> gen_event:add_handler(Sink, ?LAGER_ID, {Ref, Collector}) end,
+                     ?LAGER_CALL_MS) =:= ok].
+
+%% Whether lager forwards error_logger, and with it OTP logger, events.
+lager_redirects() ->
+    is_pid(whereis(error_logger)) andalso
+        bounded(fun() -> lists:member(error_logger_lager_h, gen_event:which_handlers(error_logger)) end,
+                ?LAGER_CALL_MS) =:= true.
+
+%% The least severe level lager's default sink lets through, or null.
+lager_level() ->
+    Mask = case lager_config({lager_event, loglevel}) of
+               {M, _Traces} when is_integer(M) -> M;
+               _ ->
+                   %% lager 2
+                   case lager_config(loglevel) of
+                       {M, _} when is_integer(M) -> M;
+                       _ -> undefined
+                   end
+           end,
+    case Mask of
+        undefined -> null;
+        _ ->
+            case [L || {Bit, L} <- [{128, debug}, {64, info}, {32, notice}, {16, warning},
+                                    {8, error}, {4, critical}, {2, alert}, {1, emergency}],
+                       Mask band Bit =/= 0] of
+                [L | _] -> L;
+                [] -> none
+            end
+    end.
+
+%% A value of lager's configuration, read without calling lager: lager 3.8
+%% and later keep it in persistent_term, older ones in an ETS table.
+lager_config(Key) ->
+    try
+        persistent_term:get({lager_config, Key})
+    catch error:_ ->
+        case catch ets:lookup(lager_config, Key) of
+            [{_, Value}] -> Value;
+            _ -> undefined
+        end
+    end.
+
+%% Runs Fun in a helper and gives up after Timeout, so a busy event
+%% manager cannot hold up the caller. Returns error if Fun raised.
+bounded(Fun, Timeout) ->
+    {Pid, Ref} = spawn_monitor(fun() -> exit({done, Fun()}) end),
+    receive
+        {'DOWN', Ref, process, Pid, {done, Result}} -> Result;
+        {'DOWN', Ref, process, Pid, _} -> error
+    after Timeout ->
+        exit(Pid, kill),
+        erlang:demonitor(Ref, [flush]),
+        timeout
     end.
 
 %% The keeper owns the rings and the handler, and answers the tool. It
@@ -1828,7 +1981,7 @@ logs_init(Parent, Owner) ->
              restarts => group_store()},
     ets:insert(maps:get(logs, Tabs), {seq, 0}),
     St0 = #{id => erlang:unique_integer([positive]), owners => [Owner], tabs => Tabs,
-            ref => atomics:new(4, [{signed, true}]), worker => undefined,
+            ref => atomics:new(4, [{signed, true}]), worker => undefined, lager => [],
             status => stopped, reason => null, stopped_at => 0, collector_restarts => 0,
             started => erlang:system_time(millisecond), last_read => now_ms()},
     St = logs_start(St0),
@@ -1855,7 +2008,9 @@ logs_start(#{ref := Ref, tabs := Tabs} = St) ->
                config => #{ref => Ref, collector => Worker}},
     case logger:add_handler(?LOGS, ?MODULE, Config) of
         ok ->
-            St#{worker := Worker, status := running, reason := null};
+            Sinks = lager_attach(Ref, Worker),
+            Worker ! {redirected, Sinks =/= [] andalso lager_redirects()},
+            St#{worker := Worker, status := running, reason := null, lager := Sinks};
         {error, Reason} ->
             unlink(Worker),
             exit(Worker, kill),
@@ -1919,7 +2074,8 @@ logs_halt(Reason, #{worker := Worker} = St) ->
         undefined -> ok;
         _ -> unlink(Worker), exit(Worker, kill)
     end,
-    St#{worker := undefined, status := stopped, reason := Reason, stopped_at := now_ms()}.
+    St#{worker := undefined, status := stopped, reason := Reason, stopped_at := now_ms(),
+        lager := []}.
 
 %% Cursor: {Id, LogSeq, CrashSeq, RestartSeq}. A cursor of an earlier
 %% collection (or null) reads everything there is.
@@ -1948,6 +2104,11 @@ logs_read(Cursor, #{id := Id, tabs := #{logs := Logs, crashes := Crashes, restar
       started => maps:get(started, St),
       now => erlang:system_time(millisecond),
       primary_level => primary_level(),
+      lager => maps:get(lager, St) =/= [],
+      lager_level => case maps:get(lager, St) of
+                         [] -> null;
+                         _ -> lager_level()
+                     end,
       received => Seq,
       lost => max(0, Seq - ?LOG_RING - LogSince),
       dropped => atomics:get(Ref, ?A_DROPPED),
@@ -1976,7 +2137,8 @@ next_seq(Rows, _Since) -> maps:get(seq, lists:last(Rows)).
 
 %% The collector formats events and fills the rings.
 collector_init(Tabs, Ref) ->
-    collector_loop(#{tabs => Tabs, ref => Ref, sec => 0, n => 0, limited_sec => undefined}).
+    collector_loop(#{tabs => Tabs, ref => Ref, sec => 0, n => 0, limited_sec => undefined,
+                     redirected => false}).
 
 collector_loop(#{ref := Ref} = St) ->
     receive
@@ -1986,11 +2148,17 @@ collector_loop(#{ref := Ref} = St) ->
         {rate_reset, Sec} when Sec =:= map_get(limited_sec, St) ->
             atomics:put(Ref, ?A_MAXSEV, ?SEV_ALL),
             collector_loop(St#{limited_sec := undefined});
+        {redirected, Redirected} ->
+            collector_loop(St#{redirected := Redirected});
         _ ->
             collector_loop(St)
     end.
 
-collect_event(#{level := Level} = Event, #{sec := Sec, n := N, ref := Ref} = St) ->
+collect_event(Event, #{sec := Sec, n := N, ref := Ref} = St) ->
+    Level = case Event of
+                {lager, Msg} -> element(4, Msg);
+                #{level := L} -> L
+            end,
     NowMs = erlang:monotonic_time(millisecond),
     Now = floor_div(NowMs, 1000),
     N1 = case Now of
@@ -2027,33 +2195,95 @@ rate_limit(MaxSev, Now, NowMs, #{ref := Ref} = St) ->
 floor_div(A, B) when A >= 0 -> A div B;
 floor_div(A, B) -> -((-A + B - 1) div B).
 
-store_log(#{level := Level, msg := Msg, meta := Meta} = Event, #{tabs := Tabs}) ->
+store_log({lager, {lager_msg, _Dest, Meta, Level, _DateTime, {Mega, Sec, Micro}, Message}},
+          #{tabs := Tabs}) ->
+    Get = fun(Key) ->
+                  case lists:keyfind(Key, 1, Meta) of
+                      {_, V} -> V;
+                      false -> undefined
+                  end
+          end,
+    store_line(#{t => (Mega * 1000000 + Sec) * 1000000 + Micro,
+                 level => Level,
+                 module => case Get(module) of
+                               M when is_atom(M), M =/= undefined -> M;
+                               _ -> null
+                           end,
+                 pid => case Get(pid) of
+                            P when is_pid(P) -> ref_bin(P);
+                            P when is_list(P) -> limited_chars(P, 100);
+                            _ -> null
+                        end,
+                 source => lager,
+                 text => lager_text(Message)}, Tabs);
+store_log(#{level := Level, msg := Msg, meta := Meta} = Event, #{tabs := Tabs} = St) ->
     Time = case Meta of
                #{time := T} when is_integer(T) -> T;
                _ -> erlang:system_time(microsecond)
            end,
-    Logs = maps:get(logs, Tabs),
-    Seq = ets:update_counter(Logs, seq, 1),
-    ets:insert(Logs, {Seq, #{seq => Seq,
-                             t => Time,
-                             level => Level,
-                             module => case Meta of
-                                           #{mfa := {M, _, _}} when is_atom(M) -> M;
-                                           _ -> null
-                                       end,
-                             pid => case Meta of
-                                        #{pid := P} when is_pid(P) -> ref_bin(P);
-                                        _ -> null
-                                    end,
-                             text => log_text(Event)}}),
-    case Seq > ?LOG_RING of
-        true -> ets:delete(Logs, Seq - ?LOG_RING);
-        false -> ok
+    %% A copy of this one comes from lager.
+    case maps:get(redirected, St) andalso is_map_key(error_logger, Meta) of
+        false ->
+            store_line(#{t => Time,
+                         level => Level,
+                         module => case Meta of
+                                       #{mfa := {M, _, _}} when is_atom(M) -> M;
+                                       _ -> null
+                                   end,
+                         pid => case Meta of
+                                    #{pid := P} when is_pid(P) -> ref_bin(P);
+                                    _ -> null
+                                end,
+                         source => logger,
+                         text => log_text(Event)}, Tabs);
+        true ->
+            ok
     end,
     case crash_info(Msg, Meta) of
         none -> ok;
         {crash, Who, Pid, Class, Reason, Stack} -> store_crash(Who, Pid, Class, Reason, Stack, Time, Tabs);
         {restart, Ctx, Sup, Child, Reason} -> store_restart(Ctx, Sup, Child, Reason, Time, Tabs)
+    end.
+
+store_line(Line, Tabs) ->
+    Logs = maps:get(logs, Tabs),
+    Seq = ets:update_counter(Logs, seq, 1),
+    ets:insert(Logs, {Seq, Line#{seq => Seq}}),
+    case Seq > ?LOG_RING of
+        true -> ets:delete(Logs, Seq - ?LOG_RING);
+        false -> ok
+    end.
+
+%% lager hands over the message already formatted (chardata). A message
+%% formatted with ~s from UTF-8 bytes arrives as one char per byte; it is
+%% shown decoded when the bytes are valid UTF-8.
+lager_text(Message) ->
+    Chars = try unicode:characters_to_list(Message) of
+                L when is_list(L) -> L;
+                _ -> lager_text_fallback(Message)
+            catch _:_ ->
+                lager_text_fallback(Message)
+            end,
+    Head = lists:sublist(Chars, ?LOG_TEXT_CHARS * 4),
+    Text = case lists:all(fun(C) -> C < 256 end, Head)
+               andalso lists:any(fun(C) -> C > 127 end, Head) of
+               true ->
+                   case unicode:characters_to_list(list_to_binary(Head), utf8) of
+                       Decoded when is_list(Decoded) -> Decoded;
+                       _ -> Head
+                   end;
+               false ->
+                   Head
+           end,
+    clip(string:trim(Text, trailing), ?LOG_TEXT_CHARS).
+
+lager_text_fallback(Message) ->
+    unicode:characters_to_list(limited(Message, ?LOG_TEXT_CHARS)).
+
+limited_chars(Chars, Max) ->
+    case io_lib:printable_unicode_list(Chars) of
+        true -> clip(Chars, Max);
+        false -> limited(Chars, Max)
     end.
 
 %% The message as the node's own logger would print it, within limits.

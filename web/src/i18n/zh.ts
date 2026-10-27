@@ -204,6 +204,9 @@ export default {
     lost: '有 {n} 条在读取前被新的日志覆盖（目标节点上只保留最近 2000 条）',
     collector_restarts: '收集进程因过载重启过 {n} 次',
     primary_level: '节点的 logger 级别是 {level}，比它低的日志节点本身就不会产生。',
+    primary_level_otp: '节点 OTP logger 的级别是 {level}，比它低的 logger 日志节点本身就不会产生。',
+    lager: '已同时收集 lager 日志。',
+    lager_level: '已同时收集 lager 日志，lager 的级别是 {level}，比它低的 lager 日志节点本身就不会产生。',
     level: {
       emergency: 'emergency',
       alert: 'alert',
@@ -260,6 +263,7 @@ export default {
       empty: '还没有日志',
       empty_filtered: '没有符合筛选条件的日志',
       detail_tip: '点击一行查看完整内容。',
+      source: '来源',
     },
   },
   trace: {

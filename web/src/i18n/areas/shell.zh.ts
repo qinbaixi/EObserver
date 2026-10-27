@@ -10,7 +10,6 @@ export default {
     diagnosis: { title: '诊断', subtitle: 'Diagnosis' },
     recon: { title: 'Recon 工具箱', subtitle: 'Recon' },
     logs: { title: '日志', subtitle: 'Logs' },
-    crashes: { title: '崩溃记录', subtitle: 'Crashes' },
     processes: { title: '进程', subtitle: 'Processes' },
     trace: { title: '消息跟踪', subtitle: 'Message Trace' },
     ports: { title: '端口', subtitle: 'Ports' },

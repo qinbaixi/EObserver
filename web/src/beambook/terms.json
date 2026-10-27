@@ -847,7 +847,7 @@
       "load_balancing",
       "sockets"
     ],
-    "crashes": [
+    "logs": [
       "let_it_crash",
       "exceptions",
       "supervisor",

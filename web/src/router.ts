@@ -4,7 +4,7 @@ import {
   SpeedometerOutline, PulseOutline, HardwareChipOutline, AppsOutline,
   GitNetworkOutline, SwapHorizontalOutline, WifiOutline, GridOutline, ShareSocialOutline,
   ChatbubblesOutline, MedkitOutline, AlbumsOutline, DocumentTextOutline, ConstructOutline, BugOutline,
-  LibraryOutline, AlertCircleOutline,
+  LibraryOutline,
 } from '@vicons/ionicons5'
 import OverviewPage from './pages/OverviewPage.vue'
 import SystemPage from './pages/SystemPage.vue'
@@ -15,7 +15,6 @@ import TracePage from './pages/TracePage.vue'
 import DiagnosisPage from './pages/DiagnosisPage.vue'
 import ReconPage from './pages/ReconPage.vue'
 import LogsPage from './pages/LogsPage.vue'
-import CrashesPage from './pages/CrashesPage.vue'
 import ApplicationsPage from './pages/ApplicationsPage.vue'
 import PortsPage from './pages/PortsPage.vue'
 import SocketsPage from './pages/SocketsPage.vue'
@@ -51,7 +50,6 @@ export const pages: { path: string; name: string; meta: PageMeta }[] = [
   { path: '/diagnosis', name: 'diagnosis', meta: meta('diagnosis', MedkitOutline) },
   { path: '/recon', name: 'recon', meta: meta('recon', ConstructOutline) },
   { path: '/logs', name: 'logs', meta: meta('logs', DocumentTextOutline) },
-  { path: '/crashes', name: 'crashes', meta: meta('crashes', AlertCircleOutline) },
   { path: '/processes', name: 'processes', meta: meta('processes', GitNetworkOutline) },
   { path: '/trace', name: 'trace', meta: meta('trace', ChatbubblesOutline) },
   { path: '/ports', name: 'ports', meta: meta('ports', SwapHorizontalOutline) },
@@ -67,7 +65,7 @@ export const pages: { path: string; name: string; meta: PageMeta }[] = [
 // The crash dump viewer and the book are loaded on first use (they need no
 // node and most sessions never open them).
 const components: Record<string, RouteComponent | (() => Promise<RouteComponent>)> = {
-  overview: OverviewPage, system: SystemPage, load: LoadPage, processes: ProcessesPage, trace: TracePage, diagnosis: DiagnosisPage, recon: ReconPage, logs: LogsPage, crashes: CrashesPage, applications: ApplicationsPage,
+  overview: OverviewPage, system: SystemPage, load: LoadPage, processes: ProcessesPage, trace: TracePage, diagnosis: DiagnosisPage, recon: ReconPage, logs: LogsPage, applications: ApplicationsPage,
   ports: PortsPage, sockets: SocketsPage, tables: TablesPage, allocators: AllocatorsPage, cluster: ClusterPage, crashdump: () => import('./pages/CrashDumpPage.vue').then((m) => m.default),
   book: () => import('./pages/BookPage.vue').then((m) => m.default),
 }

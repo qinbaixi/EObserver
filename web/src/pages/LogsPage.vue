@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { NTabs, NTabPane, NTag, NAlert, NSpace } from 'naive-ui'
+import { NTabs, NTabPane, NTag, NAlert, NSpace, NBadge } from 'naive-ui'
 import { useNodes } from '../stores/nodes'
 import { useLogs } from '../stores/logs'
 import { useQueryRef } from '../composables/useQueryRef'
@@ -9,6 +9,7 @@ import { formatNumber } from '../api/format'
 import { formatTime } from '../api/trace'
 import PageHeader from '../components/PageHeader.vue'
 import NodeGuard from '../components/NodeGuard.vue'
+import CrashList from '../components/logs/CrashList.vue'
 import LiveLog from '../components/logs/LiveLog.vue'
 import LogFiles from '../components/logs/LogFiles.vue'
 
@@ -17,8 +18,8 @@ const nodes = useNodes()
 const logs = useLogs()
 const tabRef = useQueryRef('tab')
 const tab = computed({
-  get: () => (tabRef.value === 'files' ? 'files' : 'live'),
-  set: (v: string) => { tabRef.value = v === 'live' ? null : v },
+  get: () => (tabRef.value === 'live' || tabRef.value === 'files' ? tabRef.value : 'crashes'),
+  set: (v: string) => { tabRef.value = v === 'crashes' ? null : v },
 })
 
 // Collecting on the target runs while this page is open.
@@ -26,6 +27,12 @@ onMounted(logs.acquire)
 onBeforeUnmount(logs.release)
 
 const s = computed(() => logs.status)
+const crashCount = computed(() => {
+  let n = 0
+  for (const c of logs.crashes.values()) n += c.count
+  return n
+})
+
 const stopReason = computed(() => {
   const r = s.value?.reason
   if (!r) return t('logs.status.stopped')
@@ -75,6 +82,15 @@ const intro = computed(() =>
         <div v-if="s.collector_restarts > 0">{{ t('logs.collector_restarts', { n: s.collector_restarts }) }}</div>
       </NAlert>
       <NTabs v-model:value="tab" type="line" animated display-directive="show">
+        <NTabPane name="crashes">
+          <template #tab>
+            <NSpace :size="6" align="center" :wrap="false">
+              {{ t('logs.tabs.crashes') }}
+              <NBadge v-if="crashCount" :value="crashCount" :max="999" type="error" />
+            </NSpace>
+          </template>
+          <CrashList />
+        </NTabPane>
         <NTabPane name="live" :tab="t('logs.tabs.live')">
           <LiveLog />
         </NTabPane>

@@ -11,7 +11,7 @@
 -export([all/0, init_per_suite/1, end_per_suite/1,
          init_per_testcase/2, end_per_testcase/2]).
 -export([connect_loads_agent/1, tool_is_hidden/1, disconnect_unloads_agent/1,
-         unreachable_node_retries/1, api_requests/1, load_sampling/1,
+         unreachable_node_retries/1, api_requests/1, name_mode_switch/1, load_sampling/1,
          process_list/1, process_detail_and_actions/1, applications/1,
          ports_and_sockets/1, ets_tables/1, mnesia_tables/1, allocators/1,
          read_only_mode/1, cluster_topology/1, http_password_and_origin/1,
@@ -25,7 +25,7 @@
 
 all() ->
     [connect_loads_agent, tool_is_hidden, disconnect_unloads_agent,
-     unreachable_node_retries, api_requests, load_sampling, process_list,
+     unreachable_node_retries, api_requests, name_mode_switch, load_sampling, process_list,
      process_detail_and_actions, applications, ports_and_sockets, ets_tables,
      mnesia_tables, allocators, read_only_mode, cluster_topology,
      http_password_and_origin, local_discovery, saved_cookies, saved_nodes,
@@ -108,6 +108,33 @@ api_requests(Config) ->
     %% The JSON layer must cope with everything the summary contains.
     {ok, Summary} = eobs_api:collect(<<"node.summary">>, #{<<"node">> => NodeBin}),
     ?assert(is_binary(eobs_json:encode(Summary))).
+
+%% A long-name target while a short-name one is observed is refused with
+%% a clear reason; once nothing is connected the tool switches modes. Both
+%% targets stay up throughout.
+name_mode_switch(Config) ->
+    Short = ?config(target, Config),
+    connect(Short),
+    {ok, LongPeer, Long} = peer:start(#{name => peer:random_name(?MODULE), host => "127.0.0.1",
+                                        longnames => true, connection => standard_io,
+                                        args => ["-setcookie", "eobs_ct"]}),
+    try
+        {ok, _} = eobs_nodes:connect(Long, eobs_ct),
+        #{error := Busy} = wait_for(Long, fun(#{status := S}) -> S =:= failed end),
+        ?assertNotEqual(nomatch, binary:match(Busy, atom_to_binary(Short, utf8))),
+        ok = eobs_nodes:disconnect(Short),
+        {ok, _} = eobs_nodes:connect(Long, undefined),
+        wait_for(Long, fun(#{status := S}) -> S =:= connected end),
+        ?assertMatch({ok, _}, eobs_node:call(Long, node_summary, [], 5000)),
+        ?assertEqual(Long, peer:call(LongPeer, erlang, node, [])),
+        ?assertEqual(Short, peer:call(?config(peer, Config), erlang, node, [])),
+        %% And back: later peers are started with the tool's name mode.
+        ok = eobs_nodes:disconnect(Long),
+        connect(Short),
+        ?assertEqual(shortnames, eobs_dist:name_domain(node()))
+    after
+        peer:stop(LongPeer)
+    end.
 
 load_sampling(Config) ->
     Node = ?config(target, Config),

@@ -89,6 +89,7 @@ export default {
     unreachable: '无法连接节点（请检查节点名、cookie 和网络）',
     nodedown: '连接已断开',
     name_domain: 'EObserver 已经以 {have} 运行，而这个节点需要 {want}',
+    name_domain_busy: 'EObserver 正以 {have} 观察 {nodes}，而这个节点需要 {want}。先移除或断开这些节点，再点「立即重试」',
     retry: '立即重试',
     retry_cookie: '换个 cookie 重连',
     retry_failed: '重试失败：{error}',

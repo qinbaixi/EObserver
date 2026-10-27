@@ -18,8 +18,8 @@ const nodes = useNodes()
 const logs = useLogs()
 const tabRef = useQueryRef('tab')
 const tab = computed({
-  get: () => (tabRef.value === 'live' || tabRef.value === 'files' ? tabRef.value : 'crashes'),
-  set: (v: string) => { tabRef.value = v === 'crashes' ? null : v },
+  get: () => (tabRef.value === 'files' || tabRef.value === 'crashes' ? tabRef.value : 'live'),
+  set: (v: string) => { tabRef.value = v === 'live' ? null : v },
 })
 
 // Collecting on the target runs while this page is open.
@@ -82,6 +82,12 @@ const intro = computed(() =>
         <div v-if="s.collector_restarts > 0">{{ t('logs.collector_restarts', { n: s.collector_restarts }) }}</div>
       </NAlert>
       <NTabs v-model:value="tab" type="line" animated display-directive="show">
+        <NTabPane name="live" :tab="t('logs.tabs.live')">
+          <LiveLog />
+        </NTabPane>
+        <NTabPane name="files" :tab="t('logs.tabs.files')" display-directive="show:lazy">
+          <LogFiles />
+        </NTabPane>
         <NTabPane name="crashes">
           <template #tab>
             <NSpace :size="6" align="center" :wrap="false">
@@ -90,12 +96,6 @@ const intro = computed(() =>
             </NSpace>
           </template>
           <CrashList />
-        </NTabPane>
-        <NTabPane name="live" :tab="t('logs.tabs.live')">
-          <LiveLog />
-        </NTabPane>
-        <NTabPane name="files" :tab="t('logs.tabs.files')" display-directive="show:lazy">
-          <LogFiles />
         </NTabPane>
       </NTabs>
     </template>

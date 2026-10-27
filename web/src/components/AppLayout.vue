@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { computed, h, ref } from 'vue'
+import { computed, h, ref, watch } from 'vue'
 import { useRoute, useRouter, RouterView } from 'vue-router'
 import {
   NLayout, NLayoutSider, NLayoutHeader, NLayoutContent, NMenu, NIcon, NButton,
   NTooltip, NSpace, NDropdown, useMessage, useThemeVars, type MenuOption,
 } from 'naive-ui'
-import { MoonOutline, SunnyOutline, LinkOutline, ContrastOutline, SearchOutline, LanguageOutline } from '@vicons/ionicons5'
+import {
+  MoonOutline, SunnyOutline, LinkOutline, ContrastOutline, SearchOutline, LanguageOutline,
+  EllipsisHorizontalCircleOutline, OptionsOutline,
+} from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
 import { pages, pageTitle } from '../router'
 import { useTheme, type Mode } from '../stores/theme'
@@ -24,7 +27,9 @@ import UpdateChecker from './UpdateChecker.vue'
 import CommandPalette from './CommandPalette.vue'
 import KnowledgeDrawer from './KnowledgeDrawer.vue'
 import BookModal from './BookModal.vue'
+import NavCustomize from './NavCustomize.vue'
 import { useUi } from '../stores/ui'
+import { useNav } from '../stores/nav'
 import { useUrlSync } from '../composables/useUrlSync'
 
 const route = useRoute()
@@ -71,16 +76,53 @@ async function copyLink() {
   }
 }
 
-const menuOptions = computed<MenuOption[]>(() =>
-  pages.map((p) => ({
+const nav = useNav()
+const byName = Object.fromEntries(pages.map((p) => [p.name, p]))
+const pageOption = (name: string): MenuOption => {
+  const p = byName[name]
+  return {
     key: p.name,
     label: () => h('span', { class: 'menu-label' }, [
       pageTitle(p.meta),
       p.meta.milestone ? h('span', { class: 'menu-soon' }, p.meta.milestone) : null,
     ]),
     icon: () => h(NIcon, null, { default: () => h(p.meta.icon) }),
-  })),
-)
+  }
+}
+const MORE = '__more'
+const CUSTOMIZE = '__customize'
+const customizing = ref(false)
+// The chosen pages, then everything else under "More" with the customize
+// entry at its end.
+const menuOptions = computed<MenuOption[]>(() => [
+  ...nav.pinned.map(pageOption),
+  {
+    key: MORE,
+    label: () => h('span', { class: 'menu-label' }, [
+      t('shell.nav_more'),
+      h('span', { class: 'menu-count' }, String(nav.rest.length)),
+    ]),
+    icon: () => h(NIcon, null, { default: () => h(EllipsisHorizontalCircleOutline) }),
+    children: [
+      ...nav.rest.map(pageOption),
+      { type: 'divider', key: 'more-divider' },
+      {
+        key: CUSTOMIZE,
+        label: () => h('span', { class: 'menu-custom' }, t('shell.nav_custom.open')),
+        icon: () => h(NIcon, null, { default: () => h(OptionsOutline) }),
+      },
+    ],
+  },
+])
+// "More" opens by itself when the current page is in it.
+const expanded = ref<string[]>([])
+watch(() => route.name, (n) => {
+  if (nav.rest.includes(String(n)) && !expanded.value.includes(MORE)) expanded.value = [...expanded.value, MORE]
+}, { immediate: true })
+function onSelect(k: string) {
+  if (k === CUSTOMIZE) customizing.value = true
+  else void router.push({ name: k })
+}
 
 // Pages that work without any observed node (the crash dump viewer, the book).
 const nodeFree = computed(() => route.name === 'crashdump' || route.name === 'book')
@@ -99,8 +141,9 @@ const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`)
       </div>
       <NMenu :value="String(route.name)" :options="menuOptions" :collapsed="collapsed"
              :collapsed-width="64" :collapsed-icon-size="20"
-             style="padding-bottom: 96px"
-             @update:value="(k: string) => router.push({ name: k })" />
+             :expanded-keys="expanded" style="padding-bottom: 96px"
+             @update:expanded-keys="(k: string[]) => (expanded = k)"
+             @update:value="onSelect" />
       <UpdateChecker v-if="settings.version" :collapsed="collapsed" />
     </NLayoutSider>
     <NLayout>
@@ -158,6 +201,7 @@ const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`)
       </NLayoutContent>
     </NLayout>
     <ConnectDialog />
+    <NavCustomize v-model:show="customizing" />
     <CommandPalette />
     <KnowledgeDrawer />
     <BookModal />
@@ -269,5 +313,16 @@ const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`)
   border-radius: 8px;
   opacity: 0.55;
   border: 1px solid currentColor;
+}
+:deep(.menu-count) {
+  font-size: 11px;
+  line-height: 16px;
+  padding: 0 6px;
+  border-radius: 8px;
+  opacity: 0.5;
+  background: rgba(128, 128, 128, 0.16);
+}
+:deep(.menu-custom) {
+  opacity: 0.7;
 }
 </style>

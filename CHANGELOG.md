@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### 变更
+
+- 实时日志改为最新的在最上面，新日志出现在顶部；关掉「自动滚到最新」时，正在看的行不会被新日志顶走。日志文件保持原来的顺序。
+- 实时日志记住选的级别，切换页面或重开应用后不用重新选。
+
 ## [0.0.15] - 2026-10-28
 
 ### 修复

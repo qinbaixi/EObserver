@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### 新增
+
+- 节点页签：在顶部节点下拉框里右键或长按节点选「在新页签中打开」，或者 Ctrl/⌘+点击、按住拖到页签栏，就能把多个节点开成页签来回切换。每个页签记住自己停在哪个页面，刷新后页签还在；只开一个页签时界面和以前一样。后台页签不额外采样，不会给目标节点增加负担。
+
 ## [0.0.15] - 2026-10-28
 
 ### 修复

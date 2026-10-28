@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.0.15] - 2026-10-28
+
 ### 修复
 
 - 实时日志和日志文件的表格最后一部分行滚不到：新日志看不到、要切换标签页才出现，日志文件也翻不到下一页。原因是虚拟滚动按固定行高计算滚动区域，而实际行更高；现在行高固定一致。

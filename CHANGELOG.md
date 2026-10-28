@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.0.14] - 2026-10-28
+
 ### 修复
 
 - 连不上用 `-name`（长名）启动的节点，比如 `qbx_10@127.0.0.1`：EObserver 自己的隐藏节点以前固定在第一次连接时的短名/长名模式，现在没有已连接节点时会按目标自动切换；仍有别的节点连着时会提示是哪些节点挡住了。Windows 上主机名没有域名后缀时长名模式启动失败（`nodistribution`）的问题也一并修好，改用通往目标的本机 IP 作为主机名。

@@ -18,6 +18,7 @@ import { useSettings } from '../stores/settings'
 import { useTrace } from '../stores/trace'
 import { client } from '../api/ws'
 import NodeSwitcher from './NodeSwitcher.vue'
+import NodeTabs from './NodeTabs.vue'
 import WelcomePanel from './WelcomePanel.vue'
 import ConnectDialog from './ConnectDialog.vue'
 import UpdateChecker from './UpdateChecker.vue'
@@ -25,6 +26,7 @@ import CommandPalette from './CommandPalette.vue'
 import KnowledgeDrawer from './KnowledgeDrawer.vue'
 import BookModal from './BookModal.vue'
 import { useUi } from '../stores/ui'
+import { useTabs, NODE_MIME } from '../stores/tabs'
 import { useUrlSync } from '../composables/useUrlSync'
 
 const route = useRoute()
@@ -45,6 +47,24 @@ const themeVars = useThemeVars()
 const lang = useLocale()
 const paletteKey = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl K'
 useUrlSync()
+const tabs = useTabs()
+tabs.wire()
+const tabsShown = computed(() => tabs.tabs.length > 1 || ui.dragNode !== null)
+
+// A node dragged out of the node switcher opens in a new tab wherever it is
+// dropped (the tab strip handles its own drops to place the tab).
+function onNodeDragOver(e: DragEvent) {
+  if (!e.dataTransfer?.types.includes(NODE_MIME)) return
+  e.preventDefault()
+  e.dataTransfer.dropEffect = 'copy'
+}
+function onNodeDrop(e: DragEvent) {
+  const node = e.dataTransfer?.getData(NODE_MIME)
+  ui.dragNode = null
+  if (!node) return
+  e.preventDefault()
+  tabs.open(node, null)
+}
 
 const themeOptions = computed(() => ([
   ['system', t('shell.layout.theme_system'), ContrastOutline],
@@ -106,7 +126,8 @@ const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`)
       <UpdateChecker v-if="settings.version" :collapsed="collapsed" />
     </NLayoutSider>
     <NLayout>
-      <NLayoutHeader bordered class="header" :style="{ '--search-border': themeVars.borderColor }">
+      <NLayoutHeader bordered class="header" :style="{ '--search-border': themeVars.borderColor }"
+                     @dragover="onNodeDragOver" @drop="onNodeDrop">
         <div class="header-left">
           <NodeSwitcher v-if="!nodeFree" />
         </div>
@@ -152,7 +173,9 @@ const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`)
           </NDropdown>
         </NSpace>
       </NLayoutHeader>
-      <NLayoutContent class="content" :native-scrollbar="false">
+      <NodeTabs v-if="!(nodes.loaded && nodes.list.length === 0)" />
+      <NLayoutContent class="content" :class="{ tabbed: tabsShown }" :native-scrollbar="false"
+                      @dragover="onNodeDragOver" @drop="onNodeDrop">
         <div class="content-inner">
           <WelcomePanel v-if="nodes.loaded && nodes.list.length === 0 && !trace.replay && !nodeFree" />
           <RouterView v-else />
@@ -216,6 +239,9 @@ const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`)
 }
 .content {
   height: calc(100% - 60px);
+}
+.content.tabbed {
+  height: calc(100% - 60px - 38px);
 }
 .content-inner {
   padding: 24px;

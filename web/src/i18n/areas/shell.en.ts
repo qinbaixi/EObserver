@@ -116,6 +116,17 @@ const en: typeof zh = {
     add_tip: 'Connect to an Erlang node by its name and cookie',
     remove_current_tip: 'Remove the current node (stop observing)',
   },
+  tabs: {
+    open_new: 'Open in new tab',
+    open_here: 'Open in this tab',
+    row_tip: 'Right-click, long-press or Ctrl/⌘-click to open in a new tab, or drag it to the tab bar',
+    duplicate: 'Duplicate tab',
+    close: 'Close tab',
+    close_others: 'Close other tabs',
+    close_right: 'Close tabs to the right',
+    add: 'Open a node in a new tab',
+    drop_hint: 'Drop to open in a new tab',
+  },
   refresh: {
     every: 'Every {n}s',
     resume: 'Resume',

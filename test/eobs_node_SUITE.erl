@@ -1121,7 +1121,9 @@ log_files(Config) ->
     ok = file:write_file(filename:join([Root, "gm", "other.log"]), <<"not configured\n">>),
     Game = filename:join([Root, "game", "info_10.log"]),
     ok = filelib:ensure_dir(Game),
-    ok = file:write_file(Game, <<"2026-10-27 22:09:00.000 [info] <0.1.0> game line\n">>),
+    ok = file:write_file(Game, <<"2026-10-27 22:09:00.000 [info] <0.1.0> game line\n"
+                                 "2026-10-27 22:09:01.000 [error] <0.2.0>[@game_mod:f:1] bracketed\n"
+                                 "2026-10-27 22:09:02.000 [info] Undefined[@Undefined:Undefined:Undefined] no pid\n">>),
     {ok, Mod, Bin} = compile:forms(scan_forms(lager_file_backend_source()), [binary]),
     {module, Mod} = peer:call(Peer, code, load_binary, [Mod, "lager_file_backend.erl", Bin]),
     {ok, GMod, GBin} = compile:forms(scan_forms(game_backend_source()), [binary]),
@@ -1155,8 +1157,14 @@ log_files(Config) ->
     ?assertEqual([], [P || #{path := P} <- Files, binary:match(P, <<"other.log">>) =/= nomatch]),
     GameBin = list_to_binary(Game),
     [#{source := lager, level := info, index := null}] = [F || #{path := P} = F <- Files, P =:= GameBin],
-    {ok, #{entries := [#{text := <<"2026-10-27 22:09:00.000 [info] <0.1.0> game line">>}]}} =
+    %% The header (time, level, pid, location) is parsed off; skip is
+    %% where the message starts.
+    {ok, #{entries := [#{text := <<"2026-10-27 22:09:00.000 [info] <0.1.0> game line">> = T1, skip := K1},
+                       #{module := <<"game_mod">>, pid := <<"<0.2.0>">>, level := error, text := T2, skip := K2},
+                       #{module := null, pid := null, text := T3, skip := K3}]}} =
         Req(<<"logfile.read">>, #{<<"path">> => GameBin, <<"pos">> => null}),
+    [<<"game line">>, <<"bracketed">>, <<"no pid">>] =
+        [binary:part(T, K, byte_size(T) - K) || {T, K} <- [{T1, K1}, {T2, K2}, {T3, K3}]],
     %% The last page, then the one before it: they join without a gap.
     {ok, #{size := Size, stop := Size, start := S1, entries := Last}} =
         Req(<<"logfile.read">>, #{<<"path">> => DebugBin, <<"pos">> => null}),

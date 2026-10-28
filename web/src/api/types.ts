@@ -639,6 +639,8 @@ export interface LogFileEntry {
   module: string | null
   /** Continues the entry above it (no timestamp of its own). */
   cont: boolean
+  /** Where the message starts in text, after the header (agent 18+). */
+  skip?: number
   text: string
 }
 

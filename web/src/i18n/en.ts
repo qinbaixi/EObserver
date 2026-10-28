@@ -302,6 +302,7 @@ const en: typeof zh = {
       position_gz: '{from} – {to} uncompressed',
       gz_note: 'Compressed files can only be read from the start, up to 64 MB uncompressed.',
       loaded: '{n} entries loaded',
+      rotated_more: '{n} older files',
       rotated_away: 'The file got smaller, probably rotated; the list was refreshed.',
     },
   },

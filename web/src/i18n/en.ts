@@ -29,6 +29,7 @@ const en: typeof zh = {
       knowledge: 'Knowledge cards',
     },
     current: 'current',
+    tab: 'Tab: {node}',
     dump_open: 'open',
     not_running: 'not running',
     status: {
@@ -50,6 +51,7 @@ const en: typeof zh = {
       dump_sub: 'Read an erl_crash.dump; no node needed',
     },
     keywords: {
+      tab: 'tab switch',
       theme: 'theme dark light',
       health: 'health check diagnosis',
       connect: 'connect add node',

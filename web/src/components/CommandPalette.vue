@@ -14,6 +14,7 @@ import { client } from '../api/ws'
 import { useNodes } from '../stores/nodes'
 import { useTheme } from '../stores/theme'
 import { useUi } from '../stores/ui'
+import { useTabs } from '../stores/tabs'
 import type { AppInfo, EtsTable, MnesiaTable, ProcessPage, ProcessRow } from '../api/types'
 import StatusDot from './StatusDot.vue'
 import { useDumps } from '../stores/dump'
@@ -47,7 +48,7 @@ interface Item {
 
 // Short groups first so the (up to 20) processes do not push them out of view.
 const GROUPS: Group[] = ['pages', 'nodes', 'actions', 'dumps', 'knowledge', 'apps', 'tables', 'processes']
-const LIMIT: Record<Group, number> = { pages: 20, nodes: 8, processes: 20, tables: 10, apps: 10, actions: 10, dumps: 8, knowledge: 6 }
+const LIMIT: Record<Group, number> = { pages: 20, nodes: 16, processes: 20, tables: 10, apps: 10, actions: 10, dumps: 8, knowledge: 6 }
 const PROC_LIMIT = 20
 const DEBOUNCE_MS = 250
 
@@ -60,6 +61,7 @@ const lang = useLocale()
 const dumps = useDumps()
 const message = useMessage()
 const knowledge = useKnowledge()
+const tabs = useTabs()
 
 const query = ref('')
 const q = computed(() => query.value.trim())
@@ -209,6 +211,7 @@ const items = computed<Item[]>(() => {
 
   // Pages match their title in either language.
   const other = lang.locale === 'zh' ? 'en' : 'zh'
+  const both = (key: string) => [t(key), t(key, {}, { locale: other })]
   for (const p of pages) {
     const title = pageTitle(p.meta)
     const sub = pageSubtitle(p.meta)
@@ -222,6 +225,19 @@ const items = computed<Item[]>(() => {
           tag: n.node === nodes.current ? t('palette.current') : undefined,
           run: () => nodes.select(n.node) },
         score(text, n.node))
+  }
+  // Open tabs (when there are several), by node or page.
+  if (tabs.tabs.length > 1) {
+    for (const tab of tabs.tabs) {
+      const p = pages.find((x) => x.path === tab.path.split('?')[0])
+      const page = p ? pageTitle(p.meta) : ''
+      const info = nodes.nodes[tab.node]
+      add({ key: `tab:${tab.id}`, group: 'nodes', title: t('palette.tab', { node: tab.node }),
+            subtitle: page, status: info?.status ?? 'disconnected',
+            tag: tab.id === tabs.active ? t('palette.current') : undefined,
+            run: () => tabs.activate(tab.id) },
+          score(text, tab.node, page, ...both('palette.keywords.tab')))
+    }
   }
   if (text) {
     for (const p of procs.value) {
@@ -249,7 +265,6 @@ const items = computed<Item[]>(() => {
           score(text, a.name, a.description))
     }
   }
-  const both = (key: string) => [t(key), t(key, {}, { locale: other })]
   // Crash dumps: the open ones, then recent files (only while typing).
   const openPaths = new Set(dumps.list.map((d) => d.path))
   for (const d of dumps.list) {

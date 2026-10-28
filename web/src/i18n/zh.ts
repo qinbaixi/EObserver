@@ -27,6 +27,7 @@ export default {
       knowledge: '知识卡片',
     },
     current: '当前',
+    tab: '页签：{node}',
     dump_open: '已打开',
     not_running: '未运行',
     status: {
@@ -49,6 +50,7 @@ export default {
     },
     // Extra words each action is found by (searched in both languages).
     keywords: {
+      tab: '页签 切换',
       theme: '主题 深色 浅色',
       health: '体检 诊断',
       connect: '连接 添加 节点',

@@ -18,7 +18,17 @@ const logs = useLogs()
 const LEVELS: LogLevel[] = ['emergency', 'alert', 'critical', 'error', 'warning', 'notice', 'info', 'debug']
 const SEVERITY = Object.fromEntries(LEVELS.map((l, i) => [l, i])) as Record<LogLevel, number>
 
-const minLevel = ref<LogLevel>('notice')
+// The chosen level is kept across page switches and restarts.
+const LEVEL_KEY = 'eobs.logs.live.level'
+function savedLevel(): LogLevel {
+  try {
+    const v = localStorage.getItem(LEVEL_KEY) as LogLevel | null
+    if (v && LEVELS.includes(v)) return v
+  } catch { /* ignore */ }
+  return 'notice'
+}
+const minLevel = ref<LogLevel>(savedLevel())
+watch(minLevel, (v) => { try { localStorage.setItem(LEVEL_KEY, v) } catch { /* ignore */ } })
 const modules = ref<string[]>([])
 const search = ref('')
 const follow = ref(true)

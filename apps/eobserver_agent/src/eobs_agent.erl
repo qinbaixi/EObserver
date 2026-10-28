@@ -29,7 +29,7 @@
 
 %% Bump whenever the exported API or return shapes change, so the tool
 %% replaces an older copy that is still loaded on the target.
--define(VERSION, 17).
+-define(VERSION, 18).
 
 %% Long-lived helper process on the observed node. It keeps
 %% scheduler_wall_time enabled, builds process lists while holding the
@@ -2875,35 +2875,41 @@ lf_entry(Pos, Header, Lines) ->
     case Header of
         none ->
             #{pos => Pos, t => null, level => null, pid => null, module => null, cont => true,
-              text => Text};
-        #{t := T, level := L, pid := P, module := M} ->
+              skip => 0, text => Text};
+        #{t := T, level := L, pid := P, module := M, skip := Skip} ->
             #{pos => Pos, t => T, level => L, pid => P, module => M, cont => false,
-              text => Text}
+              skip => Skip, text => Text}
     end.
 
 %% lager: 2026-10-27 11:32:06.771 [info] <0.89.0>@mod:fun:12 message
+%%        2026-10-27 11:32:06.771 [info] <0.89.0>[@mod:fun:12] message
+%%        2026-10-27 11:32:06.771 [info] Undefined[@Undefined:Undefined:Undefined] message
 %% logger: 2026-10-27T11:32:06.771397+08:00 info: message
 lf_header_re() ->
     re:compile("^(\\d{4}-\\d\\d-\\d\\d[ T]\\d\\d:\\d\\d:\\d\\d(?:[.,]\\d+)?)\\S*\\s+"
                "\\[?(debug|info|notice|warning|error|critical|alert|emergency)\\]?:?"
-               "(?:\\s+(<[0-9.]+>)(?:@([a-zA-Z0-9_]+)[^\\s]*)?)?",
+               "(?:\\s+(<[0-9.]+>|[Uu]ndefined)(?:\\[?@([a-zA-Z0-9_]+)[^\\s\\]]*\\]?)?)?\\s*",
                []).
 
 lf_header(Line, Re) ->
     case re:run(Line, Re, [{capture, all, binary}]) of
-        {match, [_, T, L | More]} ->
+        {match, [All, T, L | More]} ->
             {Pid, Mod} = case More of
                              [P, M] -> {lf_null(P), lf_null(M)};
                              [P] -> {lf_null(P), null};
                              [] -> {null, null}
                          end,
+            %% The message starts after the header; it is ASCII, so its
+            %% length in bytes is its length in characters.
             {ok, #{t => binary:replace(T, <<"T">>, <<" ">>), level => binary_to_atom(L, latin1),
-                   pid => Pid, module => Mod}};
+                   pid => Pid, module => Mod, skip => byte_size(All)}};
         _ ->
             none
     end.
 
 lf_null(<<>>) -> null;
+lf_null(<<"Undefined">>) -> null;
+lf_null(<<"undefined">>) -> null;
 lf_null(B) -> B.
 
 %% Text as shown: UTF-8, also when it was written as UTF-8 bytes taken

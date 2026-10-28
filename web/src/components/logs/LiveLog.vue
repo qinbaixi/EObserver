@@ -10,6 +10,7 @@ import { formatNumber } from '../../api/format'
 import { formatTime } from '../../api/trace'
 import type { LogLevel, LogLine } from '../../api/types'
 import { useLogs } from '../../stores/logs'
+import { oneLine, ROW_HEIGHT } from './logTable'
 
 const { t } = useI18n()
 const logs = useLogs()
@@ -37,7 +38,6 @@ function dedent(text: string): string {
   const cut = indents.length ? Math.min(...indents) : 0
   return cut ? lines.map((l) => l.slice(cut)).join('\n') : text
 }
-const oneLine = (text: string) => text.replace(/\s+/g, ' ').trim()
 
 const filtered = computed(() => {
   const max = SEVERITY[minLevel.value]
@@ -82,7 +82,8 @@ const columns = computed<DataTableColumns<LogLine>>(() => [
 const rowProps = (l: LogLine) => ({ style: 'cursor: pointer', onClick: () => { selected.value = l } })
 
 const table = ref<InstanceType<typeof NDataTable> | null>(null)
-watch(() => filtered.value.length, async () => {
+// Every update, also once the list is full and drops as many as it adds.
+watch(filtered, async () => {
   if (!follow.value) return
   await nextTick()
   table.value?.scrollTo({ top: Number.MAX_SAFE_INTEGER })
@@ -147,7 +148,8 @@ const showDetail = computed({
   </div>
   <p v-if="logs.paused" class="note paused">{{ t('logs.live.paused') }}</p>
   <NDataTable ref="table" :columns="columns" :data="filtered" :row-key="(l: LogLine) => l.seq"
-              :row-props="rowProps" size="small" virtual-scroll :max-height="'calc(100vh - 360px)'"
+              :row-props="rowProps" size="small" virtual-scroll :min-row-height="ROW_HEIGHT"
+              :max-height="'calc(100vh - 360px)'"
               :min-height="240" :scroll-x="800">
     <template #empty>
       <NEmpty :description="logs.lines.length ? t('logs.live.empty_filtered') : t('logs.live.empty')" />
@@ -210,6 +212,12 @@ const showDetail = computed({
   word-break: break-all;
   max-height: 60vh;
   overflow: auto;
+}
+:deep(.n-data-table-td) {
+  height: 36px;
+  padding-top: 0;
+  padding-bottom: 0;
+  white-space: nowrap;
 }
 :deep(.muted) {
   opacity: 0.6;

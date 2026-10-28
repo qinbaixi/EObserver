@@ -301,6 +301,7 @@ export default {
       position_gz: '解压后 {from} – {to}',
       gz_note: '压缩文件只能从头往后看，最多看解压后的前 64 MB。',
       loaded: '已加载 {n} 条',
+      rotated_more: '还有 {n} 个旧文件',
       rotated_away: '文件变小了，可能已经轮转，已刷新列表。',
     },
   },

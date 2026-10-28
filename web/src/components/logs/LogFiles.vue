@@ -7,11 +7,12 @@ import {
 } from 'naive-ui'
 import {
   SearchOutline, RefreshOutline, DownloadOutline, ArrowUpOutline, ArrowDownOutline,
-  PlaySkipBackOutline, PlaySkipForwardOutline, DocumentTextOutline, ArchiveOutline,
+  PlaySkipBackOutline, PlaySkipForwardOutline, DocumentTextOutline, ArchiveOutline, ChevronForwardOutline,
 } from '@vicons/ionicons5'
 import { client } from '../../api/ws'
 import { errorText } from '../../api/errors'
 import { formatBytes, formatDateTime, formatNumber } from '../../api/format'
+import { oneLine, ROW_HEIGHT } from './logTable'
 import type { LogFile, LogFileEntry, LogFilePage, LogFileSearch, LogLevel } from '../../api/types'
 import { useNodes } from '../../stores/nodes'
 
@@ -66,6 +67,17 @@ const groups = computed(() => {
 
 const baseName = (p: string) => p.split(/[\\/]/).pop() ?? p
 
+// Groups whose rotated copies are listed; opening a file opens its group.
+const expanded = ref(new Set<string>())
+const isOpen = (base: string) => expanded.value.has(base)
+function toggle(base: string) {
+  const next = new Set(expanded.value)
+  if (!next.delete(base)) next.add(base)
+  expanded.value = next
+}
+const shownFiles = (g: { base: string; files: LogFile[] }) => (isOpen(g.base) ? g.files : g.files.slice(0, 1))
+const rotatedCount = (g: { files: LogFile[] }) => g.files.filter((f) => f.index !== null).length
+
 async function call<T>(method: string, params: Record<string, unknown>): Promise<T | null> {
   if (!node.value) return null
   error.value = null
@@ -90,6 +102,7 @@ async function loadList() {
 }
 
 function open(f: LogFile) {
+  if (f.index !== null && !isOpen(f.base)) toggle(f.base)
   file.value = f
   entries.value = []
   highlight.value = null
@@ -173,6 +186,18 @@ async function newer() {
   await read(stop.value, 'fwd', 'after')
 }
 
+// Scrolling near either end of the list loads the next page there. At
+// the end of the file being written this also picks up what was added.
+async function onScroll(e: Event) {
+  const el = e.target as HTMLElement
+  if (loading.value || !file.value || !entries.value.length) return
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - ROW_HEIGHT * 3) {
+    if (!atEnd.value || (file.value.index === null && !file.value.gz)) await newer()
+  } else if (el.scrollTop <= ROW_HEIGHT * 2 && !atStart.value && !file.value.gz) {
+    await older()
+  }
+}
+
 function pad(n: number) { return String(n).padStart(2, '0') }
 function localStamp(ms: number) {
   const d = new Date(ms)
@@ -248,10 +273,10 @@ const filtered = computed(() => {
     && (!mods.size || (e.module !== null && mods.has(e.module))))
 })
 
-const oneLine = (text: string) => text.replace(/\s+/g, ' ').trim()
-// Drops the timestamp, level and pid the columns already show.
+// Drops the timestamp, level, pid and location the columns already show.
 function body(e: LogFileEntry) {
   if (!e.t) return e.text
+  if (e.skip !== undefined) return e.text.slice(e.skip)
   const nl = e.text.indexOf('\n')
   const first = nl < 0 ? e.text : e.text.slice(0, nl)
   const m = /^\d{4}-\d\d-\d\d[ T]\S+\s+\[?[a-z]+\]?:?\s+(?:<[\d.]+>(?:@\S+)?\s+)?/.exec(first)
@@ -264,12 +289,17 @@ const levelTag = (l: LogLevel | null) => (l
 
 const columns = computed<DataTableColumns<LogFileEntry>>(() => [
   {
-    key: 't', title: t('logs.live.time'), width: 200,
-    render: (e) => h('span', { class: 'mono muted nowrap' }, e.t ?? ''),
+    key: 't', title: t('logs.live.time'), width: 186,
+    render: (e) => (e.t
+      ? h('span', { class: 'mono nowrap', title: e.t }, [
+          h('span', { class: 'faint' }, e.t.slice(5, 11)),
+          h('span', { class: 'muted' }, e.t.slice(11, 23)),
+        ])
+      : null),
   },
   { key: 'level', title: t('logs.live.min_level'), width: 100, render: (e) => levelTag(e.level) },
   {
-    key: 'module', title: t('logs.live.module'), width: 150, ellipsis: { tooltip: true },
+    key: 'module', title: t('logs.live.module'), width: 160, ellipsis: { tooltip: true },
     render: (e) => h('span', { class: 'mono' }, e.module ?? ''),
   },
   {
@@ -333,8 +363,13 @@ onMounted(loadList)
       <NScrollbar style="max-height: calc(100vh - 330px)">
         <NEmpty v-if="!listing && !files.length" size="small" :description="t('logs.files.none')" class="empty" />
         <div v-for="g in groups" :key="g.base" class="group">
-          <div v-for="f in g.files" :key="f.path" class="file" :class="{ active: file?.path === f.path, rotated: f.index !== null }"
+          <div v-for="f in shownFiles(g)" :key="f.path" class="file" :class="{ active: file?.path === f.path, rotated: f.index !== null }"
                :title="f.path" @click="open(f)">
+            <span v-if="f === g.files[0]" class="twisty" :class="{ hidden: !rotatedCount(g) }"
+                  @click.stop="toggle(g.base)">
+              <NIcon :component="ChevronForwardOutline" class="chev"
+                     :class="{ down: isOpen(g.base) }" />
+            </span>
             <NIcon :component="f.gz ? ArchiveOutline : DocumentTextOutline" class="file-icon" />
             <div class="file-main">
               <div class="file-name mono">{{ baseName(f.path) }}</div>
@@ -346,6 +381,10 @@ onMounted(loadList)
                 </template>
                 <span>{{ f.size === null ? '' : formatBytes(f.size) }}</span>
                 <span v-if="f.mtime">{{ formatDateTime(f.mtime) }}</span>
+                <span v-if="f === g.files[0] && rotatedCount(g) && !isOpen(g.base)"
+                      class="more" @click.stop="toggle(g.base)">
+                  {{ t('logs.files.rotated_more', { n: rotatedCount(g) }) }}
+                </span>
               </div>
             </div>
           </div>
@@ -407,7 +446,8 @@ onMounted(loadList)
         </div>
         <p v-if="file.gz" class="note">{{ t('logs.files.gz_note') }}</p>
         <NDataTable ref="table" :columns="columns" :data="filtered" :row-key="(e: LogFileEntry) => e.pos"
-                    :row-props="rowProps" size="small" virtual-scroll :max-height="'calc(100vh - 420px)'"
+                    :row-props="rowProps" size="small" virtual-scroll :min-row-height="ROW_HEIGHT"
+                    @scroll="onScroll" :max-height="'calc(100vh - 420px)'"
                     :min-height="240" :scroll-x="800" :loading="loading && !entries.length">
           <template #empty>
             <NEmpty :description="entries.length ? t('logs.live.empty_filtered') : t('logs.live.empty')" />
@@ -489,7 +529,29 @@ onMounted(loadList)
   cursor: pointer;
 }
 .file.rotated {
-  padding-left: 22px;
+  padding-left: 46px;
+}
+.twisty {
+  display: inline-flex;
+  align-items: flex-start;
+  padding-top: 3px;
+  width: 16px;
+  flex: 0 0 16px;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.twisty.hidden {
+  visibility: hidden;
+}
+.chev {
+  transition: transform 0.15s;
+}
+.chev.down {
+  transform: rotate(90deg);
+}
+.more {
+  cursor: pointer;
+  text-decoration: underline dotted;
 }
 .file:hover {
   background: rgba(128, 128, 128, 0.1);
@@ -573,6 +635,16 @@ onMounted(loadList)
   word-break: break-all;
   max-height: 60vh;
   overflow: auto;
+}
+:deep(.n-data-table-td) {
+  height: 36px;
+  padding-top: 0;
+  padding-bottom: 0;
+  white-space: nowrap;
+}
+:deep(.faint) {
+  opacity: 0.4;
+  margin-right: 6px;
 }
 :deep(.muted) {
   opacity: 0.6;

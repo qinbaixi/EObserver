@@ -9,6 +9,8 @@ start_link() ->
 init([]) ->
     Children = [
         #{id => pg, start => {pg, start_link, [eobs]}},
+        %% Starts distribution and connects; eobs_node processes call it.
+        #{id => eobs_dist, start => {eobs_dist, start_link, []}},
         #{id => eobs_node_sup, start => {eobs_node_sup, start_link, []},
           type => supervisor},
         %% Before eobs_nodes: restoring saved nodes looks up their cookies.

@@ -183,8 +183,8 @@ export default {
   },
   logs: {
     title: '日志',
-    tabs: { crashes: '崩溃记录', live: '实时日志', files: '日志文件' },
-    only_since: '只显示打开本页之后发生的日志和崩溃（从 {time} 开始），之前的历史和节点自己的日志文件不读取。离开本页 60 秒后停止收集。',
+    tabs: { live: '实时日志', files: '日志文件', crashes: '崩溃记录' },
+    only_since: '实时日志和崩溃记录只显示打开本页之后发生的（从 {time} 开始），之前的历史请看「日志文件」。离开本页 60 秒后停止收集。',
     status: {
       running: '收集中',
       starting: '正在开始收集…',

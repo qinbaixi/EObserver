@@ -33,8 +33,9 @@ function nodeError(text: string | null | undefined) {
   if (!text) return ''
   if (text.startsWith('Node is unreachable')) return t('shell.guard.unreachable')
   if (text === 'Connection lost') return t('shell.guard.nodedown')
-  const m = /^EObserver already runs with (\S+), but this node needs (\S+)$/.exec(text)
-  if (m) return t('shell.guard.name_domain', { have: m[1], want: m[2] })
+  const m = /^EObserver already runs with (\S+)(?: for (.+))?, but this node needs (\S+)$/.exec(text)
+  if (m && m[2]) return t('shell.guard.name_domain_busy', { have: m[1], nodes: m[2], want: m[3] })
+  if (m) return t('shell.guard.name_domain', { have: m[1], want: m[3] })
   return text
 }
 

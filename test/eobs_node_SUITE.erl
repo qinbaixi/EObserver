@@ -11,7 +11,7 @@
 -export([all/0, init_per_suite/1, end_per_suite/1,
          init_per_testcase/2, end_per_testcase/2]).
 -export([connect_loads_agent/1, tool_is_hidden/1, disconnect_unloads_agent/1,
-         unreachable_node_retries/1, api_requests/1, load_sampling/1,
+         unreachable_node_retries/1, api_requests/1, name_mode_switch/1, load_sampling/1,
          process_list/1, process_detail_and_actions/1, applications/1,
          ports_and_sockets/1, ets_tables/1, mnesia_tables/1, allocators/1,
          read_only_mode/1, cluster_topology/1, http_password_and_origin/1,
@@ -25,7 +25,7 @@
 
 all() ->
     [connect_loads_agent, tool_is_hidden, disconnect_unloads_agent,
-     unreachable_node_retries, api_requests, load_sampling, process_list,
+     unreachable_node_retries, api_requests, name_mode_switch, load_sampling, process_list,
      process_detail_and_actions, applications, ports_and_sockets, ets_tables,
      mnesia_tables, allocators, read_only_mode, cluster_topology,
      http_password_and_origin, local_discovery, saved_cookies, saved_nodes,
@@ -108,6 +108,33 @@ api_requests(Config) ->
     %% The JSON layer must cope with everything the summary contains.
     {ok, Summary} = eobs_api:collect(<<"node.summary">>, #{<<"node">> => NodeBin}),
     ?assert(is_binary(eobs_json:encode(Summary))).
+
+%% A long-name target while a short-name one is observed is refused with
+%% a clear reason; once nothing is connected the tool switches modes. Both
+%% targets stay up throughout.
+name_mode_switch(Config) ->
+    Short = ?config(target, Config),
+    connect(Short),
+    {ok, LongPeer, Long} = peer:start(#{name => peer:random_name(?MODULE), host => "127.0.0.1",
+                                        longnames => true, connection => standard_io,
+                                        args => ["-setcookie", "eobs_ct"]}),
+    try
+        {ok, _} = eobs_nodes:connect(Long, eobs_ct),
+        #{error := Busy} = wait_for(Long, fun(#{status := S}) -> S =:= failed end),
+        ?assertNotEqual(nomatch, binary:match(Busy, atom_to_binary(Short, utf8))),
+        ok = eobs_nodes:disconnect(Short),
+        {ok, _} = eobs_nodes:connect(Long, undefined),
+        wait_for(Long, fun(#{status := S}) -> S =:= connected end),
+        ?assertMatch({ok, _}, eobs_node:call(Long, node_summary, [], 5000)),
+        ?assertEqual(Long, peer:call(LongPeer, erlang, node, [])),
+        ?assertEqual(Short, peer:call(?config(peer, Config), erlang, node, [])),
+        %% And back: later peers are started with the tool's name mode.
+        ok = eobs_nodes:disconnect(Long),
+        connect(Short),
+        ?assertEqual(shortnames, eobs_dist:name_domain(node()))
+    after
+        peer:stop(LongPeer)
+    end.
 
 load_sampling(Config) ->
     Node = ?config(target, Config),
@@ -1092,14 +1119,23 @@ log_files(Config) ->
     ok = file:write_file(Debug ++ ".1.gz",
                          zlib:gzip(<<"2026-10-25 10:00:00.000 [info] <0.1.0> older, compressed\n">>)),
     ok = file:write_file(filename:join([Root, "gm", "other.log"]), <<"not configured\n">>),
+    Game = filename:join([Root, "game", "info_10.log"]),
+    ok = filelib:ensure_dir(Game),
+    ok = file:write_file(Game, <<"2026-10-27 22:09:00.000 [info] <0.1.0> game line\n">>),
     {ok, Mod, Bin} = compile:forms(scan_forms(lager_file_backend_source()), [binary]),
     {module, Mod} = peer:call(Peer, code, load_binary, [Mod, "lager_file_backend.erl", Bin]),
+    {ok, GMod, GBin} = compile:forms(scan_forms(game_backend_source()), [binary]),
+    {module, GMod} = peer:call(Peer, code, load_binary, [GMod, "eobs_ct_game_backend.erl", GBin]),
     ok = peer:call(Peer, erlang, apply,
                    [fun() ->
                             {ok, Sink} = gen_event:start({local, lager_event}),
                             unlink(Sink),
                             application:set_env(lager, log_root, Root),
                             ok = gen_event:add_handler(lager_event, {lager_file_backend, "gm/debug.log"}, []),
+                            %% A renamed copy of the file backend, added
+                            %% without an id: found through its state.
+                            ok = gen_event:add_handler(lager_event, eobs_ct_game_backend,
+                                                       {state, Game, info}),
                             ok = logger:add_handler(eobs_ct_file, logger_std_h,
                                                     #{level => notice, config => #{file => Otp}}),
                             logger:notice("otp file line")
@@ -1117,6 +1153,10 @@ log_files(Config) ->
                          (_) -> false
                       end, Files)),
     ?assertEqual([], [P || #{path := P} <- Files, binary:match(P, <<"other.log">>) =/= nomatch]),
+    GameBin = list_to_binary(Game),
+    [#{source := lager, level := info, index := null}] = [F || #{path := P} = F <- Files, P =:= GameBin],
+    {ok, #{entries := [#{text := <<"2026-10-27 22:09:00.000 [info] <0.1.0> game line">>}]}} =
+        Req(<<"logfile.read">>, #{<<"path">> => GameBin, <<"pos">> => null}),
     %% The last page, then the one before it: they join without a gap.
     {ok, #{size := Size, stop := Size, start := S1, entries := Last}} =
         Req(<<"logfile.read">>, #{<<"path">> => DebugBin, <<"pos">> => null}),
@@ -1266,6 +1306,19 @@ lager_file_backend_source() ->
     "-module(lager_file_backend).\n"
     "-export([init/1, handle_event/2, handle_call/2, handle_info/2, terminate/2, code_change/3]).\n"
     "init(_) -> {ok, []}.\n"
+    "handle_event(_, S) -> {ok, S}.\n"
+    "handle_call(get_loglevel, S) -> {ok, {mask, 127}, S};\n"
+    "handle_call(_, S) -> {ok, ok, S}.\n"
+    "handle_info(_, S) -> {ok, S}.\n"
+    "terminate(_, _) -> ok.\n"
+    "code_change(_, S, _) -> {ok, S}.\n".
+
+%% A file backend under another name; its state is a record holding the
+%% file name, as lager_file_backend's is.
+game_backend_source() ->
+    "-module(eobs_ct_game_backend).\n"
+    "-export([init/1, handle_event/2, handle_call/2, handle_info/2, terminate/2, code_change/3]).\n"
+    "init(S) -> {ok, S}.\n"
     "handle_event(_, S) -> {ok, S}.\n"
     "handle_call(get_loglevel, S) -> {ok, {mask, 127}, S};\n"
     "handle_call(_, S) -> {ok, ok, S}.\n"

@@ -60,7 +60,9 @@ handle_cast({reconnect, Cookie}, State) ->
     {noreply, State1}.
 
 handle_info(connect, State) ->
-    {noreply, do_connect(State#{timer := undefined})};
+    {noreply, do_connect(true, State#{timer := undefined})};
+handle_info(retry, State) ->
+    {noreply, do_connect(false, State#{timer := undefined})};
 handle_info({nodedown, Node}, #{node := Node} = State) ->
     State1 = set_status(disconnected, nodedown, State#{agent := undefined}),
     {noreply, schedule_retry(State1)};
@@ -74,23 +76,22 @@ terminate(_Reason, #{node := Node} = State) ->
     end,
     %% Drop the hidden connection too, so the node really is no longer
     %% observed (and stops showing EObserver in its connections).
-    erlang:monitor_node(Node, false),
+    %% Distribution may be down while the tool switches name modes.
+    catch erlang:monitor_node(Node, false),
     _ = erlang:disconnect_node(Node),
     ok.
 
 %% internal
 
-do_connect(#{node := Node, cookie := Cookie} = State) ->
-    case eobs_dist:ensure_started(Node) of
+%% Adding or retrying a node by hand may switch the tool's name mode;
+%% automatic retries may not.
+do_connect(MaySwitch, #{node := Node, cookie := Cookie} = State) ->
+    case eobs_dist:connect(Node, Cookie, MaySwitch) of
         ok ->
-            set_cookie(Node, Cookie),
-            case net_kernel:connect_node(Node) of
-                true ->
-                    erlang:monitor_node(Node, true),
-                    after_connect(State);
-                _ ->
-                    schedule_retry(set_status(disconnected, unreachable, State))
-            end;
+            erlang:monitor_node(Node, true),
+            after_connect(State);
+        {error, unreachable} ->
+            schedule_retry(set_status(disconnected, unreachable, State));
         {error, Reason} ->
             %% Not retryable: the tool node itself cannot reach this target.
             set_status(failed, Reason, State)
@@ -116,16 +117,13 @@ after_connect(#{node := Node} = State) ->
             set_status(failed, {agent_load_failed, Reason}, State)
     end.
 
-set_cookie(_Node, undefined) -> ok;
-set_cookie(Node, Cookie) -> erlang:set_cookie(Node, Cookie).
-
 set_status(Status, Error, State) ->
     State1 = State#{status := Status, error := Error},
     eobs_events:publish(node_status, public(State1)),
     State1.
 
 schedule_retry(#{retry := Retry} = State) ->
-    Ref = erlang:send_after(Retry, self(), connect),
+    Ref = erlang:send_after(Retry, self(), retry),
     State#{timer := Ref, retry := min(Retry * 2, ?MAX_RETRY)}.
 
 cancel_timer(#{timer := undefined} = State) ->
@@ -145,8 +143,12 @@ public(#{node := Node, status := Status, error := Error,
 format_error(undefined) -> null;
 format_error(unreachable) -> <<"Node is unreachable (check the node name, cookie and network)">>;
 format_error(nodedown) -> <<"Connection lost">>;
-format_error({name_domain_mismatch, Have, Want}) ->
+format_error({name_domain_mismatch, Have, Want, []}) ->
     iolist_to_binary(io_lib:format("EObserver already runs with ~p, but this node needs ~p",
                                    [Have, Want]));
+format_error({name_domain_mismatch, Have, Want, Busy}) ->
+    iolist_to_binary(io_lib:format("EObserver already runs with ~p for ~ts, but this node needs ~p",
+                                   [Have, lists:join(", ", [atom_to_list(N) || N <- Busy]),
+                                    Want]));
 format_error(Other) ->
     iolist_to_binary(io_lib:format("~0p", [Other])).

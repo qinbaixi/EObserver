@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### 修复
+
+- 连不上用 `-name`（长名）启动的节点，比如 `qbx_10@127.0.0.1`：EObserver 自己的隐藏节点以前固定在第一次连接时的短名/长名模式，现在没有已连接节点时会按目标自动切换；仍有别的节点连着时会提示是哪些节点挡住了。Windows 上主机名没有域名后缀时长名模式启动失败（`nodistribution`）的问题也一并修好，改用通往目标的本机 IP 作为主机名。
+- 「日志文件」看不到项目自定义 lager 文件后端写的文件（例如把 `info.log` 改写成 `info_<节点id>.log` 的 `lager_file_backend_node`）：现在直接从 lager handler 的状态里读它实际在写的文件。
+
+### 变更
+
+- 日志页的标签改为「实时日志」「日志文件」「崩溃记录」，默认打开实时日志。
+
 ## [0.0.13] - 2026-10-27
 
 ### 新增

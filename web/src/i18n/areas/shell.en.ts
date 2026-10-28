@@ -88,6 +88,7 @@ const en: typeof zh = {
     unreachable: 'Node is unreachable (check the node name, cookie and network)',
     nodedown: 'Connection lost',
     name_domain: 'EObserver already runs with {have}, but this node needs {want}',
+    name_domain_busy: 'EObserver is observing {nodes} with {have}, but this node needs {want}. Remove those nodes first, then retry',
     retry: 'Retry now',
     retry_cookie: 'Reconnect with another cookie',
     retry_failed: 'Retry failed: {error}',

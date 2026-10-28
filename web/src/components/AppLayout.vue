@@ -5,7 +5,10 @@ import {
   NLayout, NLayoutSider, NLayoutHeader, NLayoutContent, NMenu, NIcon, NButton,
   NTooltip, NSpace, NDropdown, NScrollbar, useMessage, useThemeVars, type MenuOption,
 } from 'naive-ui'
-import { MoonOutline, SunnyOutline, LinkOutline, ContrastOutline, SearchOutline, LanguageOutline } from '@vicons/ionicons5'
+import {
+  MoonOutline, SunnyOutline, LinkOutline, ContrastOutline, SearchOutline, LanguageOutline,
+  ServerOutline, ChevronBackOutline,
+} from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
 import { pages, pageTitle } from '../router'
 import { useTheme, type Mode } from '../stores/theme'
@@ -49,7 +52,9 @@ const paletteKey = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl K
 useUrlSync()
 const tabs = useTabs()
 tabs.wire()
-const tabsShown = computed(() => tabs.tabs.length > 1 || ui.dragNode !== null)
+// With several tabs the tabs take the node switcher's place in the header;
+// a small button unfolds the switcher again.
+const tabbed = computed(() => tabs.tabs.length > 1)
 
 // A node dragged out of the node switcher opens in a new tab wherever it is
 // dropped (the tab strip handles its own drops to place the tab).
@@ -129,7 +134,19 @@ const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`)
       <NLayoutHeader bordered class="header" :style="{ '--search-border': themeVars.borderColor }"
                      @dragover="onNodeDragOver" @drop="onNodeDrop">
         <div class="header-left">
-          <NodeSwitcher v-if="!nodeFree" />
+          <template v-if="!nodeFree">
+            <NTooltip v-if="tabbed">
+              <template #trigger>
+                <NButton quaternary size="small" class="switcher-toggle" :class="{ open: ui.switcherOpen }"
+                         @click="ui.setSwitcherOpen(!ui.switcherOpen)">
+                  <template #icon><NIcon :component="ui.switcherOpen ? ChevronBackOutline : ServerOutline" /></template>
+                </NButton>
+              </template>
+              {{ ui.switcherOpen ? t('shell.tabs.fold') : t('shell.tabs.unfold') }}
+            </NTooltip>
+            <NodeSwitcher v-if="!tabbed || ui.switcherOpen" :compact="tabbed" />
+            <NodeTabs />
+          </template>
         </div>
         <NSpace align="center" :size="12">
           <button type="button" class="search-hint" :title="t('palette.open')" @click="ui.paletteOpen = true">
@@ -173,8 +190,7 @@ const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`)
           </NDropdown>
         </NSpace>
       </NLayoutHeader>
-      <NodeTabs v-if="!(nodes.loaded && nodes.list.length === 0)" />
-      <NLayoutContent class="content" :class="{ tabbed: tabsShown }" :native-scrollbar="false"
+      <NLayoutContent class="content" :native-scrollbar="false"
                       @dragover="onNodeDragOver" @drop="onNodeDrop">
         <div class="content-inner">
           <WelcomePanel v-if="nodes.loaded && nodes.list.length === 0 && !trace.replay && !nodeFree" />
@@ -233,15 +249,27 @@ const socketText = computed(() => t(`shell.layout.socket.${client.state.value}`)
 .header-left {
   flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.header-left > * {
+  flex: none;
+}
+.header-left > .node-tabs {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.switcher-toggle {
+  width: 32px;
+  padding: 0;
 }
 .header > :last-child {
   flex: none;
 }
 .content {
   height: calc(100% - 60px);
-}
-.content.tabbed {
-  height: calc(100% - 60px - 38px);
 }
 .content-inner {
   padding: 24px;

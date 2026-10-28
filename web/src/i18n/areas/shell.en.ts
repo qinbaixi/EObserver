@@ -125,6 +125,8 @@ const en: typeof zh = {
     close_others: 'Close other tabs',
     close_right: 'Close tabs to the right',
     add: 'Open a node in a new tab',
+    fold: 'Fold the node switcher',
+    unfold: 'Show the node switcher (switch, add, remove nodes)',
     drop_hint: 'Drop to open in a new tab',
   },
   refresh: {

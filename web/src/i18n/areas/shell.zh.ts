@@ -126,6 +126,8 @@ export default {
     close_others: '关闭其他页签',
     close_right: '关闭右侧页签',
     add: '在新页签中打开节点',
+    fold: '收起节点选择',
+    unfold: '展开节点选择（切换、添加、移除节点）',
     drop_hint: '松手在新页签中打开',
   },
   refresh: {

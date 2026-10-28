@@ -10,6 +10,9 @@ import { useUi } from '../stores/ui'
 import { useTabs, NODE_MIME } from '../stores/tabs'
 import type { NodeStatus } from '../api/types'
 
+// compact: beside the node tabs, where the add button shows only its icon.
+defineProps<{ compact?: boolean }>()
+
 const nodes = useNodes()
 const dialog = useDialog()
 const message = useMessage()
@@ -173,7 +176,7 @@ function confirmDisconnect() {
 </script>
 
 <template>
-  <div class="node-switcher">
+  <div class="node-switcher" :class="{ compact }">
     <NSelect v-if="nodes.list.length" :value="nodes.current" :options="options"
              :render-label="renderLabel" :render-option="renderOption" :consistent-menu-width="false"
              :menu-props="{ class: 'node-menu' }" :style="{ width: selectWidth }" class="node-select"
@@ -195,7 +198,7 @@ function confirmDisconnect() {
       <template #trigger>
         <NButton secondary @click="ui.openConnect()">
           <template #icon><NIcon :component="AddOutline" /></template>
-          {{ t('shell.switcher.add') }}
+          <template v-if="!compact">{{ t('shell.switcher.add') }}</template>
         </NButton>
       </template>
       {{ t('shell.switcher.add_tip') }}
@@ -224,6 +227,9 @@ function confirmDisconnect() {
 .node-switcher > .node-select {
   flex: 0 1 auto;
   min-width: 220px;
+}
+.node-switcher.compact > .node-select {
+  min-width: 160px;
 }
 </style>
 

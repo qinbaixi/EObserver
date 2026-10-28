@@ -48,6 +48,8 @@ const filtered = computed(() => {
     && (!mods.size || (l.module !== null && mods.has(l.module)))
     && (!q || l.text.toLowerCase().includes(q)))
 })
+// Newest first, so new lines show up at the top.
+const rows = computed(() => filtered.value.slice().reverse())
 
 const LEVEL_TYPE: Record<LogLevel, 'error' | 'warning' | 'info' | 'success' | 'default'> = {
   emergency: 'error', alert: 'error', critical: 'error', error: 'error',
@@ -82,12 +84,21 @@ const columns = computed<DataTableColumns<LogLine>>(() => [
 const rowProps = (l: LogLine) => ({ style: 'cursor: pointer', onClick: () => { selected.value = l } })
 
 const table = ref<InstanceType<typeof NDataTable> | null>(null)
-// Every update, also once the list is full and drops as many as it adds.
-watch(filtered, async () => {
-  if (!follow.value) return
+const tableEl = ref<HTMLElement | null>(null)
+// Following keeps the newest line in view. Otherwise the lines being read
+// stay put while new ones are added above them.
+watch(rows, async (now, before) => {
+  const prevTop = before?.[0]?.seq
+  const added = prevTop === undefined ? 0 : now.findIndex((l) => l.seq === prevTop)
   await nextTick()
-  table.value?.scrollTo({ top: Number.MAX_SAFE_INTEGER })
+  if (follow.value) {
+    table.value?.scrollTo({ top: 0 })
+    return
+  }
+  const scroller = tableEl.value?.querySelector<HTMLElement>('.v-vl')
+  if (scroller && scroller.scrollTop > 0 && added > 0) scroller.scrollTop += added * ROW_HEIGHT
 })
+watch(follow, (on) => { if (on) table.value?.scrollTo({ top: 0 }) })
 
 function exportText() {
   const text = filtered.value.map((l) =>
@@ -147,14 +158,16 @@ const showDetail = computed({
     </NSpace>
   </div>
   <p v-if="logs.paused" class="note paused">{{ t('logs.live.paused') }}</p>
-  <NDataTable ref="table" :columns="columns" :data="filtered" :row-key="(l: LogLine) => l.seq"
-              :row-props="rowProps" size="small" virtual-scroll :min-row-height="ROW_HEIGHT"
-              :max-height="'calc(100vh - 360px)'"
-              :min-height="240" :scroll-x="800">
-    <template #empty>
-      <NEmpty :description="logs.lines.length ? t('logs.live.empty_filtered') : t('logs.live.empty')" />
-    </template>
-  </NDataTable>
+  <div ref="tableEl">
+    <NDataTable ref="table" :columns="columns" :data="rows" :row-key="(l: LogLine) => l.seq"
+                :row-props="rowProps" size="small" virtual-scroll :min-row-height="ROW_HEIGHT"
+                :max-height="'calc(100vh - 360px)'"
+                :min-height="240" :scroll-x="800">
+      <template #empty>
+        <NEmpty :description="logs.lines.length ? t('logs.live.empty_filtered') : t('logs.live.empty')" />
+      </template>
+    </NDataTable>
+  </div>
   <p class="note">{{ t('logs.live.detail_tip') }}</p>
 
   <NModal v-model:show="showDetail">

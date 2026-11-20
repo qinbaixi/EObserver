@@ -1536,9 +1536,10 @@ keeper_init(Parent, Owner, Resolved, Limits) ->
     Stats = ets:new(eobs_trace_stats, [set, public]),
     Keeper = self(),
     {Worker, WRef} = spawn_opt(fun() -> worker_init(Keeper, Tab, Stats, Limits) end,
-                               [link, monitor, {priority, low},
+                               [monitor, {priority, low},
                                 {max_heap_size, #{size => ?TRACE_HEAP_WORDS, kill => true,
                                                   error_logger => false}}]),
+    try link(Worker) catch error:noproc -> ok end,
     Results = [{T, start_one(R, Worker)} || {T, R} <- Resolved],
     Traced = [P || {_, {ok, P}} <- Results],
     Id = erlang:unique_integer([positive]),
@@ -4027,9 +4028,10 @@ bin_scan(Pids, Tab, {Min, Top}, Restarts) ->
     process_flag(trap_exit, true),
     ets:insert(Tab, [{top, Top}, {at, none}]),
     {H, Ref} = spawn_opt(fun() -> exit({shutdown, bin_scan_loop(Pids, Tab, Min, Top)}) end,
-                         [link, monitor, {priority, low},
+                         [monitor, {priority, low},
                           {max_heap_size, #{size => bin_heap_words(Pids), kill => true,
                                             error_logger => false}}]),
+    try link(H) catch error:noproc -> ok end,
     receive
         {'DOWN', Ref, process, H, {shutdown, Done}} ->
             flush_exit(H),
@@ -4418,9 +4420,10 @@ leak_run(Pids, Tab, Deadline, Restarts) ->
     ets:insert(Tab, {at, none}),
     Parent = self(),
     {H, Ref} = spawn_opt(fun() -> exit({shutdown, leak_loop(Pids, Tab, Parent, Deadline, 1)}) end,
-                         [link, monitor, {priority, low},
+                         [monitor, {priority, low},
                           {max_heap_size, #{size => bin_heap_words(Pids), kill => true,
                                             error_logger => false}}]),
+    try link(H) catch error:noproc -> ok end,
     receive
         {'DOWN', Ref, process, H, {shutdown, Done}} ->
             flush_exit(H),

@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.0.17] - 2026-11-20
+
 ### 新增
 
 - 新增 `--dump-dir DIR` 启动选项，可将崩溃转储文件浏览与打开范围限制在指定目录（解析软链接后校验）；当监听非回环地址且未设置 `--dump-dir` 时会在启动日志中给出安全提醒。
@@ -19,6 +21,7 @@ All notable changes to this project are documented here. The format follows
 
 ### 修复
 
+- **BEAM Book 阅读器**：右上角切换中英文时，阅读器立即按新语言重新加载目录和当前章节并停留在原来的小节，不再出现英文界面配中文正文的问题。
 - **目标节点 Agent（协议版本升级至 19，兼容 OTP 22+）**：修复消息跟踪、日志采集、诊断与 Recon 扫描在高负载或极端进程下的内存溢出、进程与 ETS 泄漏、崩溃及残留清理问题。
 - **后端核心**：解耦慢 RPC 与文件 I/O 对核心 `gen_server` 的阻塞；修复断开节点后未通知前端移除、非法目标节点抛出未捕获异常导致接口崩溃，以及鉴权/WebSocket/JSON 解析边界问题。
 - **崩溃转储引擎**：修复堆数据循环引用、恶意或损坏的 zlib 压缩块（改用流式 `zlib:safeInflate/2` 并限制 4 MB 解压上限）、非法 UTF-8 截断、CRLF 空行、带单引号的 link/monitor 目标解析以及取消扫描时的竞态与缓存泄漏问题。

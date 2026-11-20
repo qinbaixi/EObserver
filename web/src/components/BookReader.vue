@@ -29,6 +29,7 @@ watch(() => lang.locale, (l) => {
 const toc = ref<Toc | null>(null)
 const chapterId = ref<string | null>(null)
 const html = ref('')
+const htmlLang = ref<Locale | null>(null)
 const loading = ref(false)
 const failed = ref(false)
 const current = ref<string | null>(null)
@@ -51,10 +52,11 @@ async function go(target: string | null, emitNav = true) {
     if (mine !== seq) return
     toc.value = tc
     const ch = (target && tc.anchors[target]) || tc.chapters[0].id
-    if (ch !== chapterId.value || !html.value) {
+    if (ch !== chapterId.value || !html.value || l !== htmlLang.value) {
       const c = await loadChapter(l, ch)
       if (mine !== seq) return
       chapterId.value = ch
+      htmlLang.value = l
       html.value = withImages(c.html)
     }
     current.value = target ?? ch
@@ -87,7 +89,6 @@ watch(() => props.target, (t) => { if (t !== current.value || !html.value) void 
 
 function switchLang() {
   readLang.value = readLang.value === 'zh' ? 'en' : 'zh'
-  html.value = ''
   void go(current.value, false)
 }
 

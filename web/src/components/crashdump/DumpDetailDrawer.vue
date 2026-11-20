@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NDrawer, NDrawerContent, NSpin, NEmpty, NAlert, NTag, NSpace, NCollapse, NCollapseItem } from 'naive-ui'
 import { dumpRequest, isTerm, type DumpDetail, type DumpTarget, type DumpTerm } from '../../api/dump'
-import { errorText } from '../../api/errors'
+import { errorText, rawError } from '../../api/errors'
 import DumpTermBlock from './DumpTermBlock.vue'
 import { colLabel, formatValue, keyType, refLink, useNav } from './cells'
 
@@ -13,28 +13,40 @@ const emit = defineEmits<{ 'update:target': [DumpTarget | null] }>()
 const { t, te } = useI18n()
 const nav = useNav()
 
-const detail = ref<DumpDetail | null>(null)
+const detail = shallowRef<DumpDetail | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
+const errorCode = ref<string | null>(null)
+let loadSeq = 0
 
 const show = computed({
   get: () => props.target !== null,
   set: (v) => { if (!v) emit('update:target', null) },
 })
 
-watch(() => props.target, async (tg) => {
-  if (!tg) return
+watch([() => props.id, () => props.target?.kind ?? null, () => props.target?.key ?? null], async ([dumpId, kind, key]) => {
+  const req = ++loadSeq
+  if (!kind || key === null) {
+    detail.value = null
+    error.value = null
+    errorCode.value = null
+    loading.value = false
+    return
+  }
   loading.value = true
   error.value = null
+  errorCode.value = null
   detail.value = null
   try {
-    const d = await dumpRequest<DumpDetail>('dump.detail', { id: props.id, kind: tg.kind, key: tg.key })
-    if (props.target !== tg) return
+    const d = await dumpRequest<DumpDetail>('dump.detail', { id: dumpId, kind, key })
+    if (req !== loadSeq) return
     detail.value = d
   } catch (e) {
+    if (req !== loadSeq) return
+    errorCode.value = rawError(e)
     error.value = errorText(e)
   } finally {
-    loading.value = false
+    if (req === loadSeq) loading.value = false
   }
 }, { immediate: true })
 
@@ -71,7 +83,7 @@ const val = (k: string, v: unknown) => (isTerm(v) ? v.text : formatValue(keyType
         </NSpace>
       </template>
       <NSpin v-if="loading" style="width: 100%; padding: 60px 0" />
-      <NEmpty v-else-if="error === 'not_found'" :description="t('crashdump.detail.not_found')" style="padding: 60px 0" />
+      <NEmpty v-else-if="errorCode === 'not_found'" :description="t('crashdump.detail.not_found')" style="padding: 60px 0" />
       <NAlert v-else-if="error" type="error">{{ error }}</NAlert>
       <template v-else-if="detail">
         <table class="kv">

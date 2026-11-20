@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   NDrawer, NDrawerContent, NDescriptions, NDescriptionsItem, NTag, NButton, NSpace,
@@ -7,7 +7,7 @@ import {
 } from 'naive-ui'
 import { RefreshOutline, CloseCircleOutline } from '@vicons/ionicons5'
 import { client } from '../api/ws'
-import { errorText } from '../api/errors'
+import { errorText, rawError } from '../api/errors'
 import type { PortDetail } from '../api/types'
 import { formatBytes, formatNumber } from '../api/format'
 import { useSettings } from '../stores/settings'
@@ -19,9 +19,13 @@ const { t } = useI18n()
 const dialog = useDialog()
 const message = useMessage()
 const settings = useSettings()
-const detail = ref<PortDetail | null>(null)
+const detail = shallowRef<PortDetail | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
+const errorCode = ref<string | null>(null)
+const expandedGroups = ref<Record<string, boolean>>({})
+const LIST_LIMIT = 100
+let loadSeq = 0
 
 const show = computed({
   get: () => props.port !== null,
@@ -29,22 +33,35 @@ const show = computed({
 })
 
 async function load() {
-  if (!props.port) return
+  const n = props.node
+  const port = props.port
+  const req = ++loadSeq
+  if (!port) { detail.value = null; error.value = null; errorCode.value = null; loading.value = false; return }
   loading.value = true
   error.value = null
+  errorCode.value = null
   try {
-    detail.value = await client.request<PortDetail>('port.info', { node: props.node, port: props.port })
+    const res = await client.request<PortDetail>('port.info', { node: n, port })
+    if (req !== loadSeq) return
+    detail.value = res
   } catch (e) {
+    if (req !== loadSeq) return
     detail.value = null
+    errorCode.value = rawError(e)
     error.value = errorText(e)
   } finally {
-    loading.value = false
+    if (req === loadSeq) loading.value = false
   }
 }
-watch(() => props.port, () => void load(), { immediate: true })
+watch([() => props.node, () => props.port], () => {
+  expandedGroups.value = {}
+  void load()
+}, { immediate: true })
 
 function close() {
+  const n = props.node
   const port = props.port
+  if (!port) return
   dialog.error({
     title: t('pages.port_drawer.close'),
     content: t('pages.port_drawer.confirm', { port }),
@@ -52,9 +69,9 @@ function close() {
     negativeText: t('pages.port_drawer.cancel'),
     onPositiveClick: async () => {
       try {
-        await client.request('port.close', { node: props.node, port })
+        await client.request('port.close', { node: n, port })
         message.success(t('pages.port_drawer.closed', { port }))
-        await load()
+        if (props.node === n && props.port === port) await load()
       } catch (e) {
         message.error(errorText(e))
       }
@@ -80,7 +97,7 @@ function pid(ref: string) {
         </NSpace>
       </template>
       <NSpin v-if="loading && !detail" style="width: 100%; padding: 60px 0" />
-      <NEmpty v-else-if="error === 'not_found'" :description="t('pages.port_drawer.gone')" style="padding: 60px 0" />
+      <NEmpty v-else-if="errorCode === 'not_found'" :description="t('pages.port_drawer.gone')" style="padding: 60px 0" />
       <NAlert v-else-if="error" type="error">{{ error }}</NAlert>
       <template v-else-if="detail">
         <NDescriptions :column="1" label-placement="left" size="small" bordered>
@@ -111,7 +128,9 @@ function pid(ref: string) {
              :key="g.title" class="group">
           <div class="group-title"><Term :label="g.title" /> <span class="count">{{ g.items.length }}</span></div>
           <NSpace v-if="g.items.length" :size="6">
-            <NTag v-for="r in g.items" :key="r" size="small" class="mono clickable" @click="pid(r)">{{ r }}</NTag>
+            <NTag v-for="r in (expandedGroups[g.title] ? g.items : g.items.slice(0, LIST_LIMIT))" :key="r" size="small" class="mono clickable" @click="pid(r)">{{ r }}</NTag>
+            <NButton v-if="!expandedGroups[g.title] && g.items.length > LIST_LIMIT" size="tiny" quaternary
+                     @click="expandedGroups[g.title] = true">+{{ formatNumber(g.items.length - LIST_LIMIT) }}</NButton>
           </NSpace>
           <div v-else class="count">{{ t('pages.port_drawer.none') }}</div>
         </div>

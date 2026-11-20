@@ -38,7 +38,7 @@ const peers = computed(() => new Set(rows.value.map((r) => r.to)).size)
 
 function select(node: string, observed: boolean) {
   if (observed) {
-    nodes.select(node)
+    // Let useUrlSync select the node from ?node= after navigation finishes.
     void router.push({ name: 'system', query: { node } })
   } else {
     ui.openConnect(node)

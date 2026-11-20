@@ -65,7 +65,7 @@ const mnesiaRows = computed(() => {
   const q = search.value.trim().toLowerCase()
   return (mnesia.data.value ?? []).filter((x) => match(q, x.name, x.record_name))
 })
-const mnesiaOff = computed(() => mnesia.error.value?.includes('not_running') ?? false)
+const mnesiaOff = computed(() => mnesia.errorCode.value === 'not_running')
 
 const num = (a: number, b: number) => a - b
 const mono = (text: string | number) => h('span', { class: 'mono' }, text)

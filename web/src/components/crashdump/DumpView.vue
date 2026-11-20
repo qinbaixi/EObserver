@@ -122,7 +122,7 @@ const version = computed(() => props.info.status)
         </div>
       </template>
       <NTabPane name="overview" :tab="t('crashdump.tabs.overview')">
-        <DumpOverview :id="info.id" :info="info" @tab="goTab" />
+        <DumpOverview :id="info.id" :info="info" @tab="goTab" @word-size="(ws) => (wordSize = ws)" />
       </NTabPane>
       <NTabPane v-for="k in MAIN.filter((x) => x !== 'overview' && x !== 'memory')" :key="k" :name="k" :tab="t(`crashdump.tabs.${k}`)">
         <DumpTable :id="info.id" :key="`${k}:${sorts[k] ?? ''}`" :kind="k" :sort="sorts[k] ?? null" :version="version" :filter="filters[k] ?? ''"

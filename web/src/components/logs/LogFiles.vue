@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, h, nextTick, onMounted, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   NDataTable, NSelect, NInput, NButton, NIcon, NTag, NTooltip, NEmpty, NModal, NCard, NSpace, NText,
@@ -29,17 +29,21 @@ const LEVEL_TYPE: Record<LogLevel, 'error' | 'warning' | 'info' | 'success' | 'd
   warning: 'warning', notice: 'info', info: 'success', debug: 'default',
 }
 
-const files = ref<LogFile[]>([])
+const files = shallowRef<LogFile[]>([])
 const listing = ref(false)
 const error = ref<string | null>(null)
 const note = ref<string | null>(null)
 
 const file = ref<LogFile | null>(null)
-const entries = ref<LogFileEntry[]>([])
+const entries = shallowRef<LogFileEntry[]>([])
 const start = ref(0)
 const stop = ref(0)
 const size = ref<number | null>(null)
 const loading = ref(false)
+let listSeq = 0
+let readSeq = 0
+let searchSeq = 0
+let lastTailAt = 0
 
 const minLevel = ref<LogLevel>('debug')
 const modules = ref<string[]>([])
@@ -78,20 +82,23 @@ function toggle(base: string) {
 const shownFiles = (g: { base: string; files: LogFile[] }) => (isOpen(g.base) ? g.files : g.files.slice(0, 1))
 const rotatedCount = (g: { files: LogFile[] }) => g.files.filter((f) => f.index !== null).length
 
-async function call<T>(method: string, params: Record<string, unknown>): Promise<T | null> {
-  if (!node.value) return null
-  error.value = null
+async function call<T>(n: string, method: string, params: Record<string, unknown>, isCurrent: () => boolean): Promise<T | null> {
+  if (isCurrent()) error.value = null
   try {
-    return await client.request<T>(method, { node: node.value, ...params } as never, 30000)
+    return await client.request<T>(method, { node: n, ...params } as never, 30000)
   } catch (e) {
-    error.value = errorText(e)
+    if (isCurrent()) error.value = errorText(e)
     return null
   }
 }
 
 async function loadList() {
+  const n = node.value
+  const req = ++listSeq
+  if (!n) { listing.value = false; return }
   listing.value = true
-  const r = await call<LogFile[]>('logfile.list', {})
+  const r = await call<LogFile[]>(n, 'logfile.list', {}, () => req === listSeq && node.value === n)
+  if (req !== listSeq || node.value !== n) return
   listing.value = false
   if (!r) return
   files.value = r
@@ -108,15 +115,23 @@ function open(f: LogFile) {
   highlight.value = null
   modules.value = []
   note.value = null
+  size.value = null
   if (f.gz) void read(0, 'fwd', 'replace')
   else void read(null, 'back', 'replace')
 }
 
 // mode: replace the list, put the page before it, or after it.
+// 'replace' preempts any in-flight read so clicking another file is never dropped.
 async function read(pos: number | null, dir: 'back' | 'fwd', mode: 'replace' | 'before' | 'after') {
-  if (!file.value || loading.value) return
+  const n = node.value
+  const f = file.value
+  if (!n || !f) return
+  if (mode !== 'replace' && loading.value) return
+  const req = ++readSeq
   loading.value = true
-  const r = await call<LogFilePage>('logfile.read', { path: file.value.path, pos, dir })
+  const r = await call<LogFilePage>(n, 'logfile.read', { path: f.path, pos, dir },
+    () => req === readSeq && node.value === n && file.value?.path === f.path)
+  if (req !== readSeq || node.value !== n || file.value?.path !== f.path) return
   loading.value = false
   if (!r) return
   if (size.value !== null && r.size !== null && r.size < size.value && mode !== 'replace') {
@@ -131,12 +146,13 @@ async function read(pos: number | null, dir: 'back' | 'fwd', mode: 'replace' | '
     stop.value = r.stop
   } else if (mode === 'before') {
     const cur = entries.value.slice()
-    if (cur.length && cur[0].cont && page.length) {
-      const last = page[page.length - 1]
-      page[page.length - 1] = { ...last, text: `${last.text}\n${cur[0].text}` }
+    const pageCopy = page.slice()
+    if (cur.length && cur[0].cont && pageCopy.length) {
+      const last = pageCopy[pageCopy.length - 1]
+      pageCopy[pageCopy.length - 1] = { ...last, text: `${last.text}\n${cur[0].text}` }
       cur.shift()
     }
-    let all = page.concat(cur)
+    let all = pageCopy.concat(cur)
     if (all.length > KEEP) {
       stop.value = all[KEEP].pos
       all = all.slice(0, KEEP)
@@ -178,21 +194,33 @@ async function toEnd() {
   void scrollTo('bottom')
 }
 async function older() {
-  const before = entries.value.length
+  const anchorPos = filtered.value[0]?.pos
   await read(start.value, 'back', 'before')
-  void scrollTo(Math.max(0, entries.value.length - before - 1))
+  if (anchorPos !== undefined) {
+    const idx = filtered.value.findIndex((e) => e.pos === anchorPos)
+    if (idx > 0) void scrollTo(idx)
+  }
 }
 async function newer() {
   await read(stop.value, 'fwd', 'after')
 }
 
 // Scrolling near either end of the list loads the next page there. At
-// the end of the file being written this also picks up what was added.
+// the end of the file being written this also picks up what was added,
+// throttled so wheel jitter at EOF cannot flood the target node.
 async function onScroll(e: Event) {
   const el = e.target as HTMLElement
   if (loading.value || !file.value || !entries.value.length) return
   if (el.scrollTop + el.clientHeight >= el.scrollHeight - ROW_HEIGHT * 3) {
-    if (!atEnd.value || (file.value.index === null && !file.value.gz)) await newer()
+    if (!atEnd.value) {
+      await newer()
+    } else if (file.value.index === null && !file.value.gz) {
+      const now = Date.now()
+      if (now - lastTailAt >= 2000) {
+        lastTailAt = now
+        await newer()
+      }
+    }
   } else if (el.scrollTop <= ROW_HEIGHT * 2 && !atStart.value && !file.value.gz) {
     await older()
   }
@@ -205,9 +233,13 @@ function localStamp(ms: number) {
 }
 
 async function jump() {
-  if (!file.value || jumpAt.value === null) return
-  const r = await call<{ pos: number }>('logfile.seek', { path: file.value.path, time: localStamp(jumpAt.value) })
-  if (!r) return
+  const n = node.value
+  const f = file.value
+  if (!n || !f || jumpAt.value === null) return
+  const req = ++readSeq
+  const r = await call<{ pos: number }>(n, 'logfile.seek', { path: f.path, time: localStamp(jumpAt.value) },
+    () => req === readSeq && node.value === n && file.value?.path === f.path)
+  if (!r || req !== readSeq || node.value !== n || file.value?.path !== f.path) return
   await gotoPos(r.pos)
 }
 
@@ -221,27 +253,31 @@ async function gotoPos(pos: number) {
 // Search
 const searching = ref(false)
 const showHits = ref(false)
-const hits = ref<LogFileEntry[]>([])
+const hits = shallowRef<LogFileEntry[]>([])
 const hitsText = ref('')
 const hitsDir = ref<'back' | 'fwd'>('back')
 const hitsNext = ref<number | null>(null)
 const scanned = ref(0)
 
 async function search(dir: 'back' | 'fwd', more = false) {
-  if (!file.value || !query.value) return
+  const n = node.value
+  const f = file.value
+  if (!n || !f || !query.value) return
+  const req = ++searchSeq
   if (!more) {
     hits.value = []
     scanned.value = 0
     hitsText.value = query.value
-    hitsDir.value = file.value.gz ? 'fwd' : dir
+    hitsDir.value = f.gz ? 'fwd' : dir
     // From the edge of what is shown, in the direction searched.
-    hitsNext.value = file.value.gz ? 0 : (dir === 'back' ? stop.value : start.value)
+    hitsNext.value = f.gz ? 0 : (dir === 'back' ? stop.value : start.value)
   }
   searching.value = true
   showHits.value = true
-  const r = await call<LogFileSearch>('logfile.search', {
-    path: file.value.path, pos: hitsNext.value, dir: hitsDir.value, text: hitsText.value,
-  })
+  const r = await call<LogFileSearch>(n, 'logfile.search', {
+    path: f.path, pos: hitsNext.value, dir: hitsDir.value, text: hitsText.value,
+  }, () => req === searchSeq && node.value === n && file.value?.path === f.path)
+  if (req !== searchSeq || node.value !== n || file.value?.path !== f.path) return
   searching.value = false
   if (!r) return
   hits.value = hits.value.concat(r.hits)
@@ -335,9 +371,19 @@ const showDetail = computed({
 })
 
 watch(node, () => {
+  listSeq++
+  readSeq++
+  searchSeq++
   files.value = []
   file.value = null
   entries.value = []
+  hits.value = []
+  showHits.value = false
+  selected.value = null
+  error.value = null
+  note.value = null
+  loading.value = false
+  searching.value = false
   void loadList()
 })
 onMounted(loadList)
@@ -481,7 +527,8 @@ onMounted(loadList)
           · {{ t('logs.files.search_done', { edge: hitsDir === 'back' ? t('logs.files.edge_start') : t('logs.files.edge_end') }) }}
         </template>
       </NText>
-      <NDataTable :columns="hitColumns" :data="hits" :row-props="hitRowProps" size="small" virtual-scroll
+      <NDataTable :columns="hitColumns" :data="hits" :row-key="(e: LogFileEntry) => e.pos"
+                  :row-props="hitRowProps" size="small" virtual-scroll
                   max-height="55vh" :loading="searching && !hits.length" class="hits">
         <template #empty><NEmpty :description="searching ? '' : t('logs.files.search_none')" /></template>
       </NDataTable>

@@ -100,7 +100,10 @@ export const useUpdate = defineStore('update', () => {
   }
 
   function openRelease() {
-    window.open(info.value?.url ?? 'https://github.com/qinbaixi/EObserver/releases/latest', '_blank')
+    const fallback = 'https://github.com/qinbaixi/EObserver/releases/latest'
+    const raw = info.value?.url
+    const target = typeof raw === 'string' && /^https:\/\//i.test(raw) ? raw : fallback
+    window.open(target, '_blank', 'noopener,noreferrer')
   }
 
   // First check once the backend has told us its version, then periodically.

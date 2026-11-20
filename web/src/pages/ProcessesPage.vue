@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useQueryRef } from '../composables/useQueryRef'
 import { useRoute, useRouter } from 'vue-router'
-import { computed, h, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, h, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   NDataTable, NInput, NSpace, NTag, NIcon, NAlert, NButton, NDropdown, NTooltip,
@@ -43,7 +43,7 @@ const page = ref(1)
 const pageSize = ref(50)
 const interval = ref(2000)
 const paused = ref(false)
-const data = ref<ProcessPage | null>(null)
+const data = shallowRef<ProcessPage | null>(null)
 const error = ref<string | null>(null)
 const selected = useQueryRef('pid')
 
@@ -71,14 +71,24 @@ function subscribe(once = false) {
     data.value = d
     error.value = null
     if (once) { unsub(); if (stop === unsub) stop = null }
-  }, (e) => { error.value = e })
+  }, (e) => {
+    error.value = errorText(e)
+    if (once) { unsub(); if (stop === unsub) stop = null }
+  })
   stop = unsub
 }
 
-watch([params, interval], () => { if (!paused.value) subscribe() }, { immediate: true })
+watch([params, interval], ([p], [old]) => {
+  if (!paused.value) subscribe()
+  else if (p.node && p.node !== old?.node) subscribe(true)
+}, { immediate: true })
 watch(paused, (p) => (p ? (stop?.(), (stop = null)) : subscribe()))
-watch(() => nodes.current, () => { data.value = null; page.value = 1 })
-onBeforeUnmount(() => stop?.())
+watch(() => nodes.current, () => { data.value = null; error.value = null; page.value = 1 })
+onBeforeUnmount(() => {
+  clearTimeout(debounce)
+  stop?.()
+  stop = null
+})
 
 // Manual refresh (and after a kill): one update while paused, otherwise
 // restart the live subscription so the next update comes right away.
@@ -148,7 +158,7 @@ function onMenu(key: string) {
   menu.value = null
   if (!row) return
   if (key === 'open') selected.value = row.pid
-  else if (key === 'copy') void navigator.clipboard?.writeText(row.pid).then(() => message.success(t('procs.processes.copied')))
+  else if (key === 'copy') void navigator.clipboard?.writeText(row.pid).then(() => message.success(t('procs.processes.copied'))).catch(() => {})
   else if (key === 'kill') kill(row)
   else if (key === 'trace') void router.push({ path: '/trace', query: { node: route.query.node, target: row.pid } })
 }

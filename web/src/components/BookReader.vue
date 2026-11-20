@@ -19,7 +19,12 @@ const lang = useLocale()
 const bookStyle = useBookStyle()
 
 const readLang = ref<Locale>(lang.locale)
-watch(() => lang.locale, (l) => { readLang.value = l })
+watch(() => lang.locale, (l) => {
+  if (readLang.value === l) return
+  readLang.value = l
+  html.value = ''
+  if (current.value) void go(current.value, false)
+})
 
 const toc = ref<Toc | null>(null)
 const chapterId = ref<string | null>(null)

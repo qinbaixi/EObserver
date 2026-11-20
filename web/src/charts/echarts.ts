@@ -8,3 +8,15 @@ import {
 
 use([CanvasRenderer, LineChart, BarChart, HeatmapChart, TreeChart, GraphChart, PieChart, GridComponent,
   TooltipComponent, LegendComponent, VisualMapComponent, MarkLineComponent, TitleComponent])
+
+const HTML_ESC: Record<string, string> = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+}
+
+export function escapeHtml(v: unknown): string {
+  return String(v ?? '').replace(/[&<>"']/g, (c) => HTML_ESC[c]!)
+}

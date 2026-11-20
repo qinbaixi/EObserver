@@ -1,6 +1,6 @@
-import { onBeforeUnmount, ref, watch, type Ref } from 'vue'
+import { onBeforeUnmount, ref, shallowRef, watch, type Ref, type ShallowRef } from 'vue'
 import { client } from '../api/ws'
-import { errorText } from '../api/errors'
+import { errorText, rawError } from '../api/errors'
 
 function loadInterval(topic: string, fallback: number): number {
   try {
@@ -20,8 +20,9 @@ function saveInterval(topic: string, v: number) {
 // interval and refresh drive the page's RefreshControl.
 export function useTopic<T>(topic: string, node: Ref<string | null>, interval = 2000,
                             extra: () => Record<string, unknown> = () => ({})) {
-  const data = ref<T | null>(null) as Ref<T | null>
+  const data = shallowRef<T | null>(null) as ShallowRef<T | null>
   const error = ref<string | null>(null)
+  const errorCode = ref<string | null>(null)
   const every = ref(loadInterval(topic, interval))
   const paused = ref(false)
   let stop: (() => void) | null = null
@@ -36,15 +37,21 @@ export function useTopic<T>(topic: string, node: Ref<string | null>, interval = 
       (d) => {
         data.value = d
         error.value = null
+        errorCode.value = null
         if (once) { unsub(); if (stop === unsub) stop = null }
       },
-      (e) => { error.value = errorText(e) })
+      (e) => {
+        errorCode.value = rawError(e)
+        error.value = errorText(e)
+        if (once) { unsub(); if (stop === unsub) stop = null }
+      })
     stop = unsub
   }
 
   watch(node, () => {
     data.value = null
     error.value = null
+    errorCode.value = null
     start(paused.value)
   }, { immediate: true })
   watch(every, (v) => {
@@ -60,5 +67,5 @@ export function useTopic<T>(topic: string, node: Ref<string | null>, interval = 
   }
 
   onBeforeUnmount(() => stop?.())
-  return { data, error, paused, interval: every, refresh }
+  return { data, error, errorCode, paused, interval: every, refresh }
 }

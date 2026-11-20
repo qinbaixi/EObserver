@@ -53,6 +53,7 @@ export const useLoad = defineStore('load', () => {
   const demand = shallowReactive<Record<string, { nodes: string[]; summary: boolean }>>({})
   const loadSubs = new Map<string, Sampler>()
   const summarySubs = new Map<string, () => void>()
+  const onceSubs = new Map<string, () => void>()
 
   const node = computed(() =>
     nodes.currentInfo?.status === 'connected' ? nodes.currentInfo.node : null)
@@ -148,11 +149,20 @@ export const useLoad = defineStore('load', () => {
   }
 
   function once<T>(topic: string, n: string, onData: (d: T) => void) {
-    const stop = client.subscribe(topic, { node: n }, 60_000, (d: T) => { stop(); onData(d) },
-      (e) => { stop(); errors[n] = e })
+    const key = `${topic}:${n}`
+    onceSubs.get(key)?.()
+    const stop = client.subscribe(topic, { node: n }, 60_000,
+      (d: T) => { stop(); onceSubs.delete(key); onData(d) },
+      (e) => { stop(); onceSubs.delete(key); errors[n] = e })
+    onceSubs.set(key, stop)
   }
 
   client.on('node_removed', ({ node: n }: { node: string }) => {
+    for (const topic of ['node.load', 'node.summary']) {
+      const key = `${topic}:${n}`
+      onceSubs.get(key)?.()
+      onceSubs.delete(key)
+    }
     delete history[n]
     delete errors[n]
     delete summaries[n]
@@ -160,6 +170,10 @@ export const useLoad = defineStore('load', () => {
 
   function start() {
     active.value = true
+  }
+
+  function stop() {
+    active.value = false
   }
 
   // Asks for nodes to be sampled while the calling component is mounted.
@@ -173,6 +187,6 @@ export const useLoad = defineStore('load', () => {
   const points = computed(() => (node.value ? history[node.value]?.value ?? [] : []))
   const error = computed(() => (node.value ? errors[node.value] ?? null : null))
 
-  return { points, interval, error, node, start, history, errors, summaries, useSampling,
+  return { points, interval, error, node, start, stop, history, errors, summaries, useSampling,
            paused, peerInterval, refresh }
 })

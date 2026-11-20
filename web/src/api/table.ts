@@ -14,9 +14,10 @@ export function useResizableTable<T>(source: MaybeRefOrGetter<DataTableColumns<T
   const columns = computed(() => toValue(source).map((c) => {
     const col = c as Col
     if (col.type) return c
-    // Resizing needs a starting width; columns that only had a minWidth
-    // start from it.
-    return { ...c, resizable: true, width: col.width ?? col.minWidth ?? 120, minWidth: 60 } as typeof c
+    // Resizing needs a starting width; preserve user-dragged widths across
+    // column re-computations and fall back to minWidth / 120.
+    const saved = widths.value[String(col.key)]
+    return { ...c, resizable: true, width: saved ?? col.width ?? col.minWidth ?? 120, minWidth: 60 } as typeof c
   }))
 
   const scrollX = computed(() => Math.max(minScrollX, columns.value.reduce((sum, c) => {

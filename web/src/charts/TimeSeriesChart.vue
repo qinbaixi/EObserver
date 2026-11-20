@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import './echarts'
-import { computed } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import VChart from 'vue-echarts'
 import { useChartTheme } from '../composables/useChartTheme'
 
@@ -21,6 +21,7 @@ const props = withDefaults(defineProps<{
 }>(), { stacked: false, yMax: undefined, yInterval: undefined, integer: false, height: 240 })
 
 const t = useChartTheme()
+const chart = ref<InstanceType<typeof VChart> | null>(null)
 
 function clock(ms: number) {
   const d = new Date(ms)
@@ -81,8 +82,14 @@ const option = computed(() => {
     })),
   }
 })
+
+function apply() {
+  chart.value?.setOption(option.value, { replaceMerge: ['series'] })
+}
+onMounted(apply)
+watch(option, apply)
 </script>
 
 <template>
-  <VChart :option="option" :style="{ height: `${height}px` }" autoresize />
+  <VChart ref="chart" manual-update :style="{ height: `${height}px` }" autoresize />
 </template>

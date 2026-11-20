@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, ref, watch } from 'vue'
+import { computed, h, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   NDrawer, NDrawerContent, NDataTable, NInput, NIcon, NButton, NAlert, NPagination,
@@ -23,12 +23,15 @@ const PAGE = 50
 const page = ref(1)
 const search = ref('')
 const applied = ref('')
-const data = ref<TableRows | null>(null)
+const data = shallowRef<TableRows | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
 const settings = useSettings()
 // Key of the object shown in TableObjectModal; '' adds a new one.
 const openKey = ref<string | null>(null)
+let loadSeq = 0
+let timer: ReturnType<typeof setTimeout> | undefined
+let resetting = false
 
 type Row = { i: number; cells: string[] }
 const rows = computed<Row[]>(() => (data.value?.rows ?? []).map((cells, i) => ({ i, cells })))
@@ -57,35 +60,44 @@ const show = computed({
 })
 
 async function load() {
-  if (!props.table) return
+  const n = props.node
+  const kind = props.kind
+  const table = props.table
+  const req = ++loadSeq
+  if (!table) { data.value = null; error.value = null; loading.value = false; return }
   loading.value = true
   error.value = null
   try {
-    data.value = await client.request<TableRows>(`${props.kind}.rows`, {
-      node: props.node, table: props.table,
+    const res = await client.request<TableRows>(`${kind}.rows`, {
+      node: n, table,
       offset: (page.value - 1) * PAGE, limit: PAGE, search: applied.value,
     }, 60000)
+    if (req !== loadSeq) return
+    data.value = res
   } catch (e) {
+    if (req !== loadSeq) return
     data.value = null
     error.value = errorText(e)
   } finally {
-    loading.value = false
+    if (req === loadSeq) loading.value = false
   }
 }
 
-
-watch(() => props.table, () => {
+watch([() => props.node, () => props.kind, () => props.table], () => {
+  clearTimeout(timer)
+  resetting = true
   openKey.value = null
   page.value = 1
   search.value = ''
   applied.value = ''
   data.value = null
+  resetting = false
   void load()
 }, { immediate: true })
-watch(page, () => void load())
+watch(page, () => { if (!resetting) void load() })
 
-let timer: ReturnType<typeof setTimeout> | undefined
 watch(search, (q) => {
+  if (resetting) return
   clearTimeout(timer)
   timer = setTimeout(() => {
     applied.value = q.trim()
@@ -93,6 +105,7 @@ watch(search, (q) => {
     else page.value = 1
   }, 350)
 })
+onBeforeUnmount(() => clearTimeout(timer))
 
 const columns = computed<DataTableColumns<Row>>(() => {
   const d = data.value

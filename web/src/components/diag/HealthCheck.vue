@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, ref } from 'vue'
+import { computed, h, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { NButton, NAlert, NIcon, NDataTable, NTag, type DataTableColumns } from 'naive-ui'
@@ -30,15 +30,18 @@ const running = ref(false)
 const error = ref<string | null>(null)
 const last = computed(() => diag.health[props.node] ?? null)
 
+watch(() => props.node, () => { error.value = null })
+
 async function run() {
   if (running.value) return
+  const n = props.node
   running.value = true
   error.value = null
   try {
-    const report = await client.request<DiagReport>('diag.check', { node: props.node }, 60000)
-    diag.health[props.node] = { report, at: Date.now() }
+    const report = await client.request<DiagReport>('diag.check', { node: n }, 60000)
+    diag.health[n] = { report, at: Date.now() }
   } catch (e) {
-    error.value = errorText(e)
+    if (props.node === n) error.value = errorText(e)
   } finally {
     running.value = false
   }

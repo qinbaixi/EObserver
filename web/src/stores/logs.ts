@@ -5,8 +5,9 @@ import { errorText } from '../api/errors'
 import type { CrashGroup, LogLine, LogsData, RestartGroup } from '../api/types'
 import { useNodes } from './nodes'
 
-// Log lines kept in the browser; older ones are dropped.
+// Log lines and crash/restart groups kept in the browser; older ones are dropped.
 export const MAX_LINES = 10000
+const MAX_GROUPS = 2000
 
 type Status = Omit<LogsData, 'logs' | 'crashes' | 'restarts'>
 
@@ -78,11 +79,23 @@ export const useLogs = defineStore('logs', () => {
       }
     }
     if (cs.length) {
-      for (const c of cs) crashes.value.set(c.id, c)
+      const m = crashes.value
+      for (const c of cs) m.set(c.id, c)
+      while (m.size > MAX_GROUPS) {
+        const oldest = m.keys().next().value
+        if (oldest === undefined) break
+        m.delete(oldest)
+      }
       triggerRef(crashes)
     }
     if (rs.length) {
-      for (const r of rs) restarts.value.set(r.id, r)
+      const m = restarts.value
+      for (const r of rs) m.set(r.id, r)
+      while (m.size > MAX_GROUPS) {
+        const oldest = m.keys().next().value
+        if (oldest === undefined) break
+        m.delete(oldest)
+      }
       triggerRef(restarts)
     }
   }

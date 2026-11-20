@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, ref, toRef } from 'vue'
+import { computed, h, ref, toRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NDataTable, NTabs, NTabPane, NAlert, NTag, NEmpty, NInput, NIcon, type DataTableColumns } from 'naive-ui'
 import { SearchOutline } from '@vicons/ionicons5'
@@ -32,6 +32,7 @@ const active = computed(() => (tab.value === 'inet' ? inet : sockets))
 const search = ref('')
 const selectedPort = ref<string | null>(null)
 const selectedPid = ref<string | null>(null)
+watch(node, () => { selectedPort.value = null; selectedPid.value = null })
 
 function match(texts: (string | null)[]) {
   const q = search.value.trim().toLowerCase()

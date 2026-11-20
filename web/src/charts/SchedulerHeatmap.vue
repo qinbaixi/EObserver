@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import './echarts'
-import { computed } from 'vue'
+import { escapeHtml } from './echarts'
+import { computed, onMounted, ref, watch } from 'vue'
 import VChart from 'vue-echarts'
 import { useChartTheme } from '../composables/useChartTheme'
 import type { LoadPoint } from '../api/types'
@@ -14,6 +14,7 @@ const props = withDefaults(defineProps<{
 }>(), { height: 240 })
 
 const t = useChartTheme()
+const chart = ref<InstanceType<typeof VChart> | null>(null)
 
 const LABEL: Record<string, string> = { normal: 'S', dirty_cpu: 'DC', dirty_io: 'DIO' }
 
@@ -45,8 +46,9 @@ const option = computed(() => {
       textStyle: { color: th.text },
       formatter: (p: { value: [number, number, number] }) => {
         const [x, y, v] = p.value
-        const time = new Date(m.times[x]).toTimeString().slice(0, 8)
-        return `${m.rows[y]} · ${time}<br/><b>${v.toFixed(1)}%</b>`
+        const ts = m.times[x]
+        const time = ts != null ? new Date(ts).toTimeString().slice(0, 8) : ''
+        return `${escapeHtml(m.rows[y])} · ${escapeHtml(time)}<br/><b>${v.toFixed(1)}%</b>`
       },
     },
     xAxis: {
@@ -80,14 +82,20 @@ const option = computed(() => {
     series: [{
       type: 'heatmap',
       data: m.data,
-      itemStyle: { borderColor: th.surface, borderWidth: 1 },
+      itemStyle: { borderWidth: 0 },
       emphasis: { itemStyle: { borderColor: th.text, borderWidth: 1 } },
       progressive: 0,
     }],
   }
 })
+
+function apply() {
+  chart.value?.setOption(option.value, { replaceMerge: ['series'] })
+}
+onMounted(apply)
+watch(option, apply)
 </script>
 
 <template>
-  <VChart :option="option" :style="{ height: `${height}px` }" autoresize />
+  <VChart ref="chart" manual-update :style="{ height: `${height}px` }" autoresize />
 </template>

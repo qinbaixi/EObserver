@@ -88,18 +88,28 @@ const refused = ref<{ target: string; reason: string }[]>([])
 const nameOptions = ref<{ label: string; value: string }[]>([])
 
 // Registered names to pick from: one page of the process list, by name.
+let stopNames: (() => void) | null = null
 function loadNames() {
+  stopNames?.()
+  stopNames = null
   const n = trace.node
-  if (!n) return
+  if (!n) { nameOptions.value = []; return }
   const unsub = client.subscribe('node.processes',
     { node: n, sort: 'name', order: 'asc', offset: 0, limit: 500 }, 60000,
     (d: ProcessPage) => {
       unsub()
+      if (stopNames === unsub) stopNames = null
       nameOptions.value = d.rows.filter((r) => r.name)
         .map((r) => ({ label: `${r.name}  ${r.pid}`, value: r.name! }))
+    },
+    () => {
+      unsub()
+      if (stopNames === unsub) stopNames = null
     })
+  stopNames = unsub
 }
 watch(() => trace.node, loadNames, { immediate: true })
+trace.acquire()
 
 const running = computed(() => trace.state.status === 'running')
 
@@ -127,7 +137,7 @@ async function stop() {
 }
 
 // "Trace messages" from the process list or the process drawer: ?target=<pid>.
-watch(() => [route.query.target, trace.node] as const, ([target, n]) => {
+watch([() => route.query.target, () => trace.node], ([target, n]) => {
   if (typeof target !== 'string' || !target || !n || settings.readOnly) return
   trace.closeReplay()
   targets.value = [target]
@@ -258,7 +268,12 @@ const showDetail = computed({
   set: (v) => { if (!v) selected.value = null },
 })
 
-onBeforeUnmount(() => { selected.value = null })
+onBeforeUnmount(() => {
+  selected.value = null
+  stopNames?.()
+  stopNames = null
+  trace.release()
+})
 </script>
 
 <template>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import './echarts'
+import { escapeHtml } from './echarts'
 import { computed } from 'vue'
 import VChart from 'vue-echarts'
 import { useChartTheme } from '../composables/useChartTheme'
@@ -83,13 +83,14 @@ const option = computed(() => {
       borderColor: th.axis,
       textStyle: { color: th.text },
       formatter: (ps: { dataIndex: number; marker: string; seriesName: string; value: number | null }[]) => {
-        const i = ps[0]?.dataIndex ?? 0
-        const title = props.tooltipTitle ? props.tooltipTitle(i) : props.categories[i]
+        if (!ps.length) return ''
+        const i = ps[0].dataIndex ?? 0
+        const title = (props.tooltipTitle ? props.tooltipTitle(i) : props.categories[i]) ?? ''
         // With several series, a missing value means "not in this series".
         const shown = props.series.length > 1 ? ps.filter((p) => p.value != null) : ps
         const lines = shown.map((p) =>
-          `${p.marker}${props.series.length > 1 ? `${p.seriesName}: ` : ''}<b>${p.value == null ? '-' : props.format(p.value)}</b>`)
-        return [escape(title), ...lines].join('<br/>')
+          `${p.marker}${props.series.length > 1 ? `${escapeHtml(p.seriesName)}: ` : ''}<b>${escapeHtml(p.value == null ? '-' : props.format(p.value))}</b>`)
+        return [escapeHtml(title), ...lines].join('<br/>')
       },
     },
     xAxis: props.horizontal ? valueAxis : categoryAxis,
@@ -120,10 +121,6 @@ const option = computed(() => {
     })),
   }
 })
-
-function escape(s: string) {
-  return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!)
-}
 
 // A click on a bar or on its axis label selects that row.
 function onClick(e: { componentType: string; dataIndex?: number; value?: unknown }) {

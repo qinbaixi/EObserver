@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch, type Component } from 'vue'
+import { computed, onBeforeUnmount, ref, shallowRef, watch, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NGrid, NGi, NCard, NIcon, NAlert, NSkeleton, NEmpty, NButton, NTooltip } from 'naive-ui'
 import {
@@ -18,12 +18,12 @@ import KnowledgeIcon from '../KnowledgeIcon.vue'
 import { formatParams, refLink, useNav } from './cells'
 
 const props = defineProps<{ id: string; info: DumpInfo }>()
-const emit = defineEmits<{ tab: [tab: string, sort?: string] }>()
+const emit = defineEmits<{ tab: [tab: string, sort?: string]; wordSize: [ws: number] }>()
 const { t, te } = useI18n()
 const nav = useNav()
 const chart = useChartTheme()
 
-const data = ref<DumpOverview | null>(null)
+const data = shallowRef<DumpOverview | null>(null)
 const error = ref<string | null>(null)
 let timer: number | undefined
 let alive = true
@@ -41,6 +41,8 @@ async function load() {
     const d = await dumpRequest<DumpOverview>('dump.overview', { id: props.id })
     if (!alive || mine !== seq) return
     data.value = d
+    const ws = Number(d.general?.word_size)
+    if (ws === 4 || ws === 8) emit('wordSize', ws)
     error.value = null
   } catch (e) {
     if (alive && mine === seq) error.value = errorText(e)
@@ -50,7 +52,7 @@ async function load() {
   // While scanning, the overview fills in: ask again every 1.5 s.
   if (alive && props.info.status === 'scanning') timer = window.setTimeout(load, 1500)
 }
-watch(() => [props.id, props.info.status], () => { void load() }, { immediate: true })
+watch([() => props.id, () => props.info.status], () => { void load() }, { immediate: true })
 onBeforeUnmount(() => { alive = false; clearTimeout(timer) })
 
 const has = (key: string) => te(key) || te(key, 'zh')

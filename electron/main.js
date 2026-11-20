@@ -8,14 +8,31 @@ const net = require('node:net')
 const { initLocale, setLocale, tr } = require('./i18n')
 
 const isWin = process.platform === 'win32'
+const MAX_LOG_CHARS = 65536
 let child = null
 let win = null
 let quitting = false
-const log = []
+let logBuf = ''
 // EOBS_SMOKE_RESULT=<file>: start, check that the UI rendered, write the
 // outcome to <file> as JSON and quit. Used by the release workflow to test
 // the packaged app on every platform before publishing.
 const smokeFile = process.env.EOBS_SMOKE_RESULT
+
+function appendLog(text) {
+  logBuf += text
+  if (logBuf.length > MAX_LOG_CHARS) {
+    logBuf = logBuf.slice(-MAX_LOG_CHARS)
+  }
+}
+
+function isSafeExternalUrl(raw) {
+  try {
+    const u = new URL(raw)
+    return u.protocol === 'http:' || u.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
 
 function releaseDir() {
   return app.isPackaged
@@ -53,25 +70,41 @@ function launch(port) {
     : spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] })
 
   return new Promise((resolve, reject) => {
+    let settled = false
     let out = ''
+    const finish = (fn, arg) => {
+      if (settled) return
+      settled = true
+      out = ''
+      clearTimeout(startTimer)
+      fn(arg)
+    }
+    const startTimer = setTimeout(() => {
+      if (!settled) {
+        stopBackend({ wait: true })
+        quitting = false
+        finish(reject, new Error(tr('startTimeout')))
+      }
+    }, 60000)
     const onData = (chunk) => {
       const text = chunk.toString()
-      log.push(text)
+      appendLog(text)
+      if (settled) return
       out += text
+      if (out.length > 8192) out = out.slice(-8192)
       const m = /running at (http:\/\/\S+)/.exec(out)
-      if (m) resolve(m[1])
+      if (m) finish(resolve, m[1])
     }
     child.stdout.on('data', onData)
-    child.stderr.on('data', (c) => log.push(c.toString()))
-    child.on('error', reject)
+    child.stderr.on('data', (c) => appendLog(c.toString()))
+    child.on('error', (err) => finish(reject, err))
     child.on('exit', (code) => {
       child = null
       if (!quitting) {
-        reject(new Error(tr('exited', { code })))
+        finish(reject, new Error(tr('exited', { code })))
         if (win) showError(new Error(tr('stopped', { code })))
       }
     })
-    setTimeout(() => reject(new Error(tr('startTimeout'))), 60000)
   })
 }
 
@@ -101,7 +134,7 @@ function pageUrl(name, texts, html = {}) {
 }
 
 function showError(err) {
-  const details = log.join('').slice(-4000)
+  const details = logBuf.slice(-4000)
   const issue = '<a href="https://github.com/qinbaixi/EObserver/issues">GitHub issue</a>'
   win?.loadURL(pageUrl('error.html',
     { title: tr('failed'), message: err.message, log: details || tr('noOutput') },
@@ -125,16 +158,18 @@ async function createWindow() {
     webPreferences: { contextIsolation: true, sandbox: true, preload: path.join(__dirname, 'preload.js') },
   })
   win.on('closed', () => { win = null })
-  // Links to other sites open in the system browser.
+  // Links to other sites open in the system browser (http/https only).
   win.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
+    if (isSafeExternalUrl(url)) void shell.openExternal(url)
     return { action: 'deny' }
   })
   let origin = null
   win.webContents.on('will-navigate', (e, target) => {
-    if (origin && target.startsWith(origin)) return
+    try {
+      if (origin && new URL(target).origin === origin) return
+    } catch { /* invalid URL: block */ }
     e.preventDefault()
-    if (/^https?:/.test(target)) void shell.openExternal(target)
+    if (isSafeExternalUrl(target)) void shell.openExternal(target)
   })
   await win.loadURL(pageUrl('loading.html', { starting: tr('starting') }))
   try {
@@ -160,9 +195,9 @@ async function smokeCheck(url) {
 }
 
 function smokeDone(result) {
-  fs.writeFileSync(smokeFile, JSON.stringify({ ...result, log: log.join('') }, null, 2))
+  fs.writeFileSync(smokeFile, JSON.stringify({ ...result, log: logBuf }, null, 2))
   // app.exit skips before-quit, so stop the backend here.
-  stopBackend()
+  stopBackend({ wait: true })
   setTimeout(() => app.exit(result.ok ? 0 : 1), 1000)
 }
 
@@ -185,8 +220,8 @@ function getUpdater() {
   const { autoUpdater } = require('electron-updater')
   autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = true
-  autoUpdater.logger = { info: (m) => log.push(`[update] ${m}\n`), warn: (m) => log.push(`[update] ${m}\n`),
-    error: (m) => log.push(`[update] ${m}\n`), debug: () => {} }
+  autoUpdater.logger = { info: (m) => appendLog(`[update] ${m}\n`), warn: (m) => appendLog(`[update] ${m}\n`),
+    error: (m) => appendLog(`[update] ${m}\n`), debug: () => {} }
   // EOBS_UPDATE_URL=<dir url>: read latest*.yml from there instead of
   // GitHub, to test updating against a local server.
   if (process.env.EOBS_UPDATE_URL) {
@@ -263,5 +298,5 @@ if (!app.requestSingleInstanceLock()) {
     app.quit()
   })
   app.on('window-all-closed', () => app.quit())
-  app.on('before-quit', stopBackend)
+  app.on('before-quit', () => stopBackend({ wait: true }))
 }

@@ -10,14 +10,21 @@ export const useDumps = defineStore('dumps', () => {
   const recent = ref<RecentFile[]>([])
   const error = ref<string | null>(null)
 
-  async function refresh() {
-    try {
-      list.value = await dumpRequest<DumpInfo[]>('dump.list')
-      loaded.value = true
-      error.value = null
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : String(e)
-    }
+  let inflight: Promise<void> | null = null
+  function refresh(): Promise<void> {
+    if (inflight) return inflight
+    inflight = (async () => {
+      try {
+        list.value = await dumpRequest<DumpInfo[]>('dump.list')
+        loaded.value = true
+        error.value = null
+      } catch (e) {
+        error.value = e instanceof Error ? e.message : String(e)
+      } finally {
+        inflight = null
+      }
+    })()
+    return inflight
   }
 
   async function loadRecent() {

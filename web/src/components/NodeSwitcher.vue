@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, nextTick, ref, type VNode } from 'vue'
+import { computed, h, nextTick, onBeforeUnmount, ref, type VNode } from 'vue'
 import { NSelect, NButton, NIcon, NTooltip, NDropdown, useDialog, useMessage, type SelectOption, type DropdownOption } from 'naive-ui'
 import { AddOutline, CloseOutline } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
@@ -43,6 +43,7 @@ function cancelPress() {
   window.clearTimeout(pressTimer)
   pressTimer = undefined
 }
+onBeforeUnmount(cancelPress)
 
 function renderOption({ node, option }: { node: VNode; option: SelectOption }) {
   const value = option.value as string

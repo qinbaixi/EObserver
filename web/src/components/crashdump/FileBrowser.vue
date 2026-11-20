@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NModal, NCard, NButton, NIcon, NInput, NSpin, NAlert, NCheckbox, NEmpty, NTag, NBreadcrumb, NBreadcrumbItem } from 'naive-ui'
 import { FolderOutline, DocumentOutline, BugOutline, ArrowUpOutline, HomeOutline, LocateOutline } from '@vicons/ionicons5'
@@ -13,25 +13,30 @@ const props = defineProps<{ show: boolean }>()
 const emit = defineEmits<{ 'update:show': [boolean]; open: [path: string] }>()
 const { t, te } = useI18n()
 
-const data = ref<BrowseResult | null>(null)
+const data = shallowRef<BrowseResult | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
 const selected = ref<string | null>(null)
 const onlyDumps = ref(false)
 const pathInput = ref('')
+let browseSeq = 0
 
 async function browse(path?: string) {
+  const req = ++browseSeq
   loading.value = true
   error.value = null
   try {
-    data.value = await dumpRequest<BrowseResult>('dump.browse', path ? { path } : {})
-    pathInput.value = data.value.path
+    const res = await dumpRequest<BrowseResult>('dump.browse', path ? { path } : {})
+    if (req !== browseSeq) return
+    data.value = res
+    pathInput.value = res.path
     selected.value = null
   } catch (e) {
+    if (req !== browseSeq) return
     const code = e instanceof Error ? e.message : String(e)
     error.value = te(`crashdump.errors.${code}`) ? t(`crashdump.errors.${code}`) : errorText(e)
   } finally {
-    loading.value = false
+    if (req === browseSeq) loading.value = false
   }
 }
 

@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   NDrawer, NDrawerContent, NTabs, NTabPane, NTag, NButton, NEmpty, NSpin, NAlert,
 } from 'naive-ui'
 import { dumpRequest, isTerm, type DictItem, type DumpProcess, type DumpTerm, type StackItem } from '../../api/dump'
-import { errorText } from '../../api/errors'
+import { errorText, rawError } from '../../api/errors'
 import { formatNumber } from '../../api/format'
 import DumpTermBlock from './DumpTermBlock.vue'
 import KnowledgeLink from '../KnowledgeLink.vue'
@@ -19,12 +19,17 @@ const { t, te } = useI18n()
 const nav = useNav()
 
 const PAGE = 50
+const LIST_LIMIT = 100
 type Part = 'messages' | 'dictionary' | 'stack'
-const detail = ref<DumpProcess | null>(null)
+const detail = shallowRef<DumpProcess | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
+const errorCode = ref<string | null>(null)
 const tab = ref<'overview' | Part>('overview')
 const history = ref<string[]>([])
+const expandedGroups = ref<Record<string, boolean>>({})
+let loadSeq = 0
+const partSeq: Record<Part, number> = { messages: 0, dictionary: 0, stack: 0 }
 const parts = reactive<Record<Part, { items: unknown[]; total: number; loading: boolean; error: string | null; loaded: boolean }>>({
   messages: { items: [], total: 0, loading: false, error: null, loaded: false },
   dictionary: { items: [], total: 0, loading: false, error: null, loaded: false },
@@ -37,49 +42,60 @@ const show = computed({
 })
 
 function resetParts() {
-  for (const p of Object.values(parts)) Object.assign(p, { items: [], total: 0, loading: false, error: null, loaded: false })
+  for (const k of ['messages', 'dictionary', 'stack'] as Part[]) {
+    partSeq[k]++
+    Object.assign(parts[k], { items: [], total: 0, loading: false, error: null, loaded: false })
+  }
 }
 
 async function load() {
+  const dumpId = props.id
   const pid = props.pid
-  if (!pid) return
+  const req = ++loadSeq
+  if (!pid) { loading.value = false; error.value = null; errorCode.value = null; return }
   loading.value = true
   error.value = null
+  errorCode.value = null
   try {
-    const d = await dumpRequest<DumpProcess>('dump.process', { id: props.id, pid })
-    if (props.pid !== pid) return
+    const d = await dumpRequest<DumpProcess>('dump.process', { id: dumpId, pid })
+    if (req !== loadSeq || props.id !== dumpId || props.pid !== pid) return
     detail.value = d
   } catch (e) {
+    if (req !== loadSeq || props.id !== dumpId || props.pid !== pid) return
     detail.value = null
+    errorCode.value = rawError(e)
     error.value = errorText(e)
   } finally {
-    loading.value = false
+    if (req === loadSeq) loading.value = false
   }
 }
 
 async function loadPart(part: Part, more = false) {
+  const dumpId = props.id
   const pid = props.pid
   const p = parts[part]
   if (!pid || p.loading) return
+  const req = ++partSeq[part]
   p.loading = true
   try {
     const res = await dumpRequest<{ total: number; items: unknown[] }>('dump.process_part',
-      { id: props.id, pid, part, offset: more ? p.items.length : 0, limit: PAGE })
-    if (props.pid !== pid) return
+      { id: dumpId, pid, part, offset: more ? p.items.length : 0, limit: PAGE })
+    if (req !== partSeq[part] || props.id !== dumpId || props.pid !== pid) return
     p.items = more ? [...p.items, ...res.items] : res.items
     p.total = res.total
     p.loaded = true
     p.error = null
   } catch (e) {
-    p.error = errorText(e)
+    if (req === partSeq[part] && props.id === dumpId && props.pid === pid) p.error = errorText(e)
   } finally {
-    p.loading = false
+    if (req === partSeq[part]) p.loading = false
   }
 }
 
-watch(() => props.pid, () => {
+watch([() => props.id, () => props.pid], () => {
   tab.value = 'overview'
   detail.value = null
+  expandedGroups.value = {}
   resetParts()
   void load()
 }, { immediate: true })
@@ -162,7 +178,7 @@ const asStack = (v: unknown) => v as StackItem
       </template>
 
       <NSpin v-if="loading && !detail" style="width: 100%; padding: 60px 0" />
-      <NEmpty v-else-if="error === 'not_found'" :description="t('crashdump.proc.not_found')" style="padding: 60px 0" />
+      <NEmpty v-else-if="errorCode === 'not_found'" :description="t('crashdump.proc.not_found')" style="padding: 60px 0" />
       <NAlert v-else-if="error" type="error">{{ error }}</NAlert>
       <NTabs v-else-if="detail" v-model:value="tab" type="line" animated>
         <NTabPane name="overview" :tab="t('crashdump.proc.tabs.overview')">
@@ -185,8 +201,10 @@ const asStack = (v: unknown) => v as StackItem
           <div v-for="g in groups" :key="g.key" class="group">
             <div class="group-title">{{ t(`crashdump.proc.${g.key}`) }} <span class="count">{{ g.items.length }}</span></div>
             <div v-if="g.items.length" class="chips">
-              <NTag v-for="r in g.items" :key="r" size="small" class="mono"
+              <NTag v-for="r in (expandedGroups[g.key] ? g.items : g.items.slice(0, LIST_LIMIT))" :key="r" size="small" class="mono"
                     :class="{ clickable: PID_RE.test(r) || PORT_RE.test(r) }" @click="go(r)">{{ r }}</NTag>
+              <NButton v-if="!expandedGroups[g.key] && g.items.length > LIST_LIMIT" size="tiny" quaternary
+                       @click="expandedGroups[g.key] = true">+{{ formatNumber(g.items.length - LIST_LIMIT) }}</NButton>
             </div>
             <div v-else class="none">{{ t('crashdump.none') }}</div>
           </div>

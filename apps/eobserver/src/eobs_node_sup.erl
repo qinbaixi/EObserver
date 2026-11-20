@@ -11,5 +11,5 @@ start_child(Node, Cookie) ->
 
 init([]) ->
     Child = #{id => eobs_node, start => {eobs_node, start_link, []},
-              restart => temporary},
+              restart => temporary, shutdown => 10000},
     {ok, {#{strategy => simple_one_for_one, intensity => 10, period => 10}, [Child]}}.

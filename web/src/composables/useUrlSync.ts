@@ -24,13 +24,18 @@ export function useUrlSync() {
     }
   }, { immediate: true })
 
-  watch([() => nodes.loaded, () => nodes.current, () => route.fullPath], ([loaded, cur], [, old]) => {
+  watch([() => nodes.loaded, () => nodes.current, () => route.fullPath, () => ui.connectOpen], ([loaded, cur], [, old]) => {
     // Until the first navigation finishes (a lazily loaded page such as the
     // crash dump viewer or the book) the route is still the start location,
     // and replacing its query would send the app to / instead.
     if (!loaded || !route.matched.length) return
     const q = route.query.node
-    if (typeof q === 'string' && q && !nodes.nodes[q] && !offered.has(q)) return
+    if (typeof q === 'string' && q && !nodes.nodes[q]) {
+      // Preserve ?node=unknown while offering to connect to it.
+      if (!offered.has(q) || (ui.connectOpen && ui.connectNode === q) || (!nodes.list.length && ui.connectNode === q)) {
+        return
+      }
+    }
     if ((cur ?? undefined) === q) return
     // Switching nodes drops page state such as an open pid, which belongs
     // to the previous node.

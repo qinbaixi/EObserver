@@ -69,6 +69,10 @@ async function pick() {
 }
 
 async function close(id: string) {
+  if (id === '__open') {
+    adding.value = false
+    return
+  }
   const i = dumps.list.findIndex((d) => d.id === id)
   if (active.value === id) {
     const next = dumps.list[i + 1] ?? dumps.list[i - 1]

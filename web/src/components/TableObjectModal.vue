@@ -37,27 +37,38 @@ const show = computed({
 })
 const canWrite = computed(() => !settings.readOnly)
 
+let loadSeq = 0
+
 async function load() {
+  const n = props.node
+  const kind = props.kind
+  const table = props.table
+  const key = props.objKey
+  const req = ++loadSeq
   error.value = null
   objects.value = []
-  if (props.objKey === null) return
-  if (adding.value) {
+  if (key === null) { loading.value = false; return }
+  if (key === '') {
     drafts.value = [props.template ?? '']
+    loading.value = false
     return
   }
   loading.value = true
   try {
-    objects.value = await client.request<TableObject[]>('table.object', {
-      node: props.node, kind: props.kind, table: props.table, key: props.objKey,
+    const res = await client.request<TableObject[]>('table.object', {
+      node: n, kind, table, key,
     }, 60000)
-    drafts.value = objects.value.map((o) => o.text)
+    if (req !== loadSeq) return
+    objects.value = res
+    drafts.value = res.map((o) => o.text)
   } catch (e) {
+    if (req !== loadSeq) return
     error.value = errorText(e)
   } finally {
-    loading.value = false
+    if (req === loadSeq) loading.value = false
   }
 }
-watch(() => props.objKey, () => void load(), { immediate: true })
+watch([() => props.node, () => props.kind, () => props.table, () => props.objKey], () => void load(), { immediate: true })
 
 async function save(i: number) {
   saving.value = i

@@ -31,32 +31,52 @@ class Client {
   private subs = new Map<string, Subscription>()
   private listeners = new Map<string, Set<(data: Json) => void>>()
   private retry = 500
+  private retryTimer?: number
 
   connect() {
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer)
+      this.retryTimer = undefined
+    }
+    const prev = this.ws
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
     const ws = new WebSocket(`${proto}://${location.host}/ws`)
     this.ws = ws
+    if (prev && prev.readyState <= WebSocket.OPEN) {
+      try { prev.close() } catch { /* ignore */ }
+    }
     this.state.value = 'connecting'
     // The server drops a socket it has not heard from for 120 s, which a
     // page that only listens (the overview wall) would otherwise hit.
     let keepalive = 0
     ws.onopen = () => {
+      if (this.ws !== ws) return
       this.state.value = 'open'
       this.retry = 500
       keepalive = window.setInterval(() => this.send({ type: 'ping' }), 30000)
       for (const [id, sub] of this.subs) this.sendSub(id, sub)
       this.emit('socket_open', null)
     }
-    ws.onmessage = (ev) => this.onMessage(JSON.parse(ev.data))
+    ws.onmessage = (ev) => {
+      if (this.ws !== ws) return
+      let msg: Json
+      try {
+        msg = JSON.parse(ev.data)
+      } catch {
+        return
+      }
+      this.onMessage(msg)
+    }
     ws.onclose = () => {
       clearInterval(keepalive)
+      if (this.ws !== ws) return
       this.state.value = 'closed'
       for (const [, p] of this.pending) {
         clearTimeout(p.timer)
         p.reject(new Error(t('closed')))
       }
       this.pending.clear()
-      setTimeout(() => this.connect(), this.retry)
+      this.retryTimer = window.setTimeout(() => this.connect(), this.retry)
       this.retry = Math.min(this.retry * 2, 8000)
     }
   }
@@ -73,7 +93,13 @@ class Client {
         reject(new Error(t('timeout')))
       }, timeout)
       this.pending.set(id, { resolve, reject, timer })
-      this.ws.send(JSON.stringify({ type: 'req', id, method, params }))
+      try {
+        this.ws.send(JSON.stringify({ type: 'req', id, method, params }))
+      } catch (e) {
+        clearTimeout(timer)
+        this.pending.delete(id)
+        reject(e instanceof Error ? e : new Error(String(e)))
+      }
     })
   }
 
@@ -100,11 +126,20 @@ class Client {
   }
 
   private send(msg: Json) {
-    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg))
+    if (this.ws?.readyState !== WebSocket.OPEN) return
+    try {
+      this.ws.send(JSON.stringify(msg))
+    } catch {
+      /* socket closing; onclose will handle reconnect */
+    }
   }
 
   private emit(event: string, data: Json) {
-    this.listeners.get(event)?.forEach((fn) => fn(data))
+    const set = this.listeners.get(event)
+    if (!set) return
+    for (const fn of [...set]) {
+      try { fn(data) } catch (e) { console.error(`ws event handler (${event}) failed`, e) }
+    }
   }
 
   private onMessage(msg: Json) {

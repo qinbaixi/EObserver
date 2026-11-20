@@ -70,7 +70,10 @@ export const useAllocators = defineStore('allocators', () => {
         push(n, d)
         if (once) { unsub(); if (stop === unsub) stop = null }
       },
-      (e) => { errors[n] = errorText(e) })
+      (e) => {
+        errors[n] = errorText(e)
+        if (once) { unsub(); if (stop === unsub) stop = null }
+      })
     stop = unsub
   }
 

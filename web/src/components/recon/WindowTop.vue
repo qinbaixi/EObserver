@@ -32,6 +32,8 @@ let ticker: number | undefined
 let stopped = false
 
 async function run() {
+  if (running.value) return
+  const n = props.node
   stopped = false
   error.value = null
   do {
@@ -41,16 +43,16 @@ async function run() {
     ticker = window.setInterval(() => { left.value = Math.max(0, left.value - 1) }, 1000)
     try {
       const report = await client.request<WindowReport>('diag.window',
-        { node: props.node, seconds: seconds.value }, seconds.value * 1000 + 60000)
-      recon.window[props.node] = { report, at: Date.now() }
+        { node: n, seconds: seconds.value }, seconds.value * 1000 + 60000)
+      recon.window[n] = { report, at: Date.now() }
     } catch (e) {
-      error.value = errorText(e)
+      if (props.node === n) error.value = errorText(e)
       stopped = true
     } finally {
       clearInterval(ticker)
       running.value = false
     }
-  } while (continuous.value && !stopped)
+  } while (continuous.value && !stopped && props.node === n)
 }
 
 // Lets the current window finish; only the next one is not started.
@@ -59,7 +61,7 @@ function stop() {
   continuous.value = false
 }
 
-watch(() => props.node, stop)
+watch(() => props.node, () => { stop(); error.value = null })
 onBeforeUnmount(() => { stopped = true; clearInterval(ticker) })
 
 type Metric = 'reductions' | 'memory' | 'message_queue_len'

@@ -28,15 +28,24 @@ rate(Key, Prev, Cur, Secs) ->
     max(0, maps:get(Key, Cur) - maps:get(Key, Prev)) / Secs.
 
 %% Per scheduler utilisation in [0, 1], tagged with the scheduler type.
+%% Indexes Swt0 by scheduler id so a scheduler count change (e.g. after a
+%% node restart with different +S flags) never crashes with function_clause.
 scheduler_util(#{scheduler_wall_time := Swt0},
                #{scheduler_wall_time := Swt1, schedulers := Normal,
                  dirty_cpu_schedulers := DirtyCpu})
-  when is_list(Swt0), is_list(Swt1) ->
-    Zipped = lists:zip(Swt0, Swt1),
-    [#{id => Id,
-       type => scheduler_type(Id, Normal, DirtyCpu),
-       util => util(A1 - A0, T1 - T0)}
-     || {{Id, A0, T0}, {Id, A1, T1}} <- Zipped];
+  when is_list(Swt0), is_list(Swt1), length(Swt0) =:= length(Swt1) ->
+    PrevMap = maps:from_list([{Id, {A0, T0}} || {Id, A0, T0} <- Swt0]),
+    case lists:all(fun({Id, _, _}) -> is_map_key(Id, PrevMap) end, Swt1) of
+        true ->
+            [begin
+                 {A0, T0} = maps:get(Id, PrevMap),
+                 #{id => Id,
+                   type => scheduler_type(Id, Normal, DirtyCpu),
+                   util => util(A1 - A0, T1 - T0)}
+             end || {Id, A1, T1} <- Swt1];
+        false ->
+            null
+    end;
 scheduler_util(_, _) ->
     null.
 

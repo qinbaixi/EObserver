@@ -30,14 +30,15 @@ own(M) when is_map(M) -> maps:map(fun(_, X) -> own(X) end, M);
 own(V) -> V.
 
 do_summary(<<"proc">>, Body) -> proc_summary(lines(Body), #{});
-do_summary(<<"port">>, Body) -> port(Body);
+do_summary(<<"port">>, Body) ->
+    maps:with([name, state, type, controls, connected, slot, input, output, queue], port(Body));
 do_summary(<<"ets">>, Body) -> ets_summary(ets(Body));
 do_summary(<<"timer">>, Body) -> timer(Body);
 do_summary(<<"mod">>, Body) -> maps:with([cur, old], mod(Body));
 do_summary(<<"fun">>, Body) -> fun_info(Body);
-do_summary(<<"visible_node">>, Body) -> node_summary(dist_node(Body));
-do_summary(<<"hidden_node">>, Body) -> node_summary(dist_node(Body));
-do_summary(<<"not_connected">>, Body) -> node_summary(dist_node(Body));
+do_summary(<<"visible_node">>, Body) -> node_summary_body(Body);
+do_summary(<<"hidden_node">>, Body) -> node_summary_body(Body);
+do_summary(<<"not_connected">>, Body) -> node_summary_body(Body);
 do_summary(_, _) -> skip.
 
 proc_summary([], Acc) -> Acc;
@@ -78,18 +79,27 @@ add_int(K, V, Acc) ->
 ets_summary(M) ->
     maps:with([table, name, type, objects, words, protection], M).
 
-node_summary(M) ->
-    S = maps:with([name, controller, creation, error], M),
-    S#{links => length(maps:get(links, M, [])),
-       monitors => length(maps:get(monitors, M, [])),
-       monitored_by => length(maps:get(monitored_by, M, []))}.
+node_summary_body(Body) ->
+    lists:foldl(fun node_summary_kv/2, #{links => 0, monitors => 0, monitored_by => 0}, kv(Body)).
+
+node_summary_kv({<<"Name">>, V}, A) -> A#{name => V};
+node_summary_kv({<<"Controller">>, V}, A) -> A#{controller => V};
+node_summary_kv({<<"Creation">>, V}, A) ->
+    A#{creation => [I || C <- binary:split(V, <<" ">>, [global, trim_all]),
+                         I <- [int(C)], is_integer(I)]};
+node_summary_kv({<<"Remote link">>, _}, #{links := N} = A) -> A#{links => N + 1};
+node_summary_kv({<<"Remote monitoring">>, _}, #{monitors := N} = A) -> A#{monitors => N + 1};
+node_summary_kv({<<"Remotely monitored by">>, _}, #{monitored_by := N} = A) ->
+    A#{monitored_by => N + 1};
+node_summary_kv({<<"Error">>, V}, A) -> A#{error => V};
+node_summary_kv(_, A) -> A.
 
 %% ---------------------------------------------------------------------
 %% Generic helpers
 
-%% Body lines without trailing \r; the empty last line is dropped.
+%% Body lines without trailing \r; empty lines are dropped.
 lines(Body) ->
-    [strip_cr(L) || L <- binary:split(Body, <<"\n">>, [global]), L =/= <<>>].
+    [L1 || L <- binary:split(Body, <<"\n">>, [global]), L1 <- [strip_cr(L)], L1 =/= <<>>].
 
 strip_cr(L) ->
     case byte_size(L) of
@@ -165,31 +175,43 @@ version(_) -> [0, 0].
 general(Body) ->
     case lines(Body) of
         [] -> #{};
-        [Time | Rest] -> general(Rest, #{time => Time}, none)
+        [Time | Rest] -> finish_extra(general(Rest, #{time => Time}, none))
     end.
 
-general([], Acc, _) -> Acc;
-general([<<"Slogan: ", S/binary>> | Ls], Acc, _) ->
-    general(Ls, Acc#{slogan => S}, slogan);
-general([<<"System version: ", V/binary>> | Ls], Acc, _) ->
-    general(Ls, Acc#{system_version => V}, none);
-general([<<"Compiled: ", V/binary>> | Ls], Acc, _) ->
-    general(Ls, Acc#{compiled => V}, none);
-general([<<"Taints: ", V/binary>> | Ls], Acc, _) ->
-    general(Ls, Acc#{taints => V}, none);
-general([<<"Taints:">> | Ls], Acc, _) ->
-    general(Ls, Acc#{taints => <<>>}, none);
-general([<<"Atoms: ", V/binary>> | Ls], Acc, _) ->
-    general(Ls, Acc#{atoms => int(V)}, none);
-general([<<"Calling Thread: ", V/binary>> | Ls], Acc, _) ->
-    general(Ls, Acc#{calling_thread => V}, none);
-general([L | Ls], #{slogan := S} = Acc, slogan) ->
-    %% Multi-line slogans continue until "System version:".
-    general(Ls, Acc#{slogan => <<S/binary, "\n", L/binary>>}, slogan);
+general([], Acc, {slogan, Lines}) ->
+    Acc#{slogan => iolist_to_binary(lists:join(<<"\n">>, lists:reverse(Lines)))};
+general([], Acc, _) ->
+    Acc;
+general([<<"Slogan: ", S/binary>> | Ls], Acc, St) ->
+    general(Ls, flush_slogan(Acc, St), {slogan, [S]});
+general([<<"System version: ", V/binary>> | Ls], Acc, St) ->
+    general(Ls, (flush_slogan(Acc, St))#{system_version => V}, none);
+general([<<"Compiled: ", V/binary>> | Ls], Acc, St) ->
+    general(Ls, (flush_slogan(Acc, St))#{compiled => V}, none);
+general([<<"Taints: ", V/binary>> | Ls], Acc, St) ->
+    general(Ls, (flush_slogan(Acc, St))#{taints => V}, none);
+general([<<"Taints:">> | Ls], Acc, St) ->
+    general(Ls, (flush_slogan(Acc, St))#{taints => <<>>}, none);
+general([<<"Atoms: ", V/binary>> | Ls], Acc, St) ->
+    general(Ls, (flush_slogan(Acc, St))#{atoms => int(V)}, none);
+general([<<"Calling Thread: ", V/binary>> | Ls], Acc, St) ->
+    general(Ls, (flush_slogan(Acc, St))#{calling_thread => V}, none);
+general([L | Ls], Acc, {slogan, Lines}) ->
+    %% Multi-line slogans continue until the next known header line.
+    general(Ls, Acc, {slogan, [L | Lines]});
 general([L | Ls], Acc, St) ->
     {K, V} = split_kv(L),
-    Extra = maps:get(extra, Acc, []),
-    general(Ls, Acc#{extra => Extra ++ [{K, V}]}, St).
+    general(Ls, Acc#{extra => [{K, V} | maps:get(extra, Acc, [])]}, St).
+
+flush_slogan(Acc, {slogan, Lines}) ->
+    Acc#{slogan => iolist_to_binary(lists:join(<<"\n">>, lists:reverse(Lines)))};
+flush_slogan(Acc, _) ->
+    Acc.
+
+finish_extra(#{extra := Extra} = Acc) ->
+    Acc#{extra => lists:reverse(Extra)};
+finish_extra(Acc) ->
+    Acc.
 
 %% "[64-bit]" in the system version means 8 byte words.
 word_size(SysVsn) when is_binary(SysVsn) ->
@@ -203,7 +225,7 @@ word_size(_) -> 8.
 %% =proc:Pid (full)
 
 proc(Body) ->
-    proc_full(lines(Body), #{}).
+    finish_extra(proc_full(lines(Body), #{})).
 
 proc_full([], Acc) -> Acc;
 proc_full([<<"Last calls:", First/binary>> | Ls], Acc) ->
@@ -252,7 +274,7 @@ proc_field(<<"Old heap start">>, V, A) -> A#{old_heap_start => V};
 proc_field(<<"Old heap top">>, V, A) -> A#{old_heap_top => V};
 proc_field(<<"Old heap end">>, V, A) -> A#{old_heap_end => V};
 proc_field(K, V, A) ->
-    A#{extra => maps:get(extra, A, []) ++ [{K, V}]}.
+    A#{extra => [{K, V} | maps:get(extra, A, [])]}.
 
 %% "[<0.85.0>, #Port<0.4>, {from,<0.78.0>,#Ref<...>}, {to,{name,node},#Ref<...>}]"
 links(V0) ->
@@ -278,31 +300,64 @@ link(L, #{links := Ls} = A) ->
 
 %% "<0.1.0>,#Ref<..>}" or "{name,node},#Ref<..>}" or "node@host,[]}"
 monitor_target(<<"{", _/binary>> = R) ->
-    case binary:split(R, <<"}">>) of
-        [Inner, _] -> <<Inner/binary, "}">>;
-        _ -> R
+    case find_close_brace(R, 0, 0, false) of
+        {ok, End} -> binary:part(R, 0, End);
+        nomatch -> R
     end;
 monitor_target(R) ->
     hd(binary:split(R, <<",">>)).
 
-%% Split on ", " / "," at bracket depth 0.
-split_top(Bin) -> split_top(Bin, 0, <<>>, []).
+find_close_brace(Bin, Pos, _D, _Q) when Pos >= byte_size(Bin) ->
+    nomatch;
+find_close_brace(Bin, Pos, D, true) ->
+    case binary:at(Bin, Pos) of
+        $\\ when Pos + 1 < byte_size(Bin) -> find_close_brace(Bin, Pos + 2, D, true);
+        $' -> find_close_brace(Bin, Pos + 1, D, false);
+        _ -> find_close_brace(Bin, Pos + 1, D, true)
+    end;
+find_close_brace(Bin, Pos, D, false) ->
+    case binary:at(Bin, Pos) of
+        $' -> find_close_brace(Bin, Pos + 1, D, true);
+        ${ -> find_close_brace(Bin, Pos + 1, D + 1, false);
+        $} when D =:= 1 -> {ok, Pos + 1};
+        $} -> find_close_brace(Bin, Pos + 1, D - 1, false);
+        _ -> find_close_brace(Bin, Pos + 1, D, false)
+    end.
 
-split_top(<<>>, _, Cur, Acc) -> lists:reverse([string:trim(Cur) | Acc]);
-split_top(<<C, R/binary>>, D, Cur, Acc) when C =:= ${; C =:= $[; C =:= $< ->
-    split_top(R, D + 1, <<Cur/binary, C>>, Acc);
-split_top(<<C, R/binary>>, D, Cur, Acc) when C =:= $}; C =:= $]; C =:= $> ->
-    split_top(R, max(0, D - 1), <<Cur/binary, C>>, Acc);
-split_top(<<$,, R/binary>>, 0, Cur, Acc) ->
-    split_top(R, 0, <<>>, [string:trim(Cur) | Acc]);
-split_top(<<C, R/binary>>, D, Cur, Acc) ->
-    split_top(R, D, <<Cur/binary, C>>, Acc).
+%% Split on ", " / "," at bracket depth 0, ignoring brackets inside single-quoted atoms.
+split_top(Bin) -> split_top(Bin, 0, 0, 0, false, []).
+
+split_top(Bin, Start, Pos, _D, _Q, Acc) when Pos >= byte_size(Bin) ->
+    lists:reverse([string:trim(binary:part(Bin, Start, Pos - Start)) | Acc]);
+split_top(Bin, Start, Pos, D, true, Acc) ->
+    case binary:at(Bin, Pos) of
+        $\\ when Pos + 1 < byte_size(Bin) ->
+            split_top(Bin, Start, Pos + 2, D, true, Acc);
+        $' ->
+            split_top(Bin, Start, Pos + 1, D, false, Acc);
+        _ ->
+            split_top(Bin, Start, Pos + 1, D, true, Acc)
+    end;
+split_top(Bin, Start, Pos, D, false, Acc) ->
+    case binary:at(Bin, Pos) of
+        $' ->
+            split_top(Bin, Start, Pos + 1, D, true, Acc);
+        C when C =:= ${; C =:= $[; C =:= $< ->
+            split_top(Bin, Start, Pos + 1, D + 1, false, Acc);
+        C when C =:= $}; C =:= $]; C =:= $> ->
+            split_top(Bin, Start, Pos + 1, max(0, D - 1), false, Acc);
+        $, when D =:= 0 ->
+            Part = string:trim(binary:part(Bin, Start, Pos - Start)),
+            split_top(Bin, Pos + 1, Pos + 1, 0, false, [Part | Acc]);
+        _ ->
+            split_top(Bin, Start, Pos + 1, D, false, Acc)
+    end.
 
 %% ---------------------------------------------------------------------
 %% =port:Id
 
 port(Body) ->
-    lists:foldl(fun port_field/2, #{}, kv(Body)).
+    finish_extra(lists:foldl(fun port_field/2, #{}, kv(Body))).
 
 port_field({<<"State">>, V}, A) -> A#{state => V};
 port_field({<<"Task Flags">>, V}, A) -> A#{task_flags => V};
@@ -321,7 +376,7 @@ port_field({<<"Input">>, V}, A) -> A#{input => int(V)};
 port_field({<<"Output">>, V}, A) -> A#{output => int(V)};
 port_field({<<"Queue">>, V}, A) -> A#{queue => int(V)};
 port_field({<<"Port Data">>, V}, A) -> A#{data => V};
-port_field({K, V}, A) -> A#{extra => maps:get(extra, A, []) ++ [{K, V}]}.
+port_field({K, V}, A) -> A#{extra => [{K, V} | maps:get(extra, A, [])]}.
 
 %% "(<0.66.0>,#Ref<...>)(<0.67.0>,#Ref<...>)" -> [<<"<0.66.0>">>, ...]
 paren_items(V) ->
@@ -331,7 +386,7 @@ paren_items(V) ->
 %% =ets:Owner, =internal_ets:Descr
 
 ets(Body) ->
-    lists:foldl(fun ets_field/2, #{}, kv(Body)).
+    finish_extra(lists:foldl(fun ets_field/2, #{}, kv(Body))).
 
 ets_field({<<"Slot">>, V}, A) -> A#{slot => int(V)};
 ets_field({<<"Table">>, V}, A) -> A#{table => V};
@@ -352,7 +407,7 @@ ets_field({<<"Chain Length Max">>, V}, A) -> A#{chain_max => num(V)};
 ets_field({<<"Chain Length Avg">>, V}, A) -> A#{chain_avg => num(V)};
 ets_field({<<"Chain Length Std Dev">>, V}, A) -> A#{chain_stddev => num(V)};
 ets_field({<<"Chain Length Expected Std Dev">>, V}, A) -> A#{chain_exp_stddev => num(V)};
-ets_field({K, V}, A) -> A#{extra => maps:get(extra, A, []) ++ [{K, V}]}.
+ets_field({K, V}, A) -> A#{extra => [{K, V} | maps:get(extra, A, [])]}.
 
 %% ---------------------------------------------------------------------
 %% =timer:Owner
@@ -442,7 +497,7 @@ allocator(Body) ->
 %% =scheduler:N, =dirty_*_scheduler:N, =dirty_*_run_queue
 
 scheduler(Body) ->
-    sched(lines(Body), #{}).
+    finish_extra(sched(lines(Body), #{})).
 
 sched([], A) -> A;
 sched([<<"Current Process Limited Stack Trace:", _/binary>> | Ls], A) ->
@@ -465,4 +520,4 @@ sched_field(<<"Current Process State">>, V, A) -> A#{process_state => V};
 sched_field(<<"Current Process Internal State">>, V, A) -> A#{process_internal_state => V};
 sched_field(<<"Current Process Program counter">>, V, A) -> A#{process_pc => V};
 sched_field(<<"Current Process CP">>, V, A) -> A#{process_cp => V};
-sched_field(K, V, A) -> A#{extra => maps:get(extra, A, []) ++ [{K, V}]}.
+sched_field(K, V, A) -> A#{extra => [{K, V} | maps:get(extra, A, [])]}.

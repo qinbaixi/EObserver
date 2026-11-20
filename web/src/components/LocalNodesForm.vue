@@ -36,17 +36,21 @@ function storedHost() {
   }
 }
 
+let loadSeq = 0
 async function load() {
+  const req = ++loadSeq
   loading.value = true
   try {
-    data.value = await client.request<Discovery>('nodes.discover', { host: host.value })
-    host.value = data.value.host
-    const names = new Set(data.value.nodes.map((n) => n.node))
+    const res = await client.request<Discovery>('nodes.discover', { host: host.value })
+    if (req !== loadSeq) return
+    data.value = res
+    host.value = res.host
+    const names = new Set(res.nodes.map((n) => n.node))
     picked.value = picked.value.filter((n) => names.has(n))
   } catch (e) {
-    message.error(errorText(e))
+    if (req === loadSeq) message.error(errorText(e))
   } finally {
-    loading.value = false
+    if (req === loadSeq) loading.value = false
   }
 }
 onMounted(load)

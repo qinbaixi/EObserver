@@ -13,8 +13,9 @@
 -module(eobs_dump_term).
 
 -export([render/4, expand/2, term_at/6,
-         messages/4, dictionary/4, stack/4, persistent_terms/4,
-         lines/5, line_count/3, section_text/4, mod_attr/4,
+         messages/4, dictionary/4, stack/4,
+         persistent_terms/4, persistent_term_keys/3, persistent_terms_at/3,
+         lines/5, line_count/3, section_text/4, mod_attr/4, render_mod_attr/5,
          atom_text/1, has_heap/2]).
 
 -ifdef(TEST).
@@ -29,6 +30,9 @@
 -define(MAX_HEAP_INDEX, (256 bsl 20)). % heap bytes indexed per process
 -define(SMALL_HEAP, (4 bsl 20)).    % heaps indexed whole right away
 -define(INC_MAX, (16 bsl 20)).     % searched incrementally before indexing
+-define(MAX_INFLATE, (4 bsl 20)).  % max uncompressed ETF size (4 MB)
+-define(MAX_SKIP_DEPTH, 64).       % max nesting depth while skipping ETF
+-define(MAX_HM_DEPTH, 16).         % max HAMT tree depth in hashmap
 -define(MAX_LEVEL, 3).
 -define(WIDTH, 80).
 
@@ -166,25 +170,44 @@ persistent_terms_1(H, Offset, Limit, Level) ->
              || {N, L} <- number(Offset, Lines)],
     {Total, Items}.
 
+%% Render only persistent term keys (for filtering/sorting without rendering huge values).
+persistent_term_keys(H, Offset, Limit) ->
+    session(fun() ->
+        Tag = <<"persistent_terms">>,
+        {_, Lines} = lines(H, Tag, null, Offset, Limit),
+        [{N, maps:get(text, render_part(H, literals, L, <<"key">>, 0, null))}
+         || {N, L} <- number(Offset, Lines)]
+    end).
+
+%% Render specific persistent term line indices in a single session / FD.
+persistent_terms_at(H, Indices, Level) ->
+    session(fun() ->
+        Tag = <<"persistent_terms">>,
+        lists:filtermap(
+          fun(N) ->
+                  case lines(H, Tag, null, N, 1) of
+                      {_, [L]} ->
+                          {true,
+                           #{key => render_part(H, literals, L, <<"key">>, Level,
+                                                token(Tag, null, N, <<"key">>, Level)),
+                             value => render_part(H, literals, L, <<"value">>, Level,
+                                                  token(Tag, null, N, <<"value">>, Level))}};
+                      _ ->
+                          false
+                  end
+          end, Indices)
+    end).
+
 %% Module attributes / compile info (external format in the =mod section).
 mod_attr(H, Mod, Field, Level0) ->
-    Level = min(Level0, ?MAX_LEVEL),
     case eobs_dump:lookup(H, <<"mod">>, Mod) of
         [{Off, Len} | _] ->
             case eobs_dump:read(H, Off, min(Len, ?MAX_LINE)) of
                 {ok, Body} ->
                     M = eobs_dump_parse:mod(Body),
                     case maps:get(field_key(Field), M, undefined) of
-                        undefined ->
-                            {error, not_found};
-                        Data ->
-                            Token = case Level < ?MAX_LEVEL of
-                                        true -> token(<<"mod">>, Mod, 0, Field, Level);
-                                        false -> null
-                                    end,
-                            {ok, with_render(H, literals, Level, fun() ->
-                                     ext_doc(raw_binary(H, Data))
-                                 end, Token)}
+                        undefined -> {error, not_found};
+                        Data -> {ok, render_mod_attr(H, Mod, Field, Data, Level0)}
                     end;
                 Error ->
                     Error
@@ -192,6 +215,16 @@ mod_attr(H, Mod, Field, Level0) ->
         [] ->
             {error, not_found}
     end.
+
+render_mod_attr(H, Mod, Field, Data, Level0) ->
+    Level = min(Level0, ?MAX_LEVEL),
+    Token = case Level < ?MAX_LEVEL of
+                true -> token(<<"mod">>, Mod, 0, Field, Level);
+                false -> null
+            end,
+    with_render(H, literals, Level, fun() ->
+        ext_doc(raw_binary(H, Data))
+    end, Token).
 
 field_key(<<"cur_attrib">>) -> cur_attrib;
 field_key(<<"cur_comp">>) -> cur_comp;
@@ -209,17 +242,17 @@ ctx_for(<<"persistent_terms">>, _) -> literals;
 ctx_for(_, Id) -> {proc, Id}.
 
 %% ---------------------------------------------------------------------
-%% Tokens: base64url(term_to_binary({1, Tag, Id, LineNo, Part, Level})).
-%% Only binaries and integers, decoded with [safe] and validated.
+%% Tokens: base64url(JSON([1, Tag, Id, LineNo, Part, Level])).
+%% Plain JSON without binary_to_term; all fields strictly validated.
 
 token(Tag, Id, LineNo, Part, Level) when Level < ?MAX_LEVEL ->
-    base64url(term_to_binary({1, Tag, Id, LineNo, Part, Level}));
+    base64url(eobs_json:encode([1, Tag, Id, LineNo, Part, Level]));
 token(_, _, _, _, _) ->
     null.
 
-decode_token(Token) when byte_size(Token) < 1024 ->
-    try binary_to_term(unbase64url(Token), [safe]) of
-        {1, Tag, Id, LineNo, Part, Level}
+decode_token(Token) when is_binary(Token), byte_size(Token) < 1024 ->
+    try eobs_json:decode(unbase64url(Token)) of
+        [1, Tag, Id, LineNo, Part, Level]
           when is_binary(Tag), (is_binary(Id) orelse Id =:= null),
                is_integer(LineNo), LineNo >= 0, is_binary(Part),
                is_integer(Level), Level >= 0, Level < ?MAX_LEVEL ->
@@ -291,6 +324,7 @@ with_render(H, Ctx, Level, Fun, Token) ->
     put(eobs_term_st, #{h => H, ctx => Ctx, lim => Lim,
                         budget => maps:get(chars, Lim),
                         visits => maps:get(chars, Lim) * 4 + 1000,
+                        seen => #{},
                         trunc => false}),
     try
         Doc = Fun(),
@@ -330,45 +364,63 @@ charge(N) ->
 
 %% ---------------------------------------------------------------------
 %% Documents: {t, Text} | {c, Open, Close, [Doc]} | {p, KeyDoc, ValDoc}
+%% Annotated once bottom-up by measure/1 so layout/2 runs in O(N).
 
 leaf(T) -> {t, T}.
 
 ellipsis() -> truncated(), {t, <<"...">>}.
 
-flat_size({t, T}) -> iolist_size(T);
-flat_size({c, O, C, Ds}) ->
-    iolist_size(O) + iolist_size(C) + max(0, length(Ds) - 1) + lists:sum([flat_size(D) || D <- Ds]);
-flat_size({p, K, V}) -> flat_size(K) + 4 + flat_size(V).
-
 flat({t, T}) -> T;
 flat({c, O, C, Ds}) -> [O, lists:join($,, [flat(D) || D <- Ds]), C];
 flat({p, K, V}) -> [flat(K), <<" => ">>, flat(V)].
 
+measure({t, T}) -> {t, iolist_size(T), T};
+measure({c, O, C, Ds}) ->
+    MDs = [measure(D) || D <- Ds],
+    Sz = iolist_size(O) + iolist_size(C) + max(0, length(MDs) - 1)
+         + lists:foldl(fun(D, Acc) -> Acc + doc_size(D) end, 0, MDs),
+    {c, Sz, O, C, MDs};
+measure({p, K, V}) ->
+    MK = measure(K),
+    MV = measure(V),
+    {p, doc_size(MK) + 4 + doc_size(MV), MK, MV}.
+
+doc_size({t, Sz, _}) -> Sz;
+doc_size({c, Sz, _, _, _}) -> Sz;
+doc_size({p, Sz, _, _}) -> Sz.
+
+flat_m({t, _, T}) -> T;
+flat_m({c, _, O, C, Ds}) -> [O, lists:join($,, [flat_m(D) || D <- Ds]), C];
+flat_m({p, _, K, V}) -> [flat_m(K), <<" => ">>, flat_m(V)].
+
 layout(Doc, Indent) ->
-    case Indent + flat_size(Doc) =< ?WIDTH of
-        true -> flat(Doc);
-        false -> break(Doc, Indent)
+    layout_m(measure(Doc), Indent).
+
+layout_m(Doc, Indent) ->
+    case Indent + doc_size(Doc) =< ?WIDTH of
+        true -> flat_m(Doc);
+        false -> break_m(Doc, Indent)
     end.
 
-break({t, T}, _) -> T;
-break({c, O, C, []}, _) -> [O, C];
-break({c, O, C, Ds}, Indent) ->
-    case lists:all(fun({t, _}) -> true; (_) -> false end, Ds) of
-        true -> fill(O, C, Ds, Indent);
-        false -> break_lines(O, C, Ds, Indent)
+break_m({t, _, T}, _) -> T;
+break_m({c, _, O, C, []}, _) -> [O, C];
+break_m({c, _, O, C, Ds}, Indent) ->
+    case lists:all(fun({t, _, _}) -> true; (_) -> false end, Ds) of
+        true -> fill_m(O, C, Ds, Indent);
+        false -> break_lines_m(O, C, Ds, Indent)
     end;
-break({p, K, V}, Indent) ->
-    break_pair(K, V, Indent).
+break_m({p, _, K, V}, Indent) ->
+    break_pair_m(K, V, Indent).
 
 %% Leaves only: pack as many per line as fit.
-fill(O, C, Ds, Indent) ->
+fill_m(O, C, Ds, Indent) ->
     In = Indent + 2,
     Pad = [$\n | lists:duplicate(In, $\s)],
     {Lines, Cur, _} =
-        lists:foldl(fun({t, T}, {Ls, [], _}) ->
-                            {Ls, [T], In + iolist_size(T)};
-                       ({t, T}, {Ls, Cur, W}) ->
-                            S = iolist_size(T) + 1,
+        lists:foldl(fun({t, Sz, T}, {Ls, [], _}) ->
+                            {Ls, [T], In + Sz};
+                       ({t, Sz, T}, {Ls, Cur, W}) ->
+                            S = Sz + 1,
                             case W + S + 1 > ?WIDTH of
                                 true -> {[lists:reverse(Cur) | Ls], [T], In + S};
                                 false -> {Ls, [T, $, | Cur], W + S}
@@ -377,18 +429,18 @@ fill(O, C, Ds, Indent) ->
     All = lists:reverse([lists:reverse(Cur) | Lines]),
     [O, Pad, lists:join([$, | Pad], All), $\n, lists:duplicate(Indent, $\s), C].
 
-break_lines(O, C, Ds, Indent) ->
+break_lines_m(O, C, Ds, Indent) ->
     In = Indent + 2,
     Pad = [$\n | lists:duplicate(In, $\s)],
-    [O, Pad, lists:join([$, | Pad], [layout(D, In) || D <- Ds]),
+    [O, Pad, lists:join([$, | Pad], [layout_m(D, In) || D <- Ds]),
      $\n, lists:duplicate(Indent, $\s), C].
 
-break_pair(K, V, Indent) ->
-    KT = layout(K, Indent),
+break_pair_m(K, V, Indent) ->
+    KT = layout_m(K, Indent),
     KS = iolist_size(KT),
-    case flat_size(V) + Indent + KS + 4 =< ?WIDTH orelse KS > 40 of
-        true -> [KT, <<" => ">>, layout(V, Indent + 4)];
-        false -> [KT, <<" =>">>, $\n, lists:duplicate(Indent + 4, $\s), layout(V, Indent + 4)]
+    case doc_size(V) + Indent + KS + 4 =< ?WIDTH orelse KS > 40 of
+        true -> [KT, <<" => ">>, layout_m(V, Indent + 4)];
+        false -> [KT, <<" =>">>, $\n, lists:duplicate(Indent + 4, $\s), layout_m(V, Indent + 4)]
     end.
 
 %% ---------------------------------------------------------------------
@@ -476,12 +528,13 @@ dump_b64(H) ->
         _ -> true
     end.
 
-hex(B) -> hex(B, 0).
+%% Bounded to 16 hex digits (64-bit addresses / lengths) to prevent bignum DoS.
+hex(B) -> hex(B, 0, 16).
 
-hex(<<C, R/binary>>, A) when C >= $0, C =< $9 -> hex(R, A * 16 + C - $0);
-hex(<<C, R/binary>>, A) when C >= $A, C =< $F -> hex(R, A * 16 + C - $A + 10);
-hex(<<C, R/binary>>, A) when C >= $a, C =< $f -> hex(R, A * 16 + C - $a + 10);
-hex(R, A) -> {A, R}.
+hex(<<C, R/binary>>, A, Left) when Left > 0, C >= $0, C =< $9 -> hex(R, A * 16 + C - $0, Left - 1);
+hex(<<C, R/binary>>, A, Left) when Left > 0, C >= $A, C =< $F -> hex(R, A * 16 + C - $A + 10, Left - 1);
+hex(<<C, R/binary>>, A, Left) when Left > 0, C >= $a, C =< $f -> hex(R, A * 16 + C - $a + 10, Left - 1);
+hex(R, A, _) -> {A, R}.
 
 int_text(<<"-", R/binary>>) ->
     {D, Rest} = digits(R, <<>>),
@@ -582,20 +635,31 @@ r1({str, S}, _) -> chg(leaf(S));
 r1({bad, _}, _) -> leaf(<<"<bad term>">>);
 r1({ext, Atoms, Data}, Depth) ->
     ext_doc(decode_data(Data), Atoms, Depth);
-r1({ptr, _} = P, Depth) ->
-    try deref(P) of
-        missing -> leaf(<<"<incomplete heap>">>);
-        Node -> rnode(Node, P, Depth)
-    catch _:_ ->
-        leaf(<<"<bad term>">>)
+r1({ptr, Addr} = P, Depth) ->
+    S0 = get(eobs_term_st),
+    Seen = maps:get(seen, S0),
+    case maps:is_key(Addr, Seen) of
+        true ->
+            leaf(<<"<cycle>">>);
+        false ->
+            put(eobs_term_st, S0#{seen => Seen#{Addr => true}}),
+            try deref(P) of
+                missing -> leaf(<<"<incomplete heap>">>);
+                Node -> rnode(Node, P, Depth)
+            catch _:_ ->
+                leaf(<<"<bad term>">>)
+            after
+                S1 = get(eobs_term_st),
+                put(eobs_term_st, S1#{seen => maps:remove(Addr, maps:get(seen, S1))})
+            end
     end.
 
 chg({t, T} = D) ->
     charge(iolist_size(T)),
     D.
 
-rnode({cons, _, _}, P, Depth) ->
-    list_doc(P, Depth);
+rnode({cons, H0, T0}, {ptr, Addr}, Depth) ->
+    list_doc(H0, T0, Addr, Depth);
 rnode({tuple, N, Elems}, _, Depth) ->
     Max = lim(items),
     {Refs, _} = parse_refs(Elems, min(N, Max)),
@@ -633,25 +697,22 @@ rnode({flatmap, Size, KeysRef, Vals}, _, Depth) ->
     map_doc(Pairs, Size);
 rnode({hashmap, Size, Children}, _, Depth) ->
     Max = lim(items),
-    {Leaves, _} = hashmap_leaves(Children, Max, []),
+    {Leaves, _} = hashmap_leaves(Children, Max),
     Pairs = [{p, r(K, Depth + 1), r(V, Depth + 1)} || {K, V} <- Leaves],
-    map_doc(lists:sort(fun key_order/2, Pairs), Size);
+    Ranked = [{key_rank(flat_bin(K)), P} || {p, K, _} = P <- Pairs],
+    Sorted = [P || {_, P} <- lists:sort(fun({R1, _}, {R2, _}) -> R1 =< R2 end, Ranked)],
+    map_doc(Sorted, Size);
 rnode({mapnode, _} = N, P, Depth) ->
     %% A bare interior node should not be referenced; show what it holds.
     rnode({hashmap, 0, element(2, N)}, P, Depth);
 rnode({ref, Ref}, _, Depth) ->
-    r1(Ref, Depth).
+    r(Ref, Depth + 1).
 
 %% Dump floats are "%.20e"; show the shortest round-trip form.
 float_text(F) ->
     try float_to_binary(binary_to_float(string:trim(F)), [short])
     catch _:_ -> F
     end.
-
-%% Hashmap leaves come in hash order; approximate Erlang term order on
-%% the rendered keys (numbers numerically, then by type, then text).
-key_order({p, K1, _}, {p, K2, _}) ->
-    key_rank(flat_bin(K1)) =< key_rank(flat_bin(K2)).
 
 flat_bin(D) -> iolist_to_binary(flat(D)).
 
@@ -681,42 +742,59 @@ map_doc(Pairs, Size) ->
     {c, <<"#{">>, <<"}">>, Pairs1}.
 
 %% Collect up to Max {K, V} leaves of a hashmap; children are pointers to
-%% interior nodes (Mn) or leaf cons cells [K|V].
-hashmap_leaves(Children, Max, _) ->
-    {N, Acc} = hm(Children, Max, {0, []}),
+%% interior nodes (Mn) or leaf cons cells [K|V]. Guarded against cycles and
+%% excessive HAMT depth.
+hashmap_leaves(Children, Max) ->
+    {N, Acc} = hm(Children, Max, 0, #{}, {0, []}),
     {lists:reverse(Acc), N >= Max}.
 
-hm(Children, Max, Acc) ->
+hm(_Children, _Max, HmDepth, _HmSeen, Acc) when HmDepth > ?MAX_HM_DEPTH ->
+    Acc;
+hm(Children, Max, HmDepth, HmSeen, Acc) ->
     {Refs, _} = parse_refs(Children, 64),
-    hm_refs(Refs, Max, Acc).
+    hm_refs(Refs, Max, HmDepth, HmSeen, Acc).
 
-hm_refs([], _, Acc) -> Acc;
-hm_refs(_, Max, {N, _} = Acc) when N >= Max -> Acc;
-hm_refs([Ref | Refs], Max, {N, L} = Acc) ->
-    case charge(0) of
-        false -> {Max, L};
+hm_refs([], _, _, _, Acc) -> Acc;
+hm_refs(_, Max, _, _, {N, _} = Acc) when N >= Max -> Acc;
+hm_refs([{ptr, Addr} = Ref | Refs], Max, HmDepth, HmSeen, {N, L} = Acc) ->
+    case maps:is_key(Addr, HmSeen) orelse maps:is_key(Addr, st(seen)) of
         true ->
-            case deref(Ref) of
-                {cons, K, V} -> hm_refs(Refs, Max, {N + 1, [{K, V} | L]});
-                {mapnode, Sub} -> hm_refs(Refs, Max, hm(Sub, Max, Acc));
-                _ -> hm_refs(Refs, Max, Acc)
+            hm_refs(Refs, Max, HmDepth, HmSeen, Acc);
+        false ->
+            case charge(0) of
+                false -> {Max, L};
+                true ->
+                    case deref(Ref) of
+                        {cons, K, V} ->
+                            hm_refs(Refs, Max, HmDepth, HmSeen, {N + 1, [{K, V} | L]});
+                        {mapnode, Sub} ->
+                            Acc1 = hm(Sub, Max, HmDepth + 1, HmSeen#{Addr => true}, Acc),
+                            hm_refs(Refs, Max, HmDepth, HmSeen, Acc1);
+                        _ ->
+                            hm_refs(Refs, Max, HmDepth, HmSeen, Acc)
+                    end
             end
-    end.
+    end;
+hm_refs([_ | Refs], Max, HmDepth, HmSeen, Acc) ->
+    hm_refs(Refs, Max, HmDepth, HmSeen, Acc).
 
 %% Lists: walk the cons cells; printable integer lists become strings.
-list_doc(P, Depth) ->
+list_doc(H0, T0, Addr, Depth) ->
     Max = lim(items),
-    {Heads, Tail, More} = walk(P, Max, []),
+    InitSeen = #{Addr => true},
+    {Heads, Tail, More} = walk(T0, Max - 1, [H0], InitSeen),
     case is_string(Heads) andalso (Tail =:= nil orelse Tail =:= more) of
         false ->
             Docs = [r(E, Depth + 1) || E <- Heads],
             list_close(Docs, Tail, More, Depth);
         true when More ->
             %% Keep reading a string a bit further than the item limit.
-            {Heads2, Tail2, More2} = walk(P, min(lim(chars), Max * 10), []),
+            {Heads2, Tail2, More2} = walk(T0, min(lim(chars), Max * 10) - 1, [H0], InitSeen),
             case is_string(Heads2) of
                 true -> string_doc(Heads2, More2 orelse Tail2 =/= nil);
-                false -> string_doc(Heads, true)
+                false ->
+                    Docs = [r(E, Depth + 1) || E <- Heads],
+                    list_close(Docs, Tail, More, Depth)
             end;
         true ->
             string_doc(Heads, false)
@@ -726,23 +804,34 @@ list_close(Docs, nil, false, _) -> {c, <<"[">>, <<"]">>, Docs};
 list_close(Docs, _, true, _) -> {c, <<"[">>, <<"]">>, Docs ++ [ellipsis()]};
 list_close(Docs, incomplete, _, _) ->
     {c, <<"[">>, <<"]">>, Docs ++ [leaf(<<"<incomplete heap>">>)]};
+list_close(Docs, cycle, _, _) ->
+    {c, <<"[">>, <<"|<cycle>]">>, Docs};
 list_close(Docs, {improper, T}, _, Depth) ->
     {c, <<"[">>, [<<"|">>, flat(r(T, Depth + 1)), <<"]">>], Docs}.
 
-%% -> {HeadRefs, nil | incomplete | {improper, Ref} | more, More}
-walk(nil, _, Acc) -> {lists:reverse(Acc), nil, false};
-walk({ptr, _} = P, N, Acc) ->
-    case charge(0) of
-        false -> {lists:reverse(Acc), more, true};
+%% -> {HeadRefs, nil | incomplete | cycle | {improper, Ref} | more, More}
+walk(nil, _, Acc, _) -> {lists:reverse(Acc), nil, false};
+walk({ptr, Addr} = P, N, Acc, WalkSeen) ->
+    case maps:is_key(Addr, WalkSeen) orelse maps:is_key(Addr, st(seen)) of
         true ->
-            case deref(P) of
-                {cons, H, T} when N > 0 -> walk(T, N - 1, [H | Acc]);
-                {cons, _, _} -> {lists:reverse(Acc), more, true};
-                missing -> {lists:reverse(Acc), incomplete, false};
-                _ -> {lists:reverse(Acc), {improper, P}, false}
+            {lists:reverse(Acc), cycle, false};
+        false ->
+            case charge(0) of
+                false -> {lists:reverse(Acc), more, true};
+                true ->
+                    case deref(P) of
+                        {cons, H, T} when N > 0 ->
+                            walk(T, N - 1, [H | Acc], WalkSeen#{Addr => true});
+                        {cons, _, _} ->
+                            {lists:reverse(Acc), more, true};
+                        missing ->
+                            {lists:reverse(Acc), incomplete, false};
+                        _ ->
+                            {lists:reverse(Acc), {improper, P}, false}
+                    end
             end
     end;
-walk(Other, _, Acc) ->
+walk(Other, _, Acc, _) ->
     {lists:reverse(Acc), {improper, Other}, false}.
 
 is_string([]) -> false;
@@ -802,24 +891,30 @@ printable_bin(B) ->
     end.
 
 %% Decode Len data bytes starting at Off from a {b64|hex, Total, Text}.
-data_prefix({b64, _, D}, Off, N) ->
+data_prefix({b64, _, D}, Off, N) when N > 0 ->
     S = (Off div 3) * 4,
     E = min(byte_size(D), ((Off + N + 2) div 3) * 4),
     case E > S of
         true ->
             Dec = b64_decode(binary:part(D, S, E - S)),
             Skip = Off rem 3,
-            Avail = max(0, byte_size(Dec) - Skip),
-            binary:part(Dec, Skip, min(N, Avail));
+            case byte_size(Dec) > Skip of
+                true -> binary:part(Dec, Skip, min(N, byte_size(Dec) - Skip));
+                false -> <<>>
+            end;
         false -> <<>>
     end;
-data_prefix({hex, _, D}, Off, N) ->
+data_prefix({b64, _, _}, _, _) ->
+    <<>>;
+data_prefix({hex, _, D}, Off, N) when N > 0 ->
     S = Off * 2,
     E = min(byte_size(D), (Off + N) * 2),
     case E > S of
         true -> hex_decode(binary:part(D, S, E - S));
         false -> <<>>
-    end.
+    end;
+data_prefix({hex, _, _}, _, _) ->
+    <<>>.
 
 decode_data({b64, _, D}) -> b64_decode(D);
 decode_data({hex, _, D}) -> hex_decode(D).
@@ -850,25 +945,65 @@ raw_binary(H, Data) ->
     end.
 
 %% Bytes of a refc binary from its =binary:<addr> section.
-binary_bytes(Binp, Off, N) ->
+%% Reads the short "<HexLen>:" header first, then seeks directly to the
+%% encoded slice at Off instead of reading everything from byte 0.
+binary_bytes(Binp, Off, N) when Off >= 0, N >= 0 ->
     H = st(h),
-    Ids = [integer_to_binary(Binp, 16), string:lowercase(integer_to_binary(Binp, 16))],
+    HexUp = integer_to_binary(Binp, 16),
+    HexLo = string:lowercase(HexUp),
+    Ids = case HexLo =:= HexUp of true -> [HexUp]; false -> [HexUp, HexLo] end,
     case first_section(H, <<"binary">>, Ids) of
         {SOff, SLen} ->
-            Need = case st_or(b64, true) of
-                       true -> ((Off + N + 2) div 3) * 4;
-                       false -> (Off + N) * 2
-                   end,
-            case eobs_dump:read(H, SOff, min(SLen, Need + 24)) of
-                {ok, Body} ->
-                    {Len, <<":", Data0/binary>>} = hex(Body),
-                    Data = hd(binary:split(Data0, <<"\n">>)),
-                    Enc = case st_or(b64, true) of true -> b64; false -> hex end,
-                    {ok, data_prefix({Enc, Len, Data}, Off, min(N, max(0, Len - Off)))};
+            case read_at(H, SOff, min(SLen, 24)) of
+                {ok, Head} ->
+                    case hex(Head) of
+                        {Len, <<":", _/binary>>} ->
+                            Show = min(N, max(0, Len - Off)),
+                            case Show of
+                                0 ->
+                                    {ok, <<>>};
+                                _ ->
+                                    {ColonPos, 1} = binary:match(Head, <<":">>),
+                                    DataStart = ColonPos + 1,
+                                    MaxData = max(0, SLen - DataStart),
+                                    case st_or(b64, true) of
+                                        true ->
+                                            EncOff = (Off div 3) * 4,
+                                            EncEnd = ((Off + Show + 2) div 3) * 4,
+                                            EncNeed = min(max(0, MaxData - EncOff), EncEnd - EncOff),
+                                            case EncNeed > 0 of
+                                                true ->
+                                                    case read_at(H, SOff + DataStart + EncOff, EncNeed) of
+                                                        {ok, Raw} ->
+                                                            Data = hd(binary:split(Raw, [<<"\n">>, <<"\r">>])),
+                                                            {ok, data_prefix({b64, Len, Data}, Off rem 3, Show)};
+                                                        _ -> none
+                                                    end;
+                                                false -> {ok, <<>>}
+                                            end;
+                                        false ->
+                                            EncOff = Off * 2,
+                                            EncNeed = min(max(0, MaxData - EncOff), Show * 2),
+                                            case EncNeed > 0 of
+                                                true ->
+                                                    case read_at(H, SOff + DataStart + EncOff, EncNeed) of
+                                                        {ok, Raw} ->
+                                                            Data = hd(binary:split(Raw, [<<"\n">>, <<"\r">>])),
+                                                            {ok, data_prefix({hex, Len, Data}, 0, Show)};
+                                                        _ -> none
+                                                    end;
+                                                false -> {ok, <<>>}
+                                            end
+                                    end
+                            end;
+                        _ -> none
+                    end;
                 _ -> none
             end;
         none -> none
-    end.
+    end;
+binary_bytes(_, _, _) ->
+    none.
 
 first_section(_, _, []) -> none;
 first_section(H, Tag, [Id | Ids]) ->
@@ -877,25 +1012,34 @@ first_section(H, Tag, [Id | Ids]) ->
         [] -> first_section(H, Tag, Ids)
     end.
 
-%% Sub binary: Binp is a heap binary / ProcBin on the heap, or a binary.
+%% Sub binary: check =binary (O(log N) ETS) before touching the process heap.
 sub_bytes(_, _, _, 0) -> none;
 sub_bytes(Binp, Off, N, Hops) ->
-    case heap_line(Binp) of
-        {ok, Line} ->
-            case node_of(Line) of
-                {heapbin, Len, Data} -> {ok, data_prefix(Data, Off, min(N, max(0, Len - Off)))};
-                {refc, B2, O2, _} -> binary_bytes(B2, O2 + Off, N);
-                {sub, B2, O2, _} -> sub_bytes(B2, O2 + Off, N, Hops - 1);
-                _ -> none
-            end;
+    case binary_bytes(Binp, Off, N) of
+        {ok, _} = Ok ->
+            Ok;
         none ->
-            binary_bytes(Binp, Off, N)
+            case heap_line(Binp) of
+                {ok, Line} ->
+                    case node_of(Line) of
+                        {heapbin, Len, Data} -> {ok, data_prefix(Data, Off, min(N, max(0, Len - Off)))};
+                        {refc, B2, O2, _} -> binary_bytes(B2, O2 + Off, N);
+                        {sub, B2, O2, _} -> sub_bytes(B2, O2 + Off, N, Hops - 1);
+                        _ -> none
+                    end;
+                none ->
+                    none
+            end
     end.
 
 big_text(<<"16#", Hex/binary>>) when byte_size(Hex) < 4000 ->
-    integer_to_binary(element(1, hex(Hex)));
+    try integer_to_binary(binary_to_integer(string:trim(Hex), 16))
+    catch _:_ -> <<"16#", Hex/binary>>
+    end;
 big_text(<<"-16#", Hex/binary>>) when byte_size(Hex) < 4000 ->
-    integer_to_binary(-element(1, hex(Hex)));
+    try integer_to_binary(-binary_to_integer(string:trim(Hex), 16))
+    catch _:_ -> <<"-16#", Hex/binary>>
+    end;
 big_text(B) ->
     string:trim(B).
 
@@ -963,8 +1107,12 @@ etf_text(Bin, Level) ->
     with_render(none, literals, Level, fun() -> ext_doc(Bin) end, null).
 -endif.
 
-etf(<<131, 80, USize:32, Z/binary>>, Depth) when USize =< (16 bsl 20) ->
-    etf(<<131, (zlib:uncompress(Z))/binary>>, Depth);
+etf(<<131, 80, USize:32, Z/binary>>, Depth) when USize =< ?MAX_INFLATE ->
+    %% Streaming bounded inflate; calls e/2 directly so nested tag 80 is refused.
+    Out = safe_inflate(Z, USize),
+    e(Out, Depth);
+etf(<<131, 80, _/binary>>, _) ->
+    error(too_large);
 etf(<<131, 68, _/binary>>, _) ->
     %% Distribution header: not decoded.
     {leaf(<<"<distribution message>">>), <<>>};
@@ -973,9 +1121,32 @@ etf(<<131, R/binary>>, Depth) ->
 etf(R, Depth) ->
     e(R, Depth).
 
+safe_inflate(ZBin, Max) ->
+    Z = zlib:open(),
+    try
+        ok = zlib:inflateInit(Z),
+        inflate_loop(Z, zlib:safeInflate(Z, ZBin), Max, 0, [])
+    after
+        catch zlib:close(Z)
+    end.
+
+inflate_loop(Z, {continue, Chunk}, Max, Total, Acc) ->
+    Sz = iolist_size(Chunk),
+    Total1 = Total + Sz,
+    case Total1 > Max of
+        true -> error(too_large);
+        false -> inflate_loop(Z, zlib:safeInflate(Z, []), Max, Total1, [Chunk | Acc])
+    end;
+inflate_loop(_Z, {finished, Chunk}, Max, Total, Acc) ->
+    Total1 = Total + iolist_size(Chunk),
+    case Total1 > Max of
+        true -> error(too_large);
+        false -> iolist_to_binary(lists:reverse([Chunk | Acc]))
+    end.
+
 e(Bin, Depth) ->
     case charge(1) andalso Depth =< lim(depth) of
-        false -> {ellipsis(), skip(Bin)};
+        false -> {ellipsis(), skip(Bin, 0)};
         true -> e1(Bin, Depth)
     end.
 
@@ -1105,7 +1276,7 @@ elems(N, R0, Depth) ->
 
 elems(0, _, R, _, Acc) -> {lists:reverse(Acc), R};
 elems(N, 0, R, _, Acc) ->
-    {lists:reverse([ellipsis() | Acc]), skip_n(N, R)};
+    {lists:reverse([ellipsis() | Acc]), skip_n(N, R, 0)};
 elems(N, Max, R0, Depth, Acc) ->
     {D, R} = e(R0, Depth + 1),
     elems(N - 1, Max - 1, R, Depth, [D | Acc]).
@@ -1115,40 +1286,47 @@ pairs(N, R0, Depth) ->
 
 pairs(0, _, R, _, Acc) -> {lists:reverse(Acc), R};
 pairs(N, 0, R, _, Acc) ->
-    {lists:reverse([ellipsis() | Acc]), skip_n(2 * N, R)};
+    {lists:reverse([ellipsis() | Acc]), skip_n(2 * N, R, 0)};
 pairs(N, Max, R0, Depth, Acc) ->
     {K, R1} = e(R0, Depth + 1),
     {V, R} = e(R1, Depth + 1),
     pairs(N - 1, Max - 1, R, Depth, [{p, K, V} | Acc]).
 
-skip_n(0, R) -> R;
-skip_n(N, R) -> skip_n(N - 1, skip(R)).
+skip_n(0, R, _D) -> R;
+skip_n(_, _, D) when D > ?MAX_SKIP_DEPTH -> error(too_deep);
+skip_n(N, R, D) ->
+    case charge(0) of
+        false -> error(too_deep);
+        true -> skip_n(N - 1, skip(R, D), D)
+    end.
 
-skip(<<97, _, R/binary>>) -> R;
-skip(<<98, _:32, R/binary>>) -> R;
-skip(<<70, _:64, R/binary>>) -> R;
-skip(<<99, _:31/binary, R/binary>>) -> R;
-skip(<<110, N, _, _:N/binary, R/binary>>) -> R;
-skip(<<111, N:32, _, _:N/binary, R/binary>>) -> R;
-skip(<<106, R/binary>>) -> R;
-skip(<<107, L:16, _:L/binary, R/binary>>) -> R;
-skip(<<108, N:32, R/binary>>) -> skip(skip_n(N, R));
-skip(<<104, N, R/binary>>) -> skip_n(N, R);
-skip(<<105, N:32, R/binary>>) -> skip_n(N, R);
-skip(<<116, N:32, R/binary>>) -> skip_n(2 * N, R);
-skip(<<109, L:32, _:L/binary, R/binary>>) -> R;
-skip(<<77, L:32, _, _:L/binary, R/binary>>) -> R;
-skip(<<88, R/binary>>) -> <<_:12/binary, R1/binary>> = skip(R), R1;
-skip(<<103, R/binary>>) -> <<_:9/binary, R1/binary>> = skip(R), R1;
-skip(<<89, R/binary>>) -> <<_:8/binary, R1/binary>> = skip(R), R1;
-skip(<<120, R/binary>>) -> <<_:12/binary, R1/binary>> = skip(R), R1;
-skip(<<102, R/binary>>) -> <<_:5/binary, R1/binary>> = skip(R), R1;
-skip(<<90, L:16, R/binary>>) -> N = 4 + L * 4, <<_:N/binary, R1/binary>> = skip(R), R1;
-skip(<<114, L:16, R/binary>>) -> N = 1 + L * 4, <<_:N/binary, R1/binary>> = skip(R), R1;
-skip(<<101, R/binary>>) -> <<_:5/binary, R1/binary>> = skip(R), R1;
-skip(<<113, R/binary>>) -> skip(skip(skip(R)));
-skip(<<112, Size:32, R/binary>>) -> binary:part(R, Size - 4, byte_size(R) - Size + 4);
-skip(Bin) ->
+skip(_, D) when D > ?MAX_SKIP_DEPTH -> error(too_deep);
+skip(<<97, _, R/binary>>, _) -> R;
+skip(<<98, _:32, R/binary>>, _) -> R;
+skip(<<70, _:64, R/binary>>, _) -> R;
+skip(<<99, _:31/binary, R/binary>>, _) -> R;
+skip(<<110, N, _, _:N/binary, R/binary>>, _) -> R;
+skip(<<111, N:32, _, _:N/binary, R/binary>>, _) -> R;
+skip(<<106, R/binary>>, _) -> R;
+skip(<<107, L:16, _:L/binary, R/binary>>, _) -> R;
+skip(<<108, N:32, R/binary>>, D) -> skip(skip_n(N, R, D + 1), D + 1);
+skip(<<104, N, R/binary>>, D) -> skip_n(N, R, D + 1);
+skip(<<105, N:32, R/binary>>, D) -> skip_n(N, R, D + 1);
+skip(<<116, N:32, R/binary>>, D) -> skip_n(2 * N, R, D + 1);
+skip(<<109, L:32, _:L/binary, R/binary>>, _) -> R;
+skip(<<77, L:32, _, _:L/binary, R/binary>>, _) -> R;
+skip(<<88, R/binary>>, D) -> <<_:12/binary, R1/binary>> = skip(R, D + 1), R1;
+skip(<<103, R/binary>>, D) -> <<_:9/binary, R1/binary>> = skip(R, D + 1), R1;
+skip(<<89, R/binary>>, D) -> <<_:8/binary, R1/binary>> = skip(R, D + 1), R1;
+skip(<<120, R/binary>>, D) -> <<_:12/binary, R1/binary>> = skip(R, D + 1), R1;
+skip(<<102, R/binary>>, D) -> <<_:5/binary, R1/binary>> = skip(R, D + 1), R1;
+skip(<<90, L:16, R/binary>>, D) -> N = 4 + L * 4, <<_:N/binary, R1/binary>> = skip(R, D + 1), R1;
+skip(<<114, L:16, R/binary>>, D) -> N = 1 + L * 4, <<_:N/binary, R1/binary>> = skip(R, D + 1), R1;
+skip(<<101, R/binary>>, D) -> <<_:5/binary, R1/binary>> = skip(R, D + 1), R1;
+skip(<<113, R/binary>>, D) -> skip(skip(skip(R, D + 1), D + 1), D + 1);
+skip(<<112, Size:32, R/binary>>, _) when Size >= 4 ->
+    binary:part(R, Size - 4, byte_size(R) - Size + 4);
+skip(Bin, _) ->
     {_, R} = ename(Bin),
     R.
 
@@ -1191,16 +1369,29 @@ dump_node() ->
 heap_line(Addr) ->
     H = st(h),
     Ctxs = case st(ctx) of
-               {proc, Pid} -> [{proc, Pid}, literals];
+               {proc, Pid} ->
+                   case heap_is_unindexed_large(H, Pid) of
+                       true -> [literals, {proc, Pid}];
+                       false -> [{proc, Pid}, literals]
+                   end;
                literals -> [literals]
            end,
     heap_line(H, Addr, Ctxs).
+
+heap_is_unindexed_large(H, Pid) ->
+    case section(H, <<"proc_heap">>, Pid) of
+        {Off, Len} when Len > ?SMALL_HEAP ->
+            Key = {eobs_heap, <<"proc_heap">>, Pid, Off, Len},
+            get({eobs_hidx, Key}) =:= undefined andalso peek_cache(H, Key) =:= not_cached;
+        _ ->
+            false
+    end.
 
 heap_line(_, _, []) -> none;
 heap_line(H, Addr, [Ctx | Ctxs]) ->
     case heap_find(H, Ctx, Addr) of
         {ok, Off, Len, Rel} ->
-            {Line, _} = read_line(H, Off + Rel, Off + Len),
+            Line = read_line_only(H, Off + Rel, Off + Len),
             case binary:split(Line, <<":">>) of
                 [_, Rest] -> {ok, Rest};
                 _ -> none
@@ -1343,7 +1534,7 @@ fold_chunks(H, Off, Len, Pos, Fun, Acc0) ->
 %% One ?CHUNK of line starts from Pos: {Acc, NextPos}.
 fold_chunk(H, Off, Len, Pos, Fun, Acc0) ->
     Want = min(?CHUNK + 32, Len - Pos),
-    case eobs_dump:read(H, Off + Pos, Want) of
+    case read_at(H, Off + Pos, Want) of
         {ok, Chunk} when byte_size(Chunk) > 0 ->
             Span = min(?CHUNK, byte_size(Chunk)),
             Starts0 = [P + 1 || {P, _} <- binary:matches(Chunk, <<"\n">>, [{scope, {0, Span}}]),
@@ -1427,6 +1618,35 @@ section_text(H, Tag, Id, Max) ->
             {error, not_found}
     end.
 
+%% Reads up to ?MAX_LINE bytes of a single line without scanning past
+%% ?MAX_LINE for NextPos (used by heap_line/3).
+read_line_only(H, Pos, End) ->
+    read_line_only(H, Pos, min(End, Pos + ?MAX_LINE), Pos, []).
+
+read_line_only(_, Start, End, Pos, Acc) when Pos >= End ->
+    cut(Start, Pos, Acc);
+read_line_only(H, Start, End, Pos, Acc) ->
+    BlockNo = Pos div ?BLOCK,
+    case block(H, BlockNo) of
+        <<>> ->
+            cut(Start, Pos, Acc);
+        Block ->
+            In = Pos - BlockNo * ?BLOCK,
+            Avail = min(byte_size(Block) - In, End - Pos),
+            case Avail =< 0 of
+                true -> cut(Start, Pos, Acc);
+                false ->
+                    case binary:match(Block, <<"\n">>, [{scope, {In, Avail}}]) of
+                        {P, 1} ->
+                            Piece = binary:part(Block, In, P - In),
+                            cut(Start, Pos, [Piece | Acc]);
+                        nomatch ->
+                            Piece = binary:part(Block, In, Avail),
+                            read_line_only(H, Start, End, Pos + Avail, [Piece | Acc])
+                    end
+            end
+    end.
+
 %% One line at absolute position Pos (not past End): {Line, NextPos}.
 %% Lines longer than ?MAX_LINE are cut (the rest is skipped).
 read_line(H, Pos, End) ->
@@ -1471,18 +1691,43 @@ cut(_, _, Acc) ->
         _ -> L1
     end.
 
+%% Reads Len bytes at Off, reusing a single raw FD across a session.
+read_at(H, Off, Len) ->
+    case get(eobs_term_session) of
+        true ->
+            Id = eobs_dump:id(H),
+            Key = {eobs_fd, Id},
+            case get(Key) of
+                undefined ->
+                    case eobs_dump:open_fd(H) of
+                        {ok, Fd} ->
+                            put(Key, Fd),
+                            eobs_dump:pread_fd(Fd, Off, Len);
+                        Error ->
+                            Error
+                    end;
+                Fd ->
+                    eobs_dump:pread_fd(Fd, Off, Len)
+            end;
+        _ ->
+            eobs_dump:read(H, Off, Len)
+    end.
+
 block(H, N) ->
     Key = {eobs_blk, N},
     case get(Key) of
         undefined ->
             Count = case get(eobs_blk_n) of undefined -> 0; C -> C end,
-            Count >= ?MAX_BLOCKS andalso erase_blocks(),
-            B = case eobs_dump:read(H, N * ?BLOCK, ?BLOCK) of
+            Count1 = case Count >= ?MAX_BLOCKS of
+                         true -> erase_blocks(), 0;
+                         false -> Count
+                     end,
+            B = case read_at(H, N * ?BLOCK, ?BLOCK) of
                     {ok, Bin} -> Bin;
                     _ -> <<>>
                 end,
             put(Key, B),
-            put(eobs_blk_n, min(Count, ?MAX_BLOCKS - 1) + 1),
+            put(eobs_blk_n, Count1 + 1),
             B;
         B ->
             B
@@ -1493,8 +1738,8 @@ erase_blocks() ->
     erase(eobs_blk_n),
     ok.
 
-%% Request-scoped state (block cache, incremental heap search) survives
-%% across the items of one API call and is dropped at its end.
+%% Request-scoped state (block cache, raw FD, incremental heap search)
+%% survives across the items of one API call and is dropped at its end.
 session(Fun) ->
     case get(eobs_term_session) of
         true -> Fun();
@@ -1515,5 +1760,6 @@ end_step() ->
 
 erase_all() ->
     erase_blocks(),
+    [begin catch file:close(Fd), erase(K) end || {{eobs_fd, _} = K, Fd} <- get()],
     [erase(K) || {{T, _} = K, _} <- get(), T =:= eobs_inc orelse T =:= eobs_hidx],
     ok.

@@ -73,3 +73,53 @@ host_candidates_test() ->
     ?assertEqual(Default, hd(Hosts)),
     ?assert(lists:member(list_to_binary(Host), Hosts)),
     ?assert(lists:member(<<"127.0.0.1">>, Hosts)).
+
+json_edge_cases_test() ->
+    %% Improper lists and non-UTF-8 map keys must not crash encoding.
+    Enc = eobs_json:encode(#{improper => [a | b], <<255, 254>> => <<"ok">>,
+                             bad_val => <<255, 254>>}),
+    ?assert(is_binary(Enc)).
+
+load_rates_scheduler_change_test() ->
+    S0 = #{time => 0, scheduler_wall_time => [{1, 0, 0}, {2, 0, 0}],
+           schedulers => 2, dirty_cpu_schedulers => 0,
+           io_input => 0, io_output => 0, reductions => 0,
+           run_queue => 0, process_count => 10, memory => #{total => 1}},
+    S1 = S0#{time => 1000000, scheduler_wall_time => [{1, 50, 100}], schedulers => 1},
+    R = eobs_load:rates(S0, S1),
+    ?assertEqual(null, maps:get(schedulers, R)).
+
+auth_host_and_scheme_test() ->
+    Header = fun(UserPass) -> <<"basic ", (base64:encode(UserPass))/binary>> end,
+    ?assert(eobs_auth:check(Header(<<"any:pw">>), <<"pw">>)),
+    ?assert(eobs_auth:host_allowed(<<"localhost:8090">>, {127, 0, 0, 1})),
+    ?assert(eobs_auth:host_allowed(<<"127.0.0.1:8090">>, {127, 0, 0, 1})),
+    ?assert(eobs_auth:host_allowed(<<"[::1]:8090">>, {127, 0, 0, 1})),
+    ?assertNot(eobs_auth:host_allowed(<<"evil.example:8090">>, {127, 0, 0, 1})),
+    ?assert(eobs_auth:host_allowed(<<"evil.example:8090">>, {0, 0, 0, 0})).
+
+same_origin_proxy_and_ipv6_test() ->
+    ?assert(eobs_ws:same_origin(<<"https://example.com">>, <<"example.com">>)),
+    ?assert(eobs_ws:same_origin(<<"http://[::1]">>, <<"[::1]">>)),
+    ?assertNot(eobs_ws:same_origin(<<"ftp://localhost:8090">>, <<"localhost:8090">>)).
+
+cookie_hint_utf8_test() ->
+    Cookie = unicode:characters_to_binary("一二三四五六七八九十"),
+    Hint = eobs_cookies:hint(Cookie),
+    ?assert(is_binary(unicode:characters_to_binary(Hint))),
+    ?assertEqual(unicode:characters_to_binary("一二…九十"), Hint).
+
+cli_dump_dir_test() ->
+    ?assertEqual(#{browser => true, dump_dirs => ["/var/dumps"]},
+                 eobs_cli:parse(["--dump-dir", "/var/dumps"])).
+
+cannot_observe_self_test() ->
+    ?assertEqual({error, cannot_observe_self}, eobs_nodes:connect(nonode@nohost, undefined)),
+    ?assertEqual({error, cannot_observe_self}, eobs_nodes:connect(node(), undefined)),
+    ?assertEqual({error, invalid_node_name},
+                 eobs_api:request(<<"nodes.connect">>, #{<<"node">> => <<"no_at_sign">>})),
+    ?assertEqual({error, invalid_node_name},
+                 eobs_api:request(<<"nodes.connect">>, #{<<"node">> => <<"nonode@nohost">>})),
+    ?assertEqual({error, not_observed},
+                 (try eobs_api:request(<<"node.summary">>, #{<<"node">> => <<"nonode@nohost">>})
+                  catch throw:E -> E end)).

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import './echarts'
+import { escapeHtml } from './echarts'
 import { computed, shallowRef, watch } from 'vue'
 import VChart from 'vue-echarts'
 import { useI18n } from 'vue-i18n'
@@ -90,11 +90,11 @@ function buildOption() {
       textStyle: { color: th.text },
       formatter: (p: { dataType: string; data: { name?: string; kind?: Kind; source?: string; target?: string; hidden?: boolean } }) => {
         const d = p.data
-        if (p.dataType === 'node') return `<b>${d.name}</b><br/>${kindLabel(d.kind!)}`
+        if (p.dataType === 'node') return `<b>${escapeHtml(d.name)}</b><br/>${escapeHtml(kindLabel(d.kind!))}`
         const c = io.get([d.source!, d.target!].sort().join('|'))
         const bytes = c && c.input != null
-          ? `<br/>${tr('pages.cluster.bytes', { input: formatBytes(c.input), output: formatBytes(c.output ?? 0) })}` : ''
-        return `${d.source} ↔ ${d.target}${d.hidden ? tr('pages.cluster.hidden_suffix') : ''}${bytes}`
+          ? `<br/>${escapeHtml(tr('pages.cluster.bytes', { input: formatBytes(c.input), output: formatBytes(c.output ?? 0) }))}` : ''
+        return `${escapeHtml(d.source)} ↔ ${escapeHtml(d.target)}${d.hidden ? escapeHtml(tr('pages.cluster.hidden_suffix')) : ''}${bytes}`
       },
     },
     series: [{

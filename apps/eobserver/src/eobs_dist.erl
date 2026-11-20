@@ -13,7 +13,7 @@
 -behaviour(gen_server).
 
 -export([start_link/0, connect/3, name_domain/1, discover/1, host_candidates/0]).
--export([init/1, handle_call/3, handle_cast/2]).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
@@ -22,30 +22,52 @@ start_link() ->
 %% whether distribution may be restarted in the other name mode; automatic
 %% retries pass false, so a node that is down cannot take the mode away
 %% from one the user has just added.
+%%
+%% Only distribution startup, mode switching, and cookie setup run in
+%% eobs_dist; the blocking net_kernel:connect_node/1 runs in the caller
+%% while tracked as in-flight so slow/unreachable hosts never stall other
+%% nodes.
 -spec connect(node(), atom() | undefined, boolean()) -> ok | {error, term()}.
 connect(Target, Cookie, MaySwitch) ->
-    gen_server:call(?MODULE, {connect, Target, Cookie, MaySwitch}, infinity).
+    case gen_server:call(?MODULE, {prepare, Target, Cookie, MaySwitch, self()}, infinity) of
+        {ok, MonRef} ->
+            try
+                case net_kernel:connect_node(Target) of
+                    true -> ok;
+                    _ -> {error, unreachable}
+                end
+            after
+                gen_server:cast(?MODULE, {done, MonRef})
+            end;
+        {error, _} = Error ->
+            Error
+    end.
 
 init([]) ->
-    {ok, #{}}.
+    {ok, #{inflight => #{}}}.
 
-handle_call({connect, Target, Cookie, MaySwitch}, _From, State) ->
-    Reply = case ensure_started(Target, MaySwitch) of
-                ok ->
-                    set_cookie(Target, Cookie),
-                    case net_kernel:connect_node(Target) of
-                        true -> ok;
-                        _ -> {error, unreachable}
-                    end;
-                {error, _} = Error ->
-                    Error
-            end,
-    {reply, Reply, State}.
+handle_call({prepare, Target, Cookie, MaySwitch, Caller}, _From, #{inflight := Inflight} = State) ->
+    case ensure_started(Target, MaySwitch, Inflight) of
+        ok ->
+            set_cookie(Target, Cookie),
+            MonRef = erlang:monitor(process, Caller),
+            {reply, {ok, MonRef}, State#{inflight := Inflight#{MonRef => Target}}};
+        {error, _} = Error ->
+            {reply, Error, State}
+    end.
 
+handle_cast({done, MonRef}, #{inflight := Inflight} = State) ->
+    erlang:demonitor(MonRef, [flush]),
+    {noreply, State#{inflight := maps:remove(MonRef, Inflight)}};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-ensure_started(Target, MaySwitch) ->
+handle_info({'DOWN', MonRef, process, _, _}, #{inflight := Inflight} = State) ->
+    {noreply, State#{inflight := maps:remove(MonRef, Inflight)}};
+handle_info(_Msg, State) ->
+    {noreply, State}.
+
+ensure_started(Target, MaySwitch, Inflight) ->
     Domain = name_domain(Target),
     case node() of
         nonode@nohost ->
@@ -53,25 +75,33 @@ ensure_started(Target, MaySwitch) ->
         _ ->
             case net_kernel:get_state() of
                 #{name_domain := Domain} -> ok;
-                #{name_domain := Other} -> switch(Other, Domain, Target, MaySwitch)
+                #{name_domain := Other} -> switch(Other, Domain, Target, MaySwitch, Inflight)
             end
     end.
 
-switch(Have, Want, Target, MaySwitch) ->
-    case {MaySwitch, nodes(connected) -- [Target]} of
+switch(Have, Want, Target, MaySwitch, Inflight) ->
+    Busy = lists:usort((nodes(connected) ++ maps:values(Inflight)) -- [Target]),
+    case {MaySwitch, Busy} of
         {true, []} ->
             case net_kernel:stop() of
                 ok -> start(Want, Target);
                 {error, Reason} -> {error, {dist_stop_failed, Reason}}
             end;
-        {true, Busy} ->
+        {true, _} ->
             {error, {name_domain_mismatch, Have, Want, Busy}};
         {false, _} ->
             {error, {name_domain_mismatch, Have, Want, []}}
     end.
 
-set_cookie(_Node, undefined) -> ok;
-set_cookie(Node, Cookie) -> erlang:set_cookie(Node, Cookie).
+%% Reset to the default node cookie when Cookie is undefined so a wrong
+%% per-node cookie from a previous attempt does not stick in auth's table.
+set_cookie(Node, undefined) ->
+    case node() of
+        nonode@nohost -> ok;
+        _ -> erlang:set_cookie(Node, erlang:get_cookie())
+    end;
+set_cookie(Node, Cookie) ->
+    erlang:set_cookie(Node, Cookie).
 
 start(Domain, Target) ->
     start_epmd(),
@@ -144,9 +174,12 @@ start_epmd() ->
         false ->
             ok;
         _ ->
-            Port = open_port({spawn_executable, Epmd},
-                             [{args, ["-daemon"]}, exit_status, hide, stderr_to_stdout]),
-            wait_exit(Port)
+            try open_port({spawn_executable, Epmd},
+                          [{args, ["-daemon"]}, exit_status, hide, stderr_to_stdout]) of
+                Port -> wait_exit(Port)
+            catch _:_ ->
+                ok
+            end
     end.
 
 wait_exit(Port) ->

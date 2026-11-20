@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import './echarts'
+import { escapeHtml } from './echarts'
 import { computed, ref } from 'vue'
 import VChart from 'vue-echarts'
 import { useI18n } from 'vue-i18n'
@@ -74,6 +74,8 @@ function textWidth(s: string) {
 // a leaf's label (drawn to its right) meets the label of a supervisor one
 // level deeper (drawn to its left). Size every level gap for the widest such
 // pair and let the chart grow wider than the page; the wrapper scrolls.
+const tree = computed(() => toDatum(props.root))
+
 const layout = computed(() => {
   const leafW: number[] = []   // widest right-hand (leaf) label per depth
   const supW: number[] = []    // widest left-hand (supervisor) label per depth
@@ -83,7 +85,7 @@ const layout = computed(() => {
     else supW[depth] = Math.max(supW[depth] ?? 0, w)
     d.children.forEach((c) => walk(c, depth + 1))
   }
-  walk(toDatum(props.root), 0)
+  walk(tree.value, 0)
   const depth = Math.max(leafW.length, supW.length) - 1
   const left = (supW[0] ?? leafW[0] ?? 0) + 24
   const right = Math.max(0, ...leafW.filter((x) => x != null)) + 24
@@ -103,20 +105,20 @@ const option = computed(() => {
       textStyle: { color: th.text },
       formatter: (p: { data: TreeDatum }) => {
         const n = p.data.node
-        if (!n) return p.data.name
+        if (!n) return escapeHtml(p.data.name)
         const rows = [
-          `<b>${p.data.name}</b>`,
-          n.pid ? `pid ${n.pid}` : tr('pages.sup_tree.status', { s: n.status ?? tr('pages.sup_tree.not_running') }),
-          n.module ? tr('pages.sup_tree.module', { m: n.module }) : '',
-          `${tr(n.type === 'supervisor' ? 'pages.sup_tree.supervisor' : 'pages.sup_tree.worker')} · id ${n.id}`,
-          n.error ? `<span style="color:#d03050">${n.error}</span>` : '',
+          `<b>${escapeHtml(p.data.name)}</b>`,
+          escapeHtml(n.pid ? `pid ${n.pid}` : tr('pages.sup_tree.status', { s: n.status ?? tr('pages.sup_tree.not_running') })),
+          n.module ? escapeHtml(tr('pages.sup_tree.module', { m: n.module })) : '',
+          escapeHtml(`${tr(n.type === 'supervisor' ? 'pages.sup_tree.supervisor' : 'pages.sup_tree.worker')} · id ${n.id}`),
+          n.error ? `<span style="color:#d03050">${escapeHtml(n.error)}</span>` : '',
         ]
         return rows.filter(Boolean).join('<br/>')
       },
     },
     series: [{
       type: 'tree',
-      data: [toDatum(props.root)],
+      data: [tree.value],
       orient: 'LR',
       top: 20,
       bottom: 20,

@@ -129,7 +129,7 @@ const restartRowProps = (row: RestartRow) => (row.recent >= FREQUENT ? { class: 
       <NText depth="3" class="hint">{{ t('logs.crashes.restarts_intro') }}</NText>
     </div>
     <NDataTable :columns="restartColumns" :data="restarts" :row-key="(row: RestartRow) => row.r.id"
-                :row-props="restartRowProps" size="small" :max-height="320" :scroll-x="900">
+                :row-props="restartRowProps" :pagination="{ pageSize: 50 }" size="small" :max-height="320" :scroll-x="900">
       <template #empty><NEmpty :description="t('logs.crashes.no_restarts')" /></template>
     </NDataTable>
   </section>
@@ -139,7 +139,7 @@ const restartRowProps = (row: RestartRow) => (row.recent >= FREQUENT ? { class: 
       <NText depth="3" class="hint">{{ t('logs.crashes.crashes_intro') }}</NText>
     </div>
     <NDataTable :columns="crashColumns" :data="crashes" :row-key="(c: CrashGroup) => c.id"
-                size="small" :scroll-x="900">
+                :pagination="{ pageSize: 50 }" size="small" :scroll-x="900">
       <template #empty><NEmpty :description="t('logs.crashes.no_crashes')" /></template>
     </NDataTable>
   </section>

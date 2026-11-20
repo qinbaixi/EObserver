@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, h, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NDataTable, NInput, NIcon, NAlert, type DataTableColumns, type DataTableSortState } from 'naive-ui'
 import { SearchOutline } from '@vicons/ionicons5'
@@ -36,8 +36,8 @@ const sort = ref<string | null>(props.sort)
 const order = ref<'asc' | 'desc'>('desc')
 const page = ref(1)
 const pageSize = ref(props.pageSize)
-const data = ref<DumpQueryResult | null>(null)
-const rows = ref<DumpRow[]>([])
+const data = shallowRef<DumpQueryResult | null>(null)
+const rows = shallowRef<DumpRow[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
 

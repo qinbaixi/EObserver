@@ -20,7 +20,10 @@
 request(Method, Params) ->
     case lists:member(Method, ?MUTATING) andalso read_only() of
         true -> {error, read_only};
-        false -> handle(Method, Params)
+        false ->
+            try handle(Method, Params)
+            catch throw:{error, _} = Err -> Err
+            end
     end.
 
 handle(<<"settings.get">>, _Params) ->
@@ -28,15 +31,20 @@ handle(<<"settings.get">>, _Params) ->
     {ok, #{read_only => read_only(), version => list_to_binary(Vsn)}};
 handle(<<"nodes.list">>, _Params) ->
     {ok, eobs_nodes:list()};
-handle(<<"nodes.connect">>, #{<<"node">> := Node} = Params) ->
-    case connect_cookie(Params) of
-        {ok, Cookie} ->
-            case eobs_nodes:connect(binary_to_atom(Node, utf8), Cookie, remember(Params)) of
-                {ok, _Pid} -> ok;
-                Error -> Error
-            end;
-        Error ->
-            Error
+handle(<<"nodes.connect">>, #{<<"node">> := Node} = Params) when is_binary(Node) ->
+    case valid_node_name(Node) of
+        false ->
+            {error, invalid_node_name};
+        true ->
+            case connect_cookie(Params) of
+                {ok, Cookie} ->
+                    case eobs_nodes:connect(binary_to_atom(Node, utf8), Cookie, remember(Params)) of
+                        {ok, _Pid} -> ok;
+                        Error -> Error
+                    end;
+                Error ->
+                    Error
+            end
     end;
 handle(<<"nodes.discover">>, Params) ->
     Host = case maps:get(<<"host">>, Params, null) of
@@ -56,8 +64,11 @@ handle(<<"cookies.rename">>, #{<<"id">> := Id} = Params) ->
     eobs_cookies:rename(Id, label(Params));
 handle(<<"cookies.delete">>, #{<<"id">> := Id}) ->
     eobs_cookies:delete(Id);
-handle(<<"nodes.disconnect">>, #{<<"node">> := Node}) ->
-    eobs_nodes:disconnect(to_node(Node));
+handle(<<"nodes.disconnect">>, #{<<"node">> := Node}) when is_binary(Node) ->
+    try binary_to_existing_atom(Node, utf8) of
+        N -> eobs_nodes:disconnect(N)
+    catch error:badarg -> ok
+    end;
 handle(<<"node.summary">>, Params) ->
     collect(<<"node.summary">>, Params);
 %% processes
@@ -172,7 +183,12 @@ handle(<<"logfile.search">>, #{<<"node">> := Node, <<"path">> := Path, <<"text">
                           [Path, lf_pos(Params), lf_dir(Params), Text, Level], ?LF_TIMEOUT));
 %% crash dumps: read-only, parsed in the tool itself (never on a node)
 handle(<<"dump.browse">>, Params) ->
-    eobs_dump_files:browse(maps:get(<<"path">>, Params, null));
+    case maps:get(<<"path">>, Params, null) of
+        P when P =:= null; P =:= undefined; is_binary(P) ->
+            eobs_dump_files:browse(P);
+        _ ->
+            {error, badarg}
+    end;
 handle(<<"dump.recent">>, _Params) ->
     {ok, eobs_dump_files:recent()};
 handle(<<"dump.open">>, #{<<"path">> := Path}) when is_binary(Path) ->
@@ -260,9 +276,28 @@ connect_cookie(#{<<"cookie_id">> := Id}) when is_binary(Id) ->
     end;
 connect_cookie(Params) ->
     case maps:get(<<"cookie">>, Params, <<>>) of
+        C when is_binary(C), byte_size(C) > 255 -> {error, cookie_too_long};
         C when is_binary(C), C =/= <<>> -> {ok, binary_to_atom(C, utf8)};
         _ -> {ok, undefined}
     end.
+
+valid_node_name(Bin) when byte_size(Bin) > 0, byte_size(Bin) =< 255 ->
+    case Bin =/= <<"nonode@nohost">> andalso binary:split(Bin, <<"@">>, [global]) of
+        [Name, Host] when Name =/= <<>>, Host =/= <<>> ->
+            node_part_ok(Name) andalso node_part_ok(Host);
+        _ ->
+            false
+    end;
+valid_node_name(_) ->
+    false.
+
+node_part_ok(Bin) ->
+    lists:all(fun(C) ->
+                      (C >= $a andalso C =< $z) orelse (C >= $A andalso C =< $Z)
+                          orelse (C >= $0 andalso C =< $9)
+                          orelse C =:= $_ orelse C =:= $- orelse C =:= $.
+                          orelse C =:= $: orelse C =:= $[ orelse C =:= $]
+              end, binary_to_list(Bin)).
 
 %% How a node can be reconnected after a restart: with its saved cookie,
 %% with the default cookie, or not at all (a typed cookie was not saved).
@@ -294,12 +329,17 @@ read_only() ->
     application:get_env(eobserver, read_only, false) =:= true.
 
 -spec collect(binary(), map(), term()) -> {ok, term(), term()} | {error, term()}.
-collect(<<"node.load">>, #{<<"node">> := Node}, Prev) ->
+collect(Topic, Params, State) ->
+    try do_collect(Topic, Params, State)
+    catch throw:{error, _} = Err -> Err
+    end.
+
+do_collect(<<"node.load">>, #{<<"node">> := Node}, Prev) ->
     case eobs_node:call(to_node(Node), load_sample, [node()], ?TIMEOUT) of
         {ok, Sample} -> {ok, eobs_load:rates(Prev, Sample), Sample};
         Error -> Error
     end;
-collect(<<"node.processes">>, #{<<"node">> := Node} = Params, Session0) ->
+do_collect(<<"node.processes">>, #{<<"node">> := Node} = Params, Session0) ->
     Session = case Session0 of
                   undefined -> {node(), self(), erlang:unique_integer()};
                   _ -> Session0
@@ -307,7 +347,10 @@ collect(<<"node.processes">>, #{<<"node">> := Node} = Params, Session0) ->
     Opts = #{sort => enum(maps:get(<<"sort">>, Params, <<"reds">>),
                           [reds, reductions, memory, message_queue_len, name, pid], reds),
              order => enum(maps:get(<<"order">>, Params, <<"desc">>), [asc, desc], desc),
-             filter => maps:get(<<"filter">>, Params, <<>>),
+             filter => case maps:get(<<"filter">>, Params, <<>>) of
+                           F when is_binary(F) -> F;
+                           _ -> <<>>
+                       end,
              offset => int(maps:get(<<"offset">>, Params, 0), 0),
              limit => int(maps:get(<<"limit">>, Params, 50), 50)},
     case eobs_node:call(to_node(Node), process_list, [node(), Session, Opts], ?TIMEOUT) of
@@ -316,7 +359,7 @@ collect(<<"node.processes">>, #{<<"node">> := Node} = Params, Session0) ->
     end;
 %% New events of the node's message trace since the previous collection.
 %% State: {TraceId, NextSeq}; a different trace started meanwhile resets it.
-collect(<<"trace.events">>, #{<<"node">> := Node}, State) ->
+do_collect(<<"trace.events">>, #{<<"node">> := Node}, State) ->
     {Id, Since} = case State of
                       {I, S} -> {I, S};
                       undefined -> {null, 0}
@@ -324,8 +367,10 @@ collect(<<"trace.events">>, #{<<"node">> := Node}, State) ->
     case eobs_node:call(to_node(Node), trace_events, [Id, Since], ?TIMEOUT) of
         {ok, {ok, #{id := Id1, next := Next} = Data}} ->
             {ok, Data#{reset => Id1 =/= Id andalso Id =/= null}, {Id1, Next}};
+        {ok, {error, not_found}} when Id =/= null ->
+            do_collect(<<"trace.events">>, #{<<"node">> => Node}, undefined);
         {ok, {error, not_found}} ->
-            collect(<<"trace.events">>, #{<<"node">> => Node}, undefined);
+            {ok, #{status => none}, undefined};
         {ok, {error, not_running}} ->
             {ok, #{status => none}, undefined};
         {ok, {error, _} = Error} ->
@@ -337,7 +382,7 @@ collect(<<"trace.events">>, #{<<"node">> := Node}, State) ->
 %% previous collection. The first collection starts the agent's log
 %% handler; it stops on its own once nobody collects. State: the agent's
 %% cursor.
-collect(<<"logs.events">>, #{<<"node">> := Node}, State) ->
+do_collect(<<"logs.events">>, #{<<"node">> := Node}, State) ->
     Cursor = case State of
                  undefined -> null;
                  C -> C
@@ -347,38 +392,43 @@ collect(<<"logs.events">>, #{<<"node">> := Node}, State) ->
         {ok, {error, _} = Error} -> Error;
         Error -> Error
     end;
-collect(Topic, Params, State) ->
-    case collect(Topic, Params) of
+do_collect(Topic, Params, State) ->
+    case do_collect(Topic, Params) of
         {ok, Data} -> {ok, Data, State};
         Error -> Error
     end.
 
 %% Stateless topics.
-collect(<<"node.summary">>, #{<<"node">> := Node}) ->
+collect(Topic, Params) ->
+    try do_collect(Topic, Params)
+    catch throw:{error, _} = Err -> Err
+    end.
+
+do_collect(<<"node.summary">>, #{<<"node">> := Node}) ->
     eobs_node:call(to_node(Node), node_summary, [], ?TIMEOUT);
-collect(<<"node.ports">>, #{<<"node">> := Node}) ->
+do_collect(<<"node.ports">>, #{<<"node">> := Node}) ->
     eobs_node:call(to_node(Node), port_list, [], ?TIMEOUT);
-collect(<<"node.inet">>, #{<<"node">> := Node}) ->
+do_collect(<<"node.inet">>, #{<<"node">> := Node}) ->
     eobs_node:call(to_node(Node), inet_list, [], ?TIMEOUT);
-collect(<<"node.sockets">>, #{<<"node">> := Node}) ->
+do_collect(<<"node.sockets">>, #{<<"node">> := Node}) ->
     unwrap(eobs_node:call(to_node(Node), socket_list, [], ?TIMEOUT));
-collect(<<"node.ets">>, #{<<"node">> := Node}) ->
+do_collect(<<"node.ets">>, #{<<"node">> := Node}) ->
     eobs_node:call(to_node(Node), ets_list, [], ?TIMEOUT);
-collect(<<"node.mnesia">>, #{<<"node">> := Node}) ->
+do_collect(<<"node.mnesia">>, #{<<"node">> := Node}) ->
     unwrap(eobs_node:call(to_node(Node), mnesia_list, [], ?TIMEOUT));
-collect(<<"node.allocators">>, #{<<"node">> := Node}) ->
+do_collect(<<"node.allocators">>, #{<<"node">> := Node}) ->
     eobs_node:call(to_node(Node), alloc_info, [], ?TIMEOUT);
 %% Call statistics table of the node's message trace (without details).
-collect(<<"trace.stats">>, #{<<"node">> := Node}) ->
+do_collect(<<"trace.stats">>, #{<<"node">> := Node}) ->
     case eobs_node:call(to_node(Node), trace_stats, [null, rows], ?TIMEOUT) of
         {ok, {ok, Stats}} -> {ok, Stats};
         {ok, {error, not_running}} -> {ok, #{status => none, rows => []}};
         {ok, {error, _} = Error} -> Error;
         Error -> Error
     end;
-collect(<<"cluster">>, _Params) ->
+do_collect(<<"cluster">>, _Params) ->
     {ok, cluster()};
-collect(Topic, _Params) ->
+do_collect(Topic, _Params) ->
     {error, {unknown_topic, Topic}}.
 
 %% Distribution links of every connected observed node, collected in
@@ -411,7 +461,8 @@ lf_dir(Params) ->
 unwrap({ok, ok}) -> ok;
 unwrap({ok, {ok, _} = Ok}) -> Ok;
 unwrap({ok, {error, _} = Error}) -> Error;
-unwrap({error, _} = Error) -> Error.
+unwrap({error, _} = Error) -> Error;
+unwrap(Other) -> {error, {bad_return, Other}}.
 
 %% Maps a browser-supplied binary onto one of a fixed set of atoms.
 enum(Bin, Allowed, Default) when is_binary(Bin) ->
@@ -425,20 +476,37 @@ enum(_, _, Default) ->
 int(N, _Default) when is_integer(N), N >= 0 -> N;
 int(_, Default) -> Default.
 
-parse_term(Text) ->
-    case erl_scan:string(unicode:characters_to_list(Text) ++ " .") of
-        {ok, Tokens, _} ->
-            case erl_parse:parse_term(Tokens) of
-                {ok, Term} -> {ok, Term};
-                {error, {_, Mod, Reason}} -> {error, iolist_to_binary(Mod:format_error(Reason))}
+parse_term(Text) when is_binary(Text), byte_size(Text) =< 1048576 ->
+    case unicode:characters_to_list(Text) of
+        Chars when is_list(Chars) ->
+            case erl_scan:string(Chars ++ " .") of
+                {ok, Tokens, _} ->
+                    case erl_parse:parse_term(Tokens) of
+                        {ok, Term} -> {ok, Term};
+                        {error, {_, Mod, Reason}} ->
+                            {error, iolist_to_binary(Mod:format_error(Reason))}
+                    end;
+                {error, {_, Mod, Reason}, _} ->
+                    {error, iolist_to_binary(Mod:format_error(Reason))}
             end;
-        {error, {_, Mod, Reason}, _} ->
-            {error, iolist_to_binary(Mod:format_error(Reason))}
-    end.
+        _ ->
+            {error, <<"invalid_utf8">>}
+    end;
+parse_term(Text) when is_binary(Text) ->
+    {error, <<"term_too_large">>};
+parse_term(_) ->
+    {error, <<"invalid_term">>}.
 
-%% Only names of nodes we already observe are accepted, so the browser
-%% cannot make the tool create arbitrary atoms.
-to_node(Bin) ->
-    try binary_to_existing_atom(Bin, utf8)
+%% Only names of nodes we actively observe are accepted: rejects unknown
+%% atoms, previously disconnected nodes, nonode@nohost, and EObserver's own VM.
+to_node(Bin) when is_binary(Bin) ->
+    try binary_to_existing_atom(Bin, utf8) of
+        Node ->
+            case eobs_nodes:is_observed(Node) of
+                true -> Node;
+                false -> throw({error, not_observed})
+            end
     catch error:badarg -> throw({error, not_observed})
-    end.
+    end;
+to_node(_) ->
+    throw({error, not_observed}).

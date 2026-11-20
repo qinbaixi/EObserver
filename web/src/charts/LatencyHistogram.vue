@@ -48,7 +48,9 @@ const option = computed(() => {
       borderColor: c.axis,
       textStyle: { color: c.text },
       formatter: (ps: { dataIndex: number }[]) => {
+        if (!ps.length) return ''
         const b = bins.value[ps[0].dataIndex]
+        if (!b) return ''
         return `${formatLatency(b.low)} – ${formatLatency(b.high)}<br/>${t('trace.stats.count')}: ${b.n}`
       },
     },

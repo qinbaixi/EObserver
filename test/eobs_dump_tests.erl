@@ -19,9 +19,10 @@ summary(<<"port">>, _Id, _Body) ->
 %% helpers
 
 tmp_dir() ->
-    Dir = filename:join(os:getenv("TMPDIR", "/tmp"),
-                        lists:concat(["eobs_dump_tests_", os:getpid(), "_",
-                                     erlang:unique_integer([positive])])),
+    Dir = eobs_dump_files:absolute(
+            filename:join(os:getenv("TMPDIR", "/tmp"),
+                          lists:concat(["eobs_dump_tests_", os:getpid(), "_",
+                                       erlang:unique_integer([positive])]))),
     ok = filelib:ensure_path(Dir),
     Dir.
 
@@ -186,10 +187,21 @@ dump_server_test_() ->
      fun(Dir) ->
              {inorder,
               [{"lifecycle", fun() -> lifecycle(Dir) end},
-              {"api", fun() -> api(Dir) end},
-              {"browse", fun() -> browse(Dir) end},
+               {"api", fun() -> api(Dir) end},
+               {"browse", fun() -> browse(Dir) end},
+               {"path security", fun() -> path_security(Dir) end},
                {"cancel", {timeout, 60, fun() -> cancel(Dir) end}}]}
      end}.
+
+non_header_eq_and_copy_test() ->
+    Dir = tmp_dir(),
+    Bin = <<"=erl_crash_dump:0.5\nnow\nSlogan: line1\n=123\n===not a header\n=proc:<0.0.0>\nState: Running\n=end\n">>,
+    {Idx, Meta, Result} = scan(write(Dir, "nh.dump", Bin)),
+    Tags = [T || {T, _, _, _} <- indexed(Idx, Meta)],
+    ?assertEqual([<<"erl_crash_dump">>, <<"proc">>, <<"end">>], Tags),
+    #{last_tag := LastTag} = Result,
+    ?assertEqual(byte_size(LastTag), binary:referenced_byte_size(LastTag)),
+    ok = file:del_dir_r(Dir).
 
 start_servers() ->
     Dir = tmp_dir(),
@@ -314,6 +326,39 @@ browse(Dir0) ->
     {ok, #{path := _}} = eobs_dump_files:browse(null),
     ?assertEqual({error, enoent}, eobs_dump_files:browse(list_to_binary(filename:join(Dir, "nope")))),
     ?assertEqual({error, enotdir}, eobs_dump_files:browse(list_to_binary(filename:join(Dir, "notes.txt")))).
+
+path_security(Dir) ->
+    %% Reject UNC, device, and NUL paths in both browse and open.
+    BadPaths = [<<"//server/share">>, <<"\\\\server\\share">>, <<"\\\\?\\C:\\Windows">>,
+                <<"/tmp/a", 0, "b">>],
+    [begin
+         ?assertEqual({error, badarg}, eobs_dump_files:browse(P)),
+         ?assertEqual({error, badarg}, eobs_dump:open(P))
+     end || P <- BadPaths],
+    %% ~// must stay under home(), not escape to root.
+    Home = eobs_dump_files:absolute("~"),
+    ?assertEqual(eobs_dump_files:absolute(filename:join(Home, "etc/passwd")),
+                 eobs_dump_files:absolute("~//etc/passwd")),
+    %% --dump-dir allowlist enforces containment.
+    Allowed = filename:join(Dir, "allowed"),
+    Outside = filename:join(Dir, "outside"),
+    ok = filelib:ensure_path(Allowed),
+    ok = filelib:ensure_path(Outside),
+    InFile = write(Allowed, "in.dump", sample()),
+    OutFile = write(Outside, "out.dump", sample()),
+    application:set_env(eobserver, dump_dirs, [Allowed]),
+    try
+        {ok, #{path := AP, parent := null}} = eobs_dump_files:browse(null),
+        ?assertEqual(list_to_binary(Allowed), AP),
+        ?assertMatch([#{path := AP, kind := root}], eobs_dump_files:roots()),
+        ?assertEqual({error, eacces}, eobs_dump_files:browse(list_to_binary(Outside))),
+        ?assertEqual({error, eacces}, eobs_dump_files:browse(list_to_binary(filename:join([Allowed, "..", "outside"])))),
+        ?assertEqual({error, eacces}, eobs_dump:open(list_to_binary(OutFile))),
+        {ok, Id} = eobs_dump:open(list_to_binary(InFile)),
+        ok = eobs_dump:close(Id)
+    after
+        application:unset_env(eobserver, dump_dirs)
+    end.
 
 cancel(Dir) ->
     %% Big enough to still be scanning when cancelled.

@@ -6,7 +6,8 @@
 %% Erlang terms; the tool node is responsible for turning them into JSON.
 -module(eobs_agent).
 
--export([version/0, node_summary/0, load_sample/1]).
+-export([version/0, prepare_unload/0, node_summary/0, load_sample/1]).
+-export([holder_loop/2]).
 -export([process_list/3, process_detail/1, process_state/2, process_kill/1,
          process_send/2]).
 -export([app_list/0, app_tree/1]).
@@ -29,32 +30,48 @@
 
 %% Bump whenever the exported API or return shapes change, so the tool
 %% replaces an older copy that is still loaded on the target.
--define(VERSION, 18).
+-define(VERSION, 19).
 
 %% Long-lived helper process on the observed node. It keeps
 %% scheduler_wall_time enabled, builds process lists while holding the
 %% per-viewer reduction snapshots in its own heap (no copying), and exits
-%% when the observing tool node goes away.
+%% when all observing tool nodes go away.
 -define(HOLDER, eobs_agent_srv).
 %% Snapshots of sessions not seen for this long are dropped.
 -define(SNAP_TTL_MS, 120000).
-%% Caps on what we ship back for a single term.
+-define(MAX_SNAP_SESSIONS, 8).
+%% Caps on what we ship back for a single term or process detail.
 -define(TERM_DEPTH, 30).
 -define(TERM_CHARS, 8000).
 -define(MAX_MESSAGES, 100).
+-define(DETAIL_MAX_REFS, 500).
+-define(DETAIL_MAX_DICT, 500).
+-define(DETAIL_HEAP_WORDS, 8000000).
 %% Supervision tree limits: children listed per supervisor, total nodes,
-%% and how long a busy supervisor may take to answer.
+%% max active children before skipping which_children, and call timeout.
 -define(TREE_MAX_CHILDREN, 200).
 -define(TREE_MAX_NODES, 3000).
+-define(TREE_MAX_SUP_CHILDREN, 5000).
 -define(SUP_TIMEOUT, 3000).
 %% Table viewer: chars per cell, and how many objects a search may scan.
 -define(CELL_CHARS, 300).
 -define(SEARCH_SCAN, 200000).
+-define(SEARCH_HEAP_WORDS, 8000000).
+-define(SEARCH_TIMEOUT_MS, 15000).
 %% Full text of one object in the row viewer.
 -define(OBJECT_CHARS, 1000000).
+-define(MAX_REF_BYTES, 16777216).
 
 version() ->
     ?VERSION.
+
+%% Gracefully stops all agent-owned handlers and helper processes on the
+%% observed node before code deletion/purge.
+prepare_unload() ->
+    _ = logs_stop(),
+    _ = quit_tracer(),
+    _ = stop_holder(),
+    ok.
 
 node_summary() ->
     {UptimeMs, _} = erlang:statistics(wall_clock),
@@ -126,31 +143,80 @@ ensure_holder(Owner) ->
     case whereis(?HOLDER) of
         undefined ->
             Parent = self(),
-            {Pid, Ref} = spawn_monitor(fun() -> holder(Parent, Owner) end),
+            {Pid, Ref} = spawn_opt(fun() -> holder(Parent, Owner) end,
+                                   [monitor, {priority, low}]),
             receive
                 {Pid, ready} -> erlang:demonitor(Ref, [flush]), ok;
                 {'DOWN', Ref, process, Pid, _} -> ok
-            after 5000 -> ok
+            after 5000 ->
+                erlang:demonitor(Ref, [flush]),
+                ok
             end;
-        _ ->
+        Pid ->
+            Pid ! {owner, Owner},
             ok
+    end.
+
+stop_holder() ->
+    case whereis(?HOLDER) of
+        undefined -> ok;
+        Pid ->
+            Ref = erlang:monitor(process, Pid),
+            Pid ! stop,
+            receive {'DOWN', Ref, process, Pid, _} -> ok
+            after 5000 ->
+                exit(Pid, kill),
+                receive {'DOWN', Ref, process, Pid, _} -> ok end
+            end
+    end.
+
+monitor_owner(Owner) ->
+    case Owner =:= node() orelse lists:member(Owner, nodes(connected)) of
+        true ->
+            erlang:monitor_node(Owner, true),
+            true;
+        false ->
+            false
     end.
 
 holder(Parent, Owner) ->
     try register(?HOLDER, self()) of
         true ->
             erlang:system_flag(scheduler_wall_time, true),
-            erlang:monitor_node(Owner, true),
+            Owners = case monitor_owner(Owner) of
+                         true -> [Owner];
+                         false -> []
+                     end,
             Parent ! {self(), ready},
-            holder_loop(Owner, #{})
+            case Owners of
+                [] -> ok;
+                _ -> ?MODULE:holder_loop(Owners, #{})
+            end
     catch
         error:badarg -> Parent ! {self(), ready}
     end.
 
-holder_loop(Owner, Snaps) ->
+holder_loop(Owners, Snaps) ->
+    Timeout = case map_size(Snaps) of
+                  0 -> infinity;
+                  _ -> ?SNAP_TTL_MS
+              end,
     receive
+        {owner, Owner} ->
+            Owners1 = case lists:member(Owner, Owners) of
+                          true -> Owners;
+                          false ->
+                              case monitor_owner(Owner) of
+                                  true -> [Owner | Owners];
+                                  false -> Owners
+                              end
+                      end,
+            ?MODULE:holder_loop(Owners1, Snaps);
         {nodedown, Owner} ->
-            ok;
+            case lists:delete(Owner, Owners) of
+                [] -> ok;
+                Rest -> ?MODULE:holder_loop(Rest, Snaps)
+            end;
         stop ->
             ok;
         {From, Ref, {process_list, Session, Opts}} ->
@@ -158,7 +224,14 @@ holder_loop(Owner, Snaps) ->
                               catch C:R -> {{error, {C, R}}, Snaps}
                               end,
             From ! {Ref, Reply},
-            holder_loop(Owner, Snaps1)
+            ?MODULE:holder_loop(Owners, Snaps1);
+        _ ->
+            ?MODULE:holder_loop(Owners, Snaps)
+    after Timeout ->
+        Now = erlang:monotonic_time(millisecond),
+        Snaps1 = maps:filter(fun(_, {T, _}) -> T >= Now - ?SNAP_TTL_MS end, Snaps),
+        erlang:garbage_collect(),
+        ?MODULE:holder_loop(Owners, Snaps1)
     end.
 
 holder_call(Owner, Request) ->
@@ -202,7 +275,7 @@ do_process_list(Session, Opts, Snaps0) ->
                #{Session := {_, Map}} -> Map;
                _ -> undefined
            end,
-    Filter = string:lowercase(unicode:characters_to_list(maps:get(filter, Opts, <<>>))),
+    Filter = safe_lower_list(maps:get(filter, Opts, <<>>)),
     Sort = maps:get(sort, Opts, reds),
     NeedName = Filter =/= "" orelse Sort =:= name,
     Items = collect_processes(Prev, NeedName, Sort =:= memory),
@@ -211,14 +284,37 @@ do_process_list(Session, Opts, Snaps0) ->
                    "" -> Items;
                    _ -> [I || I <- Items, matches(I, Filter)]
                end,
-    Offset = maps:get(offset, Opts, 0),
-    Limit = min(maps:get(limit, Opts, 50), 500),
+    Offset = max(0, to_int(maps:get(offset, Opts, 0), 0)),
+    Limit = max(0, min(to_int(maps:get(limit, Opts, 50), 50), 500)),
     Page = page(sort_key(Sort), maps:get(order, Opts, desc), Offset, Limit, Matching),
     Reply = #{total => length(Matching),
               process_count => length(Items),
               has_delta => Prev =/= undefined,
               rows => [row(I) || I <- Page]},
-    {Reply, Snaps#{Session => {Now, Snap}}}.
+    {Reply, put_snap(Session, Now, Snap, Snaps)}.
+
+put_snap(Session, Now, Snap, Snaps0) ->
+    Snaps = Snaps0#{Session => {Now, Snap}},
+    case map_size(Snaps) > ?MAX_SNAP_SESSIONS of
+        false -> Snaps;
+        true ->
+            ByTime = lists:keysort(2, [{K, T} || {K, {T, _}} <- maps:to_list(Snaps)]),
+            Drop = [K || {K, _} <- lists:sublist(ByTime, map_size(Snaps) - ?MAX_SNAP_SESSIONS)],
+            maps:without(Drop, Snaps)
+    end.
+
+to_int(N, _Default) when is_integer(N) -> N;
+to_int(_, Default) -> Default.
+
+safe_lower_list(Bin) when is_binary(Bin) ->
+    case unicode:characters_to_list(Bin) of
+        L when is_list(L) -> string:lowercase(L);
+        _ -> ""
+    end;
+safe_lower_list(L) when is_list(L) ->
+    try string:lowercase(L) catch _:_ -> "" end;
+safe_lower_list(_) ->
+    "".
 
 %% {Pid, Reductions, RedsDelta | undefined, Memory | undefined, MsgQ, Name | undefined}
 %%
@@ -269,10 +365,12 @@ sort_key(_) -> fun({_, R, D, _, _, _}) -> {delta_key(D), R} end.
 %% Returns items Offset+1 .. Offset+Limit in the requested order. Pages near
 %% the top (the common case) use a bounded top-k pass instead of sorting
 %% every process.
+page(_Key, _Order, _Offset, Limit, _Items) when Limit =< 0 ->
+    [];
 page(Key, Order, Offset, Limit, Items) ->
     K = Offset + Limit,
     Keyed = [{Key(I), I} || I <- Items],
-    Ordered = case K =< 2000 andalso length(Keyed) > 4 * K of
+    Ordered = case K > 0 andalso K =< 2000 andalso length(Keyed) > 4 * K of
                   true -> top_k(Order, K, Keyed);
                   false -> full_sort(Order, Keyed)
               end,
@@ -320,15 +418,23 @@ top_k(Order, K, Keyed) ->
 %% module or function of its initial call or current function, or (for
 %% filters that look like a pid) its pid.
 matches({Pid, _, _, _, _, Name}, Filter) ->
-    Has = fun(Text) -> string:str(string:to_lower(Text), Filter) > 0 end,
-    HasAtom = fun(A) -> is_atom(A) andalso Has(atom_to_list(A)) end,
-    HasMfa = fun({M, F, _}) -> HasAtom(M) orelse HasAtom(F);
-                (_) -> false
-             end,
-    (Name =/= undefined andalso HasAtom(Name))
-        orelse HasMfa(info(Pid, initial_call, undefined))
-        orelse HasMfa(info(Pid, current_function, undefined))
-        orelse (looks_like_pid(Filter) andalso Has(pid_to_list(Pid))).
+    (Name =/= undefined andalso match_atom(Name, Filter))
+        orelse match_mfa(info(Pid, initial_call, undefined), Filter)
+        orelse match_mfa(info(Pid, current_function, undefined), Filter)
+        orelse (looks_like_pid(Filter) andalso match_text(pid_to_list(Pid), Filter)).
+
+match_text(Text, Filter) ->
+    string:find(string:lowercase(Text), Filter) =/= nomatch.
+
+match_atom(A, Filter) when is_atom(A) ->
+    match_text(atom_to_list(A), Filter);
+match_atom(_, _) ->
+    false.
+
+match_mfa({M, F, _}, Filter) ->
+    match_atom(M, Filter) orelse match_atom(F, Filter);
+match_mfa(_, _) ->
+    false.
 
 looks_like_pid([C | _]) -> C =:= $< orelse (C >= $0 andalso C =< $9);
 looks_like_pid(_) -> false.
@@ -365,14 +471,21 @@ initial_call(Pid) ->
     end.
 
 %% Full details for the process drawer. Every term is formatted here,
-%% with depth and length caps, so pids print as local pids and a huge
-%% state never crosses the network.
+%% with depth and length caps, in a heap-capped worker so a huge process
+%% dictionary or queue can never OOM the observed node.
 process_detail(PidBin) ->
-    Pid = to_pid(PidBin),
+    case safe_to_pid(PidBin) of
+        {ok, Pid} ->
+            capped_call(?DETAIL_HEAP_WORDS, 10000, fun() -> do_process_detail(Pid, PidBin) end);
+        error ->
+            {error, not_found}
+    end.
+
+do_process_detail(Pid, PidBin) ->
     Keys = [registered_name, status, initial_call, current_function, current_stacktrace,
             message_queue_len, links, monitors, monitored_by, trap_exit, priority,
             group_leader, reductions, memory, total_heap_size, heap_size, stack_size,
-            garbage_collection, dictionary, error_handler],
+            garbage_collection, dictionary],
     case erlang:process_info(Pid, Keys) of
         undefined ->
             {error, not_found};
@@ -380,6 +493,10 @@ process_detail(PidBin) ->
             Info = maps:from_list(Info0),
             #{dictionary := Dict, message_queue_len := QLen} = Info,
             Name = case maps:get(registered_name, Info) of [] -> undefined; N -> N end,
+            Links = lists:sublist(maps:get(links, Info), ?DETAIL_MAX_REFS),
+            Monitors = lists:sublist(maps:get(monitors, Info), ?DETAIL_MAX_REFS),
+            MonitoredBy = lists:sublist(maps:get(monitored_by, Info), ?DETAIL_MAX_REFS),
+            DictShown = lists:sublist(Dict, ?DETAIL_MAX_DICT),
             {ok, #{pid => PidBin,
                    name => Name,
                    status => maps:get(status, Info),
@@ -388,9 +505,9 @@ process_detail(PidBin) ->
                    stacktrace => [format_frame(F) || F <- maps:get(current_stacktrace, Info)],
                    message_queue_len => QLen,
                    messages => messages(Pid, QLen),
-                   links => [ref_bin(L) || L <- maps:get(links, Info)],
-                   monitors => [monitor_bin(M) || M <- maps:get(monitors, Info)],
-                   monitored_by => [ref_bin(M) || M <- maps:get(monitored_by, Info)],
+                   links => [ref_bin(L) || L <- Links],
+                   monitors => [monitor_bin(M) || M <- Monitors],
+                   monitored_by => [ref_bin(M) || M <- MonitoredBy],
                    trap_exit => maps:get(trap_exit, Info),
                    priority => maps:get(priority, Info),
                    group_leader => ref_bin(maps:get(group_leader, Info)),
@@ -401,36 +518,61 @@ process_detail(PidBin) ->
                    stack_size => maps:get(stack_size, Info),
                    garbage_collection => [#{key => K, value => fmt(V)}
                                           || {K, V} <- maps:get(garbage_collection, Info)],
-                   dictionary => [#{key => fmt(K), value => fmt(V)} || {K, V} <- Dict],
+                   dictionary => [#{key => fmt(K), value => fmt(V)} || {K, V} <- DictShown],
                    word_size => erlang:system_info(wordsize)}}
     end.
 
 %% Reading the whole queue copies it, so only short queues are shown.
 messages(Pid, QLen) when QLen =< ?MAX_MESSAGES ->
     case erlang:process_info(Pid, messages) of
-        {messages, Msgs} -> [fmt(M) || M <- Msgs];
+        {messages, Msgs} -> [fmt(M) || M <- lists:sublist(Msgs, ?MAX_MESSAGES)];
         undefined -> []
     end;
 messages(_Pid, _QLen) ->
     truncated.
 
 process_state(PidBin, Timeout) ->
-    Pid = to_pid(PidBin),
-    try sys:get_state(Pid, Timeout) of
-        State -> {ok, fmt(State)}
-    catch
-        exit:{timeout, _} -> {error, timeout};
-        exit:{noproc, _} -> {error, not_found};
-        _:Reason -> {error, fmt(Reason)}
+    case safe_to_pid(PidBin) of
+        {ok, Pid} ->
+            capped_call(?DETAIL_HEAP_WORDS, Timeout + 1000, fun() ->
+                try sys:get_state(Pid, Timeout) of
+                    State -> {ok, fmt(State)}
+                catch
+                    exit:{timeout, _} -> {error, timeout};
+                    exit:{noproc, _} -> {error, not_found};
+                    _:Reason -> {error, fmt(Reason)}
+                end
+            end);
+        error ->
+            {error, not_found}
+    end.
+
+capped_call(HeapWords, Timeout, Fun) ->
+    {Pid, Ref} = spawn_opt(fun() -> exit({capped_ok, Fun()}) end,
+                           [monitor, {priority, low},
+                            {max_heap_size, #{size => HeapWords, kill => true,
+                                              error_logger => false}}]),
+    receive
+        {'DOWN', Ref, process, Pid, {capped_ok, Result}} -> Result;
+        {'DOWN', Ref, process, Pid, killed} -> {error, too_big};
+        {'DOWN', Ref, process, Pid, Reason} -> {error, fmt(Reason)}
+    after Timeout ->
+        exit(Pid, kill),
+        erlang:demonitor(Ref, [flush]),
+        {error, timeout}
     end.
 
 process_kill(PidBin) ->
-    exit(to_pid(PidBin), kill),
-    ok.
+    case safe_to_pid(PidBin) of
+        {ok, Pid} -> exit(Pid, kill), ok;
+        error -> {error, not_found}
+    end.
 
 process_send(PidBin, Msg) ->
-    to_pid(PidBin) ! Msg,
-    ok.
+    case safe_to_pid(PidBin) of
+        {ok, Pid} -> Pid ! Msg, ok;
+        error -> {error, not_found}
+    end.
 
 %%--------------------------------------------------------------------
 %% Applications
@@ -438,9 +580,9 @@ process_send(PidBin, Msg) ->
 
 app_list() ->
     Running = application:which_applications(),
-    RunningNames = [A || {A, _, _} <- Running],
+    RunningSet = maps:from_list([{A, true} || {A, _, _} <- Running]),
     Loaded = [{A, D, V} || {A, D, V} <- application:loaded_applications(),
-                           not lists:member(A, RunningNames)],
+                           not is_map_key(A, RunningSet)],
     [#{name => A, description => bin(D), vsn => bin(V), running => true}
      || {A, D, V} <- lists:keysort(1, Running)]
         ++ [#{name => A, description => bin(D), vsn => bin(V), running => false}
@@ -453,7 +595,11 @@ app_tree(App) ->
         Master when is_pid(Master) ->
             case catch application_master:get_child(Master) of
                 {Root, Mod} when is_pid(Root) ->
-                    {Tree, _} = sup_node(Root, App, supervisor, Mod, ?TREE_MAX_NODES),
+                    RootType = case is_supervisor(Root) of
+                                   true -> supervisor;
+                                   false -> worker
+                               end,
+                    {Tree, _} = sup_node(Root, App, RootType, Mod, ?TREE_MAX_NODES),
                     {ok, #{master => ref_bin(Master), root => Tree}};
                 _ ->
                     {ok, #{master => ref_bin(Master), root => null}}
@@ -466,6 +612,20 @@ app_tree(App) ->
             end
     end.
 
+%% Only send supervisor calls (which_children / count_children) to
+%% processes that actually run supervisor / supervisor_bridge.
+is_supervisor(Pid) ->
+    case catch proc_lib:translate_initial_call(Pid) of
+        {supervisor, _, _} -> true;
+        {supervisor_bridge, _, _} -> true;
+        _ ->
+            case erlang:process_info(Pid, initial_call) of
+                {initial_call, {supervisor, _, _}} -> true;
+                {initial_call, {supervisor_bridge, _, _}} -> true;
+                _ -> false
+            end
+    end.
+
 sup_node(Pid, Id, Type, Mod, Budget) ->
     Base = #{pid => ref_bin(Pid),
              id => fmt(Id),
@@ -474,23 +634,44 @@ sup_node(Pid, Id, Type, Mod, Budget) ->
              module => Mod},
     case Type of
         supervisor when Budget > 0 ->
-            case sup_call(Pid, which_children) of
-                {ok, Children} ->
-                    Total = length(Children),
-                    Shown = lists:sublist(Children, ?TREE_MAX_CHILDREN),
-                    {Nodes, Left} = lists:foldl(
-                                      fun(Child, {Acc, B}) -> child_node(Child, Acc, B) end,
-                                      {[], Budget - 1}, Shown),
-                    {Base#{children => lists:reverse(Nodes),
-                           hidden => Total - length(Nodes)}, Left};
-                {error, Reason} ->
-                    {Base#{children => [], hidden => 0, error => fmt(Reason)}, Budget - 1}
+            case sup_too_large(Pid) of
+                {true, Active} ->
+                    {Base#{children => [], hidden => Active}, Budget - 1};
+                false ->
+                    case sup_call(Pid, which_children) of
+                        {ok, Children} when is_list(Children) ->
+                            Total = length(Children),
+                            Shown = lists:sublist(Children, ?TREE_MAX_CHILDREN),
+                            {Nodes, Left} = lists:foldl(
+                                              fun(Child, {Acc, B}) -> child_node(Child, Acc, B) end,
+                                              {[], Budget - 1}, Shown),
+                            {Base#{children => lists:reverse(Nodes),
+                                   hidden => Total - length(Nodes)}, Left};
+                        {ok, _} ->
+                            {Base#{children => [], hidden => 0}, Budget - 1};
+                        {error, Reason} ->
+                            {Base#{children => [], hidden => 0, error => fmt(Reason)}, Budget - 1}
+                    end
             end;
         _ ->
             {Base#{children => [], hidden => 0}, Budget - 1}
     end.
 
-child_node({_Id, _Child, _Type, _Mods}, Acc, Budget) when Budget =< 0 ->
+sup_too_large(Pid) ->
+    case sup_call(Pid, count_children) of
+        {ok, Counts} when is_list(Counts) ->
+            Active = proplists:get_value(active, Counts, 0),
+            Specs = proplists:get_value(specs, Counts, 0),
+            case is_integer(Active) andalso is_integer(Specs)
+                 andalso max(Active, Specs) > ?TREE_MAX_SUP_CHILDREN of
+                true -> {true, max(Active, Specs)};
+                false -> false
+            end;
+        _ ->
+            false
+    end.
+
+child_node(_, Acc, Budget) when Budget =< 0 ->
     {Acc, Budget};
 child_node({Id, Child, Type, Mods}, Acc, Budget) when is_pid(Child) ->
     Mod = case Mods of [M | _] -> M; _ -> Mods end,
@@ -499,7 +680,9 @@ child_node({Id, Child, Type, Mods}, Acc, Budget) when is_pid(Child) ->
 child_node({Id, Child, Type, _Mods}, Acc, Budget) ->
     %% restarting or undefined (not running) children
     {[#{pid => null, id => fmt(Id), name => null, type => Type, module => null,
-        status => Child, children => [], hidden => 0} | Acc], Budget - 1}.
+        status => Child, children => [], hidden => 0} | Acc], Budget - 1};
+child_node(_, Acc, Budget) ->
+    {Acc, Budget}.
 
 %% supervisor:which_children/1 waits forever; a stuck supervisor must not
 %% hang the page.
@@ -530,9 +713,14 @@ port_row(Port) ->
             undefined;
         Info ->
             Name = proplists:get_value(name, Info),
+            RegName = case proplists:get_value(registered_name, Info) of
+                          undefined -> null;
+                          [] -> null;
+                          RN -> RN
+                      end,
             #{id => ref_bin(Port),
               name => bin(Name),
-              registered_name => port_item(Port, registered_name, null),
+              registered_name => RegName,
               connected => ref_bin(proplists:get_value(connected, Info)),
               os_pid => case proplists:get_value(os_pid, Info) of
                             undefined -> null;
@@ -557,50 +745,68 @@ inet_port_name("udp_inet") -> true;
 inet_port_name("sctp_inet") -> true;
 inet_port_name(_) -> false.
 
+inet_proto("tcp_inet") -> tcp;
+inet_proto("udp_inet") -> udp;
+inet_proto("sctp_inet") -> sctp;
+inet_proto(_) -> unknown.
+
 port_detail(PortBin) ->
-    Port = to_port(PortBin),
-    case port_row(Port) of
-        undefined ->
+    case safe_to_port(PortBin) of
+        error ->
             {error, not_found};
-        Row ->
-            Links = [ref_bin(L) || L <- port_item(Port, links, [])],
-            Monitors = [monitor_bin(M) || M <- port_item(Port, monitors, [])],
-            Extra = case maps:get(inet, Row) of
-                        true -> inet_info(Port);
-                        false -> #{}
-                    end,
-            {ok, maps:merge(Row#{links => Links, monitors => Monitors,
-                                 parallelism => port_item(Port, parallelism, false),
-                                 locking => port_item(Port, locking, null)}, Extra)}
+        {ok, Port} ->
+            case port_row(Port) of
+                undefined ->
+                    {error, not_found};
+                Row ->
+                    Links = [ref_bin(L) || L <- lists:sublist(port_item(Port, links, []), ?DETAIL_MAX_REFS)],
+                    Monitors = [monitor_bin(M) || M <- lists:sublist(port_item(Port, monitors, []), ?DETAIL_MAX_REFS)],
+                    Extra = case maps:get(inet, Row) of
+                                true -> inet_info(Port, undefined);
+                                false -> #{}
+                            end,
+                    {ok, maps:merge(Row#{links => Links, monitors => Monitors,
+                                         parallelism => port_item(Port, parallelism, false),
+                                         locking => port_item(Port, locking, null)}, Extra)}
+            end
     end.
 
 port_close(PortBin) ->
-    try erlang:port_close(to_port(PortBin)) of
-        true -> ok
-    catch
-        error:badarg -> {error, not_found}
+    case safe_to_port(PortBin) of
+        error -> {error, not_found};
+        {ok, Port} ->
+            try erlang:port_close(Port) of
+                true -> ok
+            catch
+                error:badarg -> {error, not_found}
+            end
     end.
 
 %% gen_tcp / gen_udp / gen_sctp sockets (inet driver ports).
 inet_list() ->
-    [maps:merge(Row, inet_info(Port))
+    [maps:merge(Row, inet_info(Port, Name))
      || Port <- erlang:ports(),
+        {name, Name} <- [erlang:port_info(Port, name)],
+        inet_port_name(Name),
         Row <- [port_row(Port)],
-        Row =/= undefined, maps:get(inet, Row)].
+        Row =/= undefined].
 
-inet_info(Port) ->
+inet_info(Port, Name0) ->
     Stats = case catch inet:getstat(Port, [recv_oct, send_oct, recv_cnt, send_cnt]) of
                 {ok, S} -> maps:from_list(S);
                 _ -> #{}
             end,
+    Name = case Name0 of
+               undefined ->
+                   case erlang:port_info(Port, name) of
+                       {name, N} -> N;
+                       _ -> ""
+                   end;
+               N -> N
+           end,
     #{local => addr(catch inet:sockname(Port)),
       remote => addr(catch inet:peername(Port)),
-      protocol => case erlang:port_info(Port, name) of
-                      {name, "tcp_inet"} -> tcp;
-                      {name, "udp_inet"} -> udp;
-                      {name, "sctp_inet"} -> sctp;
-                      _ -> unknown
-                  end,
+      protocol => inet_proto(Name),
       stats => Stats}.
 
 %% Sockets created with the socket module (OTP 22+).
@@ -634,16 +840,40 @@ socket_row(S) ->
       counters => maps:from_list([{K, V} || {K, V} <- maps:to_list(Counters),
                                             is_integer(V)])}.
 
-addr({ok, {Ip, Port}}) when is_tuple(Ip) ->
-    bin(inet:ntoa(Ip) ++ ":" ++ integer_to_list(Port));
-addr({ok, #{addr := Ip, port := Port}}) when is_tuple(Ip) ->
-    bin(inet:ntoa(Ip) ++ ":" ++ integer_to_list(Port));
+addr({ok, {{local, Path}, _}}) ->
+    addr_path(Path);
+addr({ok, {Ip, Port}}) when is_tuple(Ip), (tuple_size(Ip) =:= 4 orelse tuple_size(Ip) =:= 8),
+                            is_integer(Port) ->
+    case inet:ntoa(Ip) of
+        {error, _} -> fmt({Ip, Port});
+        Str -> bin(Str ++ ":" ++ integer_to_list(Port))
+    end;
+addr({ok, #{addr := Ip, port := Port}}) when is_tuple(Ip),
+                                             (tuple_size(Ip) =:= 4 orelse tuple_size(Ip) =:= 8),
+                                             is_integer(Port) ->
+    case inet:ntoa(Ip) of
+        {error, _} -> fmt({Ip, Port});
+        Str -> bin(Str ++ ":" ++ integer_to_list(Port))
+    end;
 addr({ok, #{path := Path}}) ->
-    bin(io_lib:format("~ts", [Path]));
+    addr_path(Path);
 addr({ok, Other}) ->
     fmt(Other);
 addr(_) ->
     null.
+
+addr_path(Path) when is_binary(Path) ->
+    case unicode:characters_to_binary(Path) of
+        B when is_binary(B) -> B;
+        _ -> fmt(Path)
+    end;
+addr_path(Path) when is_list(Path) ->
+    case unicode:characters_to_binary(Path) of
+        B when is_binary(B) -> B;
+        _ -> fmt(Path)
+    end;
+addr_path(Path) ->
+    fmt(Path).
 
 %%--------------------------------------------------------------------
 %% ETS and Mnesia tables
@@ -651,42 +881,63 @@ addr(_) ->
 
 ets_list() ->
     Word = erlang:system_info(wordsize),
-    [T || T <- [ets_row(Tab, Word) || Tab <- ets:all()], T =/= undefined].
+    {Rows, _Cache} = lists:foldl(
+                       fun(Tab, {Acc, Cache}) ->
+                               case ets_row(Tab, Word, Cache) of
+                                   {undefined, Cache1} -> {Acc, Cache1};
+                                   {Row, Cache1} -> {[Row | Acc], Cache1}
+                               end
+                       end, {[], #{}}, ets:all()),
+    lists:reverse(Rows).
 
-ets_row(Tab, Word) ->
+ets_row(Tab, Word, Cache) ->
     case catch ets:info(Tab) of
         Info when is_list(Info) ->
             Owner = proplists:get_value(owner, Info),
             Name = proplists:get_value(name, Info),
-            #{id => table_id(Tab),
-              name => Name,
-              named => proplists:get_value(named_table, Info, false),
-              type => proplists:get_value(type, Info),
-              size => proplists:get_value(size, Info, 0),
-              memory => proplists:get_value(memory, Info, 0) * Word,
-              owner => ref_bin(Owner),
-              owner_name => registered_name(Owner),
-              protection => proplists:get_value(protection, Info),
-              keypos => proplists:get_value(keypos, Info, 1),
-              compressed => proplists:get_value(compressed, Info, false),
-              read_concurrency => proplists:get_value(read_concurrency, Info, false),
-              write_concurrency => fmt(proplists:get_value(write_concurrency, Info, false)),
-              system => system_owner(Owner)};
+            {Sys, Cache1} = system_owner(Owner, Cache),
+            Row = #{id => table_id(Tab),
+                    name => Name,
+                    named => proplists:get_value(named_table, Info, false),
+                    type => proplists:get_value(type, Info),
+                    size => proplists:get_value(size, Info, 0),
+                    memory => proplists:get_value(memory, Info, 0) * Word,
+                    owner => ref_bin(Owner),
+                    owner_name => registered_name(Owner),
+                    protection => proplists:get_value(protection, Info),
+                    keypos => proplists:get_value(keypos, Info, 1),
+                    compressed => proplists:get_value(compressed, Info, false),
+                    read_concurrency => proplists:get_value(read_concurrency, Info, false),
+                    write_concurrency => fmt(proplists:get_value(write_concurrency, Info, false)),
+                    system => Sys},
+            {Row, Cache1};
         _ ->
-            undefined
+            {undefined, Cache}
     end.
 
 %% Tables owned by kernel/stdlib processes are hidden by default, as in
-%% OTP's observer.
-system_owner(Pid) when is_pid(Pid) ->
-    case catch application:get_application(Pid) of
-        {ok, App} -> lists:member(App, [kernel, stdlib]);
-        _ -> false
+%% OTP's observer. Memoised per group_leader / owner to avoid scanning
+%% ac_tab once per table.
+system_owner(Pid, Cache) when is_pid(Pid) ->
+    Key = case erlang:process_info(Pid, group_leader) of
+              {group_leader, GL} -> GL;
+              _ -> Pid
+          end,
+    case Cache of
+        #{Key := Sys} ->
+            {Sys, Cache};
+        _ ->
+            Sys = case catch application:get_application(Pid) of
+                      {ok, App} -> lists:member(App, [kernel, stdlib]);
+                      _ -> false
+                  end,
+            {Sys, Cache#{Key => Sys}}
     end;
-system_owner(_) ->
-    false.
+system_owner(_, Cache) ->
+    {false, Cache}.
 
 table_id(Tab) when is_atom(Tab) -> atom_to_binary(Tab, utf8);
+table_id(Tab) when is_reference(Tab) -> list_to_binary(erlang:ref_to_list(Tab));
 table_id(Tab) -> fmt(Tab).
 
 %% Opts: id (from ets_list), offset, limit, search (binary).
@@ -696,15 +947,44 @@ ets_rows(IdBin, Opts) ->
             {error, not_found};
         Tab ->
             case ets:info(Tab, protection) of
+                undefined -> {error, not_found};
                 private -> {error, private};
-                _ -> {ok, read_rows(fun(Spec, N) -> ets:select(Tab, Spec, N) end,
-                                    ets:info(Tab, size), ets:info(Tab, keypos), Opts)}
+                _ ->
+                    capped_call(?SEARCH_HEAP_WORDS, ?SEARCH_TIMEOUT_MS, fun() ->
+                        guarded(fun() ->
+                            Size = ets:info(Tab, size),
+                            KeyPos = ets:info(Tab, keypos),
+                            case is_integer(Size) andalso is_integer(KeyPos) of
+                                false -> {error, not_found};
+                                true ->
+                                    ets:safe_fixtable(Tab, true),
+                                    try
+                                        {ok, read_rows(fun(Spec, N) -> ets:select(Tab, Spec, N) end,
+                                                       Size, KeyPos, Opts)}
+                                    after
+                                        catch ets:safe_fixtable(Tab, false)
+                                    end
+                            end
+                        end)
+                    end)
             end
     end.
 
-find_ets(IdBin) ->
-    Match = [T || T <- ets:all(), table_id(T) =:= IdBin],
-    case Match of
+find_ets(IdBin) when is_binary(IdBin) ->
+    case (try binary_to_existing_atom(IdBin, utf8) catch error:badarg -> undefined end) of
+        Atom when is_atom(Atom), Atom =/= undefined ->
+            case ets:whereis(Atom) of
+                undefined -> find_ets_scan(IdBin);
+                _ -> Atom
+            end;
+        _ ->
+            find_ets_scan(IdBin)
+    end;
+find_ets(_) ->
+    undefined.
+
+find_ets_scan(IdBin) ->
+    case [T || T <- ets:all(), table_id(T) =:= IdBin] of
         [T | _] -> T;
         [] -> undefined
     end.
@@ -744,21 +1024,25 @@ mnesia_rows(IdBin, Opts) ->
         true ->
             case [T || T <- mnesia:system_info(tables), atom_to_binary(T, utf8) =:= IdBin] of
                 [Tab] ->
-                    Select = fun(Spec, N) -> mnesia_select(Tab, Spec, N) end,
-                    Size = mnesia:table_info(Tab, size),
-                    {ok, (read_rows(Select, Size, 2, Opts))#{attributes =>
-                         [fmt(A) || A <- mnesia:table_info(Tab, attributes)]}};
+                    capped_call(?SEARCH_HEAP_WORDS, ?SEARCH_TIMEOUT_MS, fun() ->
+                        guarded(fun() ->
+                            Attrs = [fmt(A) || A <- mnesia:table_info(Tab, attributes)],
+                            Size = mnesia:table_info(Tab, size),
+                            Res = mnesia:activity(async_dirty, fun() ->
+                                Select = fun(Spec, N) ->
+                                                 case mnesia:select(Tab, Spec, N, read) of
+                                                     '$end_of_table' -> '$end_of_table';
+                                                     {Objs, Cont} -> {Objs, {mnesia_cont, Cont}}
+                                                 end
+                                         end,
+                                read_rows(Select, Size, 2, Opts)
+                            end),
+                            {ok, Res#{attributes => Attrs}}
+                        end)
+                    end);
                 _ ->
                     {error, not_found}
             end
-    end.
-
-%% Paged read inside an activity, so it works for every storage type.
-mnesia_select(Tab, Spec, N) ->
-    case mnesia:activity(async_dirty,
-                         fun() -> mnesia:select(Tab, Spec, N, read) end) of
-        '$end_of_table' -> '$end_of_table';
-        {Objs, Cont} -> {Objs, {mnesia_cont, Cont}}
     end.
 
 mnesia_running() ->
@@ -770,9 +1054,9 @@ mnesia_running() ->
 %% skipping Offset objects; with a search every object is formatted and
 %% matched, scanning at most SEARCH_SCAN objects.
 read_rows(Select, Size, KeyPos, Opts) ->
-    Offset = maps:get(offset, Opts, 0),
-    Limit = min(maps:get(limit, Opts, 50), 500),
-    Search = string:to_lower(unicode:characters_to_list(maps:get(search, Opts, <<>>))),
+    Offset = max(0, to_int(maps:get(offset, Opts, 0), 0)),
+    Limit = max(0, min(to_int(maps:get(limit, Opts, 50), 50), 500)),
+    Search = safe_lower_list(maps:get(search, Opts, <<>>)),
     Spec = [{'_', [], ['$_']}],
     {Objects, Matched, Scanned, Complete} =
         case Search of
@@ -780,7 +1064,8 @@ read_rows(Select, Size, KeyPos, Opts) ->
                 Objs = take(Select(Spec, 500), Offset, Limit),
                 {Objs, Size, Offset + length(Objs), true};
             _ ->
-                search(Select(Spec, 500), Search, Offset, Limit)
+                Deadline = erlang:monotonic_time(millisecond) + ?SEARCH_TIMEOUT_MS - 1000,
+                search(Select(Spec, 500), Search, Offset, Limit, Deadline)
         end,
     Rows = [row_cells(O) || O <- Objects],
     #{rows => Rows,
@@ -794,7 +1079,7 @@ read_rows(Select, Size, KeyPos, Opts) ->
 take(Chunk, Offset, Limit) ->
     take(Chunk, Offset, Limit, []).
 
-take(_, _, 0, Acc) ->
+take(_, _, Limit, Acc) when Limit =< 0 ->
     lists:reverse(Acc);
 take('$end_of_table', _, _, Acc) ->
     lists:reverse(Acc);
@@ -808,29 +1093,34 @@ take({Objs, Cont}, Offset, Limit, Acc) ->
             take(next(Cont), 0, Limit - length(Page), lists:reverse(Page, Acc))
     end.
 
-search(Chunk, Search, Offset, Limit) ->
-    search(Chunk, Search, Offset, Limit, [], 0, 0).
+search(Chunk, Search, Offset, Limit, Deadline) ->
+    search(Chunk, Search, Offset, Limit, Deadline, [], 0, 0).
 
-search('$end_of_table', _, _, _, Acc, Matched, Scanned) ->
+search('$end_of_table', _, _, _, _, Acc, Matched, Scanned) ->
     {lists:reverse(Acc), Matched, Scanned, true};
-search(_, _, _, _, Acc, Matched, Scanned) when Scanned >= ?SEARCH_SCAN ->
+search(_, _, _, _, _, Acc, Matched, Scanned) when Scanned >= ?SEARCH_SCAN ->
     {lists:reverse(Acc), Matched, Scanned, false};
-search({Objs, Cont}, Search, Offset, Limit, Acc0, Matched0, Scanned0) ->
-    {Acc, Matched} =
-        lists:foldl(
-          fun(O, {A, M}) ->
-                  Text = string:to_lower(lists:flatten(io_lib:format("~tP", [O, ?TERM_DEPTH]))),
-                  case string:str(Text, Search) > 0 of
-                      true when M >= Offset, M < Offset + Limit -> {[O | A], M + 1};
-                      true -> {A, M + 1};
-                      false -> {A, M}
-                  end
-          end, {Acc0, Matched0}, Objs),
-    search(next(Cont), Search, Offset, Limit, Acc, Matched, Scanned0 + length(Objs)).
+search({Objs, Cont}, Search, Offset, Limit, Deadline, Acc0, Matched0, Scanned0) ->
+    case erlang:monotonic_time(millisecond) > Deadline of
+        true ->
+            {lists:reverse(Acc0), Matched0, Scanned0, false};
+        false ->
+            {Acc, Matched} =
+                lists:foldl(
+                  fun(O, {A, M}) ->
+                          Text = safe_lower_list(fmt_chars(O, ?TERM_DEPTH, ?TERM_CHARS)),
+                          case string:find(Text, Search) =/= nomatch of
+                              true when M >= Offset, M < Offset + Limit -> {[O | A], M + 1};
+                              true -> {A, M + 1};
+                              false -> {A, M}
+                          end
+                  end, {Acc0, Matched0}, Objs),
+            search(next(Cont), Search, Offset, Limit, Deadline, Acc, Matched, Scanned0 + length(Objs))
+    end.
 
 next('$end_of_table') -> '$end_of_table';
 next({mnesia_cont, Cont}) ->
-    case mnesia:activity(async_dirty, fun() -> mnesia:select(Cont) end) of
+    case mnesia:select(Cont) of
         '$end_of_table' -> '$end_of_table';
         {Objs, Cont1} -> {Objs, {mnesia_cont, Cont1}}
     end;
@@ -853,30 +1143,76 @@ unref(Bin) -> binary_to_term(base64:decode(Bin), [safe]).
 %% and whether its text reads back as the same term (pids, refs and funs
 %% do not), i.e. whether it can be edited as text.
 table_object(Kind, IdBin, KeyRef) ->
-    with_table(Kind, IdBin, read, fun(Tab, _KeyPos) ->
-        Key = unref(KeyRef),
-        Objs = case Kind of
-                   ets -> ets:lookup(Tab, Key);
-                   mnesia -> mnesia:activity(async_dirty, fun() -> mnesia:read(Tab, Key) end)
-               end,
-        {ok, [object_view(O) || O <- Objs]}
+    capped_call(?DETAIL_HEAP_WORDS, 10000, fun() ->
+        with_table(Kind, IdBin, read, fun(Tab, _KeyPos) ->
+            Key = unref(KeyRef),
+            Objs = case Kind of
+                       ets -> ets:lookup(Tab, Key);
+                       mnesia -> mnesia:activity(async_dirty, fun() -> mnesia:read(Tab, Key) end)
+                   end,
+            {ok, [object_view(O) || O <- lists:sublist(Objs, 200)]}
+        end)
     end).
 
 object_view(Obj) ->
-    Chars = lists:flatten(io_lib:format("~tp", [Obj])),
-    {Text, Complete} = case length(Chars) > ?OBJECT_CHARS of
-                           true -> {lists:sublist(Chars, ?OBJECT_CHARS) ++ " ...", false};
-                           false -> {Chars, true}
-                       end,
-    #{text => unicode:characters_to_binary(Text),
-      ref => ref(Obj),
-      editable => Complete andalso reads_back(Chars, Obj)}.
+    {Text, Complete} = fmt_object(Obj, ?OBJECT_CHARS),
+    Ref = case erlang:external_size(Obj) =< ?MAX_REF_BYTES of
+              true -> ref(Obj);
+              false -> null
+          end,
+    #{text => Text,
+      ref => Ref,
+      editable => Complete andalso Ref =/= null andalso is_literal_term(Obj)}.
 
-reads_back(Chars, Obj) ->
-    try
-        {ok, Tokens, _} = erl_scan:string(Chars ++ " ."),
-        {ok, Obj} =:= erl_parse:parse_term(Tokens)
-    catch _:_ -> false
+fmt_object(Obj, Max) ->
+    Ext = erlang:external_size(Obj),
+    %% In OTP io_lib_pretty, ~tp (infinite depth) expands binaries in full
+    %% before chars_limit applies. Use ~tp only when the term is small enough
+    %% to format completely within Max without risking an OOM spike; for
+    %% larger terms use bounded-depth ~tP + chars_limit.
+    case Ext * 4 =< Max of
+        true ->
+            Bin = unicode:characters_to_binary(
+                    io_lib:format("~tp", [Obj], [{chars_limit, Max + 64}])),
+            case string:length(Bin) > Max of
+                true -> {<<(string:slice(Bin, 0, Max))/binary, " ...">>, false};
+                false -> {Bin, true}
+            end;
+        false ->
+            Limit = min(Max, 262144),
+            Bin = unicode:characters_to_binary(
+                    io_lib:format("~tP", [Obj, 200], [{chars_limit, Limit + 64}])),
+            Shown = case string:length(Bin) > Limit of
+                        true -> <<(string:slice(Bin, 0, Limit))/binary, " ...">>;
+                        false -> Bin
+                    end,
+            {Shown, false}
+    end.
+
+%% Pure literal terms (no pids, ports, refs, or funs) round-trip cleanly
+%% through ~tp and erl_parse:parse_term without scanning 1 MB of tokens.
+is_literal_term(T) when is_atom(T); is_integer(T); is_float(T); is_bitstring(T) ->
+    true;
+is_literal_term([]) ->
+    true;
+is_literal_term([H | T]) ->
+    is_literal_term(H) andalso is_literal_term(T);
+is_literal_term(T) when is_tuple(T) ->
+    is_literal_tuple(T, tuple_size(T));
+is_literal_term(M) when is_map(M) ->
+    is_literal_map(maps:iterator(M));
+is_literal_term(_) ->
+    false.
+
+is_literal_tuple(_T, 0) -> true;
+is_literal_tuple(T, I) ->
+    is_literal_term(element(I, T)) andalso is_literal_tuple(T, I - 1).
+
+is_literal_map(Iter) ->
+    case maps:next(Iter) of
+        none -> true;
+        {K, V, Next} ->
+            is_literal_term(K) andalso is_literal_term(V) andalso is_literal_map(Next)
     end.
 
 %% Deletes exactly the object ObjRef refers to (one of a bag's objects).
@@ -900,9 +1236,21 @@ table_write(Kind, IdBin, New, OldRef) ->
             ok when Old =:= New ->
                 ok;
             ok when Kind =:= ets ->
-                Old =/= undefined andalso ets:delete_object(Tab, Old),
-                true = ets:insert(Tab, New),
-                ok;
+                Type = ets:info(Tab, type),
+                SameKey = Old =/= undefined
+                          andalso (Type =:= set orelse Type =:= ordered_set)
+                          andalso is_tuple(Old) andalso tuple_size(Old) >= KeyPos
+                          andalso element(KeyPos, Old) =:= element(KeyPos, New),
+                case SameKey of
+                    true ->
+                        %% Atomic overwrite in place: readers never see the key vanish.
+                        true = ets:insert(Tab, New),
+                        ok;
+                    false ->
+                        Old =/= undefined andalso ets:delete_object(Tab, Old),
+                        true = ets:insert(Tab, New),
+                        ok
+                end;
             ok ->
                 transaction(fun() ->
                                     Old =/= undefined andalso mnesia:delete_object(Tab, Old, write),
@@ -967,17 +1315,35 @@ row_cells(Obj) ->
     [cell(Obj)].
 
 cell(Term) ->
-    Chars = lists:flatten(io_lib:format("~tP", [Term, ?TERM_DEPTH])),
-    case length(Chars) > ?CELL_CHARS of
-        true -> unicode:characters_to_binary(lists:sublist(Chars, ?CELL_CHARS) ++ " ...");
-        false -> unicode:characters_to_binary(Chars)
-    end.
+    fmt_chars(Term, ?TERM_DEPTH, ?CELL_CHARS).
 
 to_port(Bin) when is_binary(Bin) ->
-    list_to_port(binary_to_list(Bin)).
+    Port = list_to_port(binary_to_list(Bin)),
+    case node(Port) =:= node() of
+        true -> Port;
+        false -> erlang:error(badarg)
+    end.
+
+safe_to_port(Bin) when is_binary(Bin) ->
+    try {ok, to_port(Bin)}
+    catch error:badarg -> error
+    end;
+safe_to_port(_) ->
+    error.
 
 to_pid(Bin) when is_binary(Bin) ->
-    list_to_pid(binary_to_list(Bin)).
+    Pid = list_to_pid(binary_to_list(Bin)),
+    case node(Pid) =:= node() of
+        true -> Pid;
+        false -> erlang:error(badarg)
+    end.
+
+safe_to_pid(Bin) when is_binary(Bin) ->
+    try {ok, to_pid(Bin)}
+    catch error:badarg -> error
+    end;
+safe_to_pid(_) ->
+    error.
 
 format_frame({M, F, A, Loc}) ->
     Arity = if is_list(A) -> length(A); true -> A end,
@@ -1001,13 +1367,19 @@ ref_bin(undefined) -> null;
 ref_bin(Other) -> fmt(Other).
 
 mfa({M, F, A}) -> atom_to_list(M) ++ ":" ++ atom_to_list(F) ++ "/" ++ integer_to_list(A);
-mfa(Other) -> lists:flatten(io_lib:format("~p", [Other])).
+mfa(Other) -> unicode:characters_to_list(fmt_chars(Other, 10, 200)).
 
 fmt(Term) ->
-    Chars = lists:flatten(io_lib:format("~tP", [Term, ?TERM_DEPTH])),
-    case length(Chars) > ?TERM_CHARS of
-        true -> unicode:characters_to_binary(lists:sublist(Chars, ?TERM_CHARS) ++ " ...");
-        false -> unicode:characters_to_binary(Chars)
+    fmt_chars(Term, ?TERM_DEPTH, ?TERM_CHARS).
+
+%% Formats Term with bounded depth and character limit (OTP 21+ chars_limit)
+%% so huge binaries or wide structures never OOM the observed node.
+fmt_chars(Term, Depth, Max) ->
+    Io = io_lib:format("~tP", [Term, Depth], [{chars_limit, Max + 32}]),
+    Bin = unicode:characters_to_binary(Io),
+    case string:length(Bin) > Max of
+        true -> <<(string:slice(Bin, 0, Max))/binary, " ...">>;
+        false -> Bin
     end.
 
 bin(Chars) -> unicode:characters_to_binary(Chars).
@@ -1082,6 +1454,7 @@ trace_start(Owner, Targets, Opts) ->
         {'DOWN', Ref, process, Pid, Reason} -> {error, {tracer_failed, fmt(Reason)}}
     after 10000 ->
         exit(Pid, kill),
+        erlang:demonitor(Ref, [flush]),
         {error, timeout}
     end.
 
@@ -1153,12 +1526,20 @@ keeper_init(Parent, Owner, Resolved, Limits) ->
     try register(?TRACER, self())
     catch error:badarg -> Parent ! {self(), {error, busy}}, exit(normal)
     end,
-    erlang:monitor_node(Owner, true),
+    process_flag(trap_exit, true),
+    case monitor_owner(Owner) of
+        true -> ok;
+        false -> Parent ! {self(), {error, owner_down}}, exit(normal)
+    end,
     Tab = ets:new(eobs_trace, [ordered_set, public]),
     ets:insert(Tab, {seq, 0}),
     Stats = ets:new(eobs_trace_stats, [set, public]),
     Keeper = self(),
-    {Worker, WRef} = spawn_monitor(fun() -> worker_init(Keeper, Tab, Stats, Limits) end),
+    {Worker, WRef} = spawn_opt(fun() -> worker_init(Keeper, Tab, Stats, Limits) end,
+                               [monitor, {priority, low},
+                                {max_heap_size, #{size => ?TRACE_HEAP_WORDS, kill => true,
+                                                  error_logger => false}}]),
+    try link(Worker) catch error:noproc -> ok end,
     Results = [{T, start_one(R, Worker)} || {T, R} <- Resolved],
     Traced = [P || {_, {ok, P}} <- Results],
     Id = erlang:unique_integer([positive]),
@@ -1288,21 +1669,22 @@ events_since(Since0, #{id := Id, tab := Tab, status := Status, reason := Reason,
 %% The worker receives the trace messages, enforces the limits and writes
 %% formatted events into the keeper's table.
 worker_init(Keeper, Tab, Stats, Limits) ->
-    process_flag(max_heap_size, #{size => ?TRACE_HEAP_WORDS, kill => true,
-                                  error_logger => false}),
+    KRef = erlang:monitor(process, Keeper),
     receive
-        {go, _Traced} -> ok
+        {go, _Traced} -> ok;
+        {'DOWN', KRef, process, Keeper, _} -> exit(normal)
     end,
     Now = erlang:monotonic_time(millisecond),
-    worker_loop(#{keeper => Keeper, tab => Tab, limits => Limits, count => 0,
+    worker_loop(#{keeper => Keeper, kref => KRef, tab => Tab, limits => Limits, count => 0,
                   deadline => Now + maps:get(max_seconds, Limits) * 1000,
                   window => {Now div 1000, 0}, names => #{},
                   offset => erlang:time_offset(),
                   stats => Stats, rows => #{}, pending => #{}, swept => Now}).
 
-worker_loop(#{deadline := Deadline} = St) ->
+worker_loop(#{deadline := Deadline, kref := KRef} = St) ->
     Timeout = max(0, Deadline - erlang:monotonic_time(millisecond)),
     receive
+        {'DOWN', KRef, process, _, _} -> exit(normal);
         {trace_ts, Pid, 'receive', Msg, Ts} -> worker_loop(trace_event(Pid, in, Msg, undefined, Ts, St));
         {trace_ts, Pid, send, Msg, To, Ts} -> worker_loop(trace_event(Pid, out, Msg, To, Ts, St));
         {trace_ts, Pid, send_to_non_existing_process, Msg, To, Ts} ->
@@ -1314,8 +1696,9 @@ worker_loop(#{deadline := Deadline} = St) ->
 
 worker_done(Reason, #{keeper := Keeper}) ->
     Keeper ! {stopped, self(), Reason},
-    %% The keeper removes the flags and kills us; wait for that.
-    receive after infinity -> ok end.
+    %% Exit right away so the VM drops our trace flags atomically even if
+    %% the keeper dies before handling {stopped, ...}.
+    exit(normal).
 
 trace_event(Pid, Dir, Msg, To, Ts, #{count := Count, limits := Limits, window := {Sec, N}} = St) ->
     NowSec = erlang:monotonic_time(second),
@@ -1383,8 +1766,15 @@ call_stats(Pid, Dir, Msg, Ts, Event, St) ->
     case call_part(Msg) of
         {call, Ref, Req} ->
             {Key, St2} = stats_row(Pid, Dir, req_kind(Req), St1),
-            ets:update_counter(maps:get(stats, St2), Key, [{?S_CALLS, 1}, {?S_PENDING, 1}]),
+            Tab = maps:get(stats, St2),
+            ets:update_counter(Tab, Key, [{?S_CALLS, 1}, {?S_PENDING, 1}]),
             #{pending := Pending} = St3 = make_room(St2),
+            case maps:find({Pid, Ref}, Pending) of
+                {ok, {PrevKey, _, _, _, _, _}} ->
+                    ets:update_counter(Tab, PrevKey, [{?S_PENDING, -1}, {?S_UNANSWERED, 1}]);
+                error ->
+                    ok
+            end,
             Peer = case Event of
                        #{peer_name := Name} when Name =/= null -> Name;
                        #{peer := P} -> P
@@ -1397,12 +1787,12 @@ call_stats(Pid, Dir, Msg, Ts, Event, St) ->
             case maps:take({Pid, Ref}, Pending) of
                 {{Key, CallTs, T, Peer, Summary, _}, Pending1} ->
                     Us = max(0, erlang:convert_time_unit(Ts - CallTs, native, microsecond)),
-                    ets:update_counter(Tab, Key, [{?S_ANSWERED, 1}, {?S_SUM, Us}, {?S_PENDING, -1},
-                                                  {?S_HIST + hist_bucket(Us), 1}]),
                     case ets:lookup_element(Tab, Key, ?S_MAX) < Us of
                         true -> ets:update_element(Tab, Key, {?S_MAX, Us});
                         false -> ok
                     end,
+                    ets:update_counter(Tab, Key, [{?S_ANSWERED, 1}, {?S_SUM, Us}, {?S_PENDING, -1},
+                                                  {?S_HIST + hist_bucket(Us), 1}]),
                     slowest(Tab, Key, {Us, T, Peer, Summary}),
                     St1#{pending := Pending1};
                 error ->
@@ -1419,6 +1809,7 @@ call_part({'$gen_call', {_, Tag}, Req}) ->
     end;
 call_part({Ref, _}) when is_reference(Ref) -> {reply, Ref};
 call_part({[alias | Ref], _}) when is_reference(Ref) -> {reply, Ref};
+call_part({[[alias | Ref] | _], _}) when is_reference(Ref) -> {reply, Ref};
 call_part(_) -> none.
 
 %% get_info -> get_info, {buy, 1, 2} -> buy, anything else -> {other}.
@@ -1546,7 +1937,7 @@ stats_map(R, Tab, Stopped, Which) ->
                           [] -> []
                       end,
             %% maps, not lists: the JSON encoder would print [72, 79, 8] as text
-            Base#{hist => [#{low => hist_low(I), high => min(Max, hist_high(I)), count => N}
+            Base#{hist => [#{low => hist_low(I), high => max(hist_low(I), min(Max, hist_high(I))), count => N}
                            || {I, N} <- Hist],
                   slowest => [#{latency => Us, t => T, peer => Peer, summary => S}
                               || {Us, T, Peer, S} <- Slowest]}
@@ -1610,7 +2001,7 @@ classify(M) when is_tuple(M), tuple_size(M) >= 2 ->
             {business, reply, undefined, element(2, M), Ref};
         [alias | Ref] when is_reference(Ref), tuple_size(M) =:= 2 ->
             {business, reply, undefined, element(2, M), Ref};
-        Pid when is_pid(Pid), tuple_size(M) =:= 2, is_tuple(element(2, M)) ->
+        Pid when is_pid(Pid), tuple_size(M) =:= 2 ->
             %% {Pid, {command, Data}} and friends, sent to a port
             case element(2, M) of
                 {command, _} -> {network, port, undefined, M, undefined};
@@ -1638,19 +2029,20 @@ peer_bin(P) when is_pid(P); is_port(P) -> ref_bin(P);
 peer_bin(P) -> fmt(P).
 
 %% Registered name or initial call of a local peer, cached (the cache is
-%% reset when it grows, so it stays small).
+%% reset when it grows, so it stays small). Checks registered_name first
+%% and skips copying large process dictionaries so one peer with a big
+%% dictionary cannot trip the tracer's heap cap.
 peer_name(Pid, #{names := Names} = St) when is_pid(Pid), node(Pid) =:= node() ->
     case Names of
         #{Pid := Name} -> {Name, St};
         _ ->
-            Name = case process_info(Pid, [registered_name, initial_call, dictionary]) of
-                       [{registered_name, N}, _, _] when is_atom(N), N =/= [] -> atom_to_binary(N, utf8);
-                       [_, {initial_call, IC}, {dictionary, D}] ->
-                           case proplists:get_value('$initial_call', D) of
-                               undefined -> bin(mfa(IC));
-                               Real -> bin(mfa(Real))
-                           end;
-                       _ -> null
+            Name = case erlang:process_info(Pid, registered_name) of
+                       {registered_name, N} when is_atom(N), N =/= [] ->
+                           atom_to_binary(N, utf8);
+                       {registered_name, []} ->
+                           peer_initial_call(Pid);
+                       _ ->
+                           null
                    end,
             Names1 = case map_size(Names) >= 2000 of
                          true -> #{};
@@ -1665,19 +2057,57 @@ peer_name({Name, Node}, St) when is_atom(Name), is_atom(Node) ->
 peer_name(_, St) ->
     {null, St}.
 
-limited(Term, Max) ->
-    Chars = lists:flatten(io_lib:format("~tP", [Term, ?TERM_DEPTH])),
-    case length(Chars) > Max of
-        true -> unicode:characters_to_binary(lists:sublist(Chars, Max) ++ " ...");
-        false -> unicode:characters_to_binary(Chars)
+peer_initial_call(Pid) ->
+    case erlang:process_info(Pid, [initial_call, memory]) of
+        [{initial_call, IC}, {memory, Mem}] when Mem < 262144 ->
+            case erlang:process_info(Pid, dictionary) of
+                {dictionary, D} ->
+                    case proplists:get_value('$initial_call', D) of
+                        undefined -> bin(mfa(IC));
+                        Real -> bin(mfa(Real))
+                    end;
+                _ ->
+                    bin(mfa(IC))
+            end;
+        [{initial_call, IC}, _] ->
+            bin(mfa(IC));
+        _ ->
+            null
     end.
 
-one_line(Bin, Max) ->
-    Flat = re:replace(Bin, "\\s+", " ", [global, unicode, {return, list}]),
-    case string:length(Flat) > Max of
-        true -> unicode:characters_to_binary([string:slice(Flat, 0, Max), "..."]);
-        false -> unicode:characters_to_binary(Flat)
-    end.
+limited(Term, Max) ->
+    fmt_chars(Term, ?TERM_DEPTH, Max).
+
+%% Single-pass whitespace collapse capped at Max Unicode codepoints,
+%% avoiding per-event regex compilation in the tracer worker.
+one_line(Bin, Max) when is_binary(Bin) ->
+    collapse_ws(Bin, Max, false, []);
+one_line(Other, Max) ->
+    one_line(bin(Other), Max).
+
+collapse_ws(<<>>, _Left, _InWs, Acc) ->
+    iolist_to_binary(lists:reverse(Acc));
+collapse_ws(_, 0, _InWs, Acc) ->
+    iolist_to_binary(lists:reverse([<<"...">> | Acc]));
+collapse_ws(<<C/utf8, Rest/binary>>, Left, InWs, Acc) ->
+    case is_ws(C) of
+        true when InWs ->
+            collapse_ws(Rest, Left, true, Acc);
+        true ->
+            collapse_ws(Rest, Left - 1, true, [$\s | Acc]);
+        false ->
+            collapse_ws(Rest, Left - 1, false, [<<C/utf8>> | Acc])
+    end;
+collapse_ws(<<_, Rest/binary>>, Left, _InWs, Acc) ->
+    collapse_ws(Rest, Left - 1, false, [$? | Acc]).
+
+is_ws($\s) -> true;
+is_ws($\t) -> true;
+is_ws($\n) -> true;
+is_ws($\r) -> true;
+is_ws($\f) -> true;
+is_ws($\v) -> true;
+is_ws(_) -> false.
 
 %%--------------------------------------------------------------------
 %% Logs and crashes
@@ -1784,6 +2214,7 @@ logs_keeper(Owner, Tries) ->
             after 10000 ->
                 exit(Pid, kill),
                 erlang:demonitor(Ref, [flush]),
+                remove_log_handler(),
                 {error, timeout}
             end;
         Pid ->
@@ -1978,7 +2409,10 @@ logs_init(Parent, Owner) ->
     process_flag(trap_exit, true),
     %% A handler left behind by a keeper that was killed.
     remove_log_handler(),
-    erlang:monitor_node(Owner, true),
+    case monitor_owner(Owner) of
+        true -> ok;
+        false -> Parent ! {self(), {error, owner_down}}, exit(normal)
+    end,
     Tabs = #{logs => ets:new(eobs_logs, [ordered_set, public]),
              crashes => group_store(),
              restarts => group_store()},
@@ -2001,24 +2435,52 @@ group_store() ->
     ets:insert(Idx, {seq, 0}),
     #{tab => ets:new(eobs_log_groups, [set, public]), idx => Idx}.
 
-logs_start(#{ref := Ref, tabs := Tabs} = St) ->
+%% Rebuilds Idx from Tab after an unclean collector kill so Tab and Idx
+%% never drift out of sync.
+sync_group_store(#{tab := Tab, idx := Idx}) ->
+    MaxSeq0 = case ets:lookup(Idx, seq) of
+                  [{seq, S}] when is_integer(S) -> S;
+                  _ -> 0
+              end,
+    Entries = ets:tab2list(Tab),
+    ets:delete_all_objects(Idx),
+    MaxSeq = lists:foldl(fun({Key, Seq, _}, Max) when is_integer(Seq) ->
+                                 ets:insert(Idx, {Seq, Key}),
+                                 max(Max, Seq);
+                            (_, Max) -> Max
+                         end, MaxSeq0, Entries),
+    ets:insert(Idx, {seq, MaxSeq}),
+    ok.
+
+logs_start(#{tabs := Tabs} = St) ->
+    sync_group_store(maps:get(crashes, Tabs)),
+    sync_group_store(maps:get(restarts, Tabs)),
+    Ref = atomics:new(4, [{signed, true}]),
     atomics:put(Ref, ?A_INFLIGHT, 0),
     atomics:put(Ref, ?A_MAXSEV, ?SEV_ALL),
-    Worker = spawn_opt(fun() -> collector_init(Tabs, Ref) end,
-                       [link, {max_heap_size, #{size => ?LOG_HEAP_WORDS, kill => true,
-                                                error_logger => false}}]),
+    Sinks = lager_sinks(),
+    Redirected = Sinks =/= [] andalso lager_redirects(),
+    Worker = spawn_opt(fun() -> collector_init(Tabs, Ref, Redirected) end,
+                       [link, {priority, low},
+                        {max_heap_size, #{size => ?LOG_HEAP_WORDS, kill => true,
+                                          error_logger => false}}]),
+    Attached = lager_attach(Ref, Worker),
+    case Attached =/= [] andalso Redirected of
+        true -> ok;
+        false when Redirected -> Worker ! {redirected, false};
+        _ -> ok
+    end,
     Config = #{level => all, filter_default => log, filters => [],
                config => #{ref => Ref, collector => Worker}},
     case logger:add_handler(?LOGS, ?MODULE, Config) of
         ok ->
-            Sinks = lager_attach(Ref, Worker),
-            Worker ! {redirected, Sinks =/= [] andalso lager_redirects()},
-            St#{worker := Worker, status := running, reason := null, lager := Sinks};
+            St#{ref := Ref, worker := Worker, status := running, reason := null, lager := Attached};
         {error, Reason} ->
+            remove_log_handler(),
             unlink(Worker),
             exit(Worker, kill),
-            St#{worker := undefined, status := stopped, reason := fmt(Reason),
-                stopped_at := now_ms()}
+            St#{ref := Ref, worker := undefined, status := stopped, reason := fmt(Reason),
+                stopped_at := now_ms(), lager := []}
     end.
 
 logs_loop(#{last_read := LastRead} = St) ->
@@ -2052,7 +2514,11 @@ logs_loop(#{last_read := LastRead} = St) ->
 logs_owner(Owner, #{owners := Owners} = St) ->
     case lists:member(Owner, Owners) of
         true -> St;
-        false -> erlang:monitor_node(Owner, true), St#{owners := [Owner | Owners]}
+        false ->
+            case monitor_owner(Owner) of
+                true -> St#{owners := [Owner | Owners]};
+                false -> St
+            end
     end.
 
 %% Notices a handler logger removed (it crashed), and replaces a collector
@@ -2139,9 +2605,10 @@ next_seq([], Since) -> Since;
 next_seq(Rows, _Since) -> maps:get(seq, lists:last(Rows)).
 
 %% The collector formats events and fills the rings.
-collector_init(Tabs, Ref) ->
+collector_init(Tabs, Ref, Redirected) ->
+    {ok, CrashRe} = re:compile("<\\d+\\.\\d+\\.\\d+>|#Ref<[\\d.]+>|#Port<[\\d.]+>"),
     collector_loop(#{tabs => Tabs, ref => Ref, sec => 0, n => 0, limited_sec => undefined,
-                     redirected => false}).
+                     redirected => Redirected, crash_re => CrashRe}).
 
 collector_loop(#{ref := Ref} = St) ->
     receive
@@ -2244,7 +2711,8 @@ store_log(#{level := Level, msg := Msg, meta := Meta} = Event, #{tabs := Tabs} =
     end,
     case crash_info(Msg, Meta) of
         none -> ok;
-        {crash, Who, Pid, Class, Reason, Stack} -> store_crash(Who, Pid, Class, Reason, Stack, Time, Tabs);
+        {crash, Who, Pid, Class, Reason, Stack} ->
+            store_crash(Who, Pid, Class, Reason, Stack, Time, Tabs, maps:get(crash_re, St));
         {restart, Ctx, Sup, Child, Reason} -> store_restart(Ctx, Sup, Child, Reason, Time, Tabs)
     end.
 
@@ -2260,7 +2728,8 @@ store_line(Line, Tabs) ->
 %% lager hands over the message already formatted (chardata). A message
 %% formatted with ~s from UTF-8 bytes arrives as one char per byte; it is
 %% shown decoded when the bytes are valid UTF-8.
-lager_text(Message) ->
+lager_text(Message0) ->
+    Message = pre_slice_bin(Message0, ?LOG_TEXT_CHARS * 16),
     Chars = try unicode:characters_to_list(Message) of
                 L when is_list(L) -> L;
                 _ -> lager_text_fallback(Message)
@@ -2279,6 +2748,11 @@ lager_text(Message) ->
                    Head
            end,
     clip(string:trim(Text, trailing), ?LOG_TEXT_CHARS).
+
+pre_slice_bin(Bin, MaxBytes) when is_binary(Bin), byte_size(Bin) > MaxBytes ->
+    binary:part(Bin, 0, MaxBytes);
+pre_slice_bin(Other, _) ->
+    Other.
 
 lager_text_fallback(Message) ->
     unicode:characters_to_list(limited(Message, ?LOG_TEXT_CHARS)).
@@ -2346,11 +2820,10 @@ crash_info(_Msg, _Meta) ->
 
 %% Crashes with the same process (name or initial call) and the same
 %% reason, pids and refs aside, are one group with a count.
-store_crash(Who, Pid, Class, Reason0, Stack0, Time, #{crashes := Store}) ->
+store_crash(Who, Pid, Class, Reason0, Stack0, Time, #{crashes := Store}, CrashRe) ->
     {Reason, Stack} = split_stack(Reason0, Stack0),
     Line = one_line(limited(Reason, 600), 300),
-    Key = {Who, re:replace(Line, "<\\d+\\.\\d+\\.\\d+>|#Ref<[\\d.]+>|#Port<[\\d.]+>", "_",
-                           [global, {return, binary}])},
+    Key = {Who, re:replace(Line, CrashRe, "_", [global, {return, binary}])},
     group_put(Store, Key, fun(Old) ->
         Base = case Old of
                    undefined -> #{id => erlang:unique_integer([positive]), who => Who, count => 0,
@@ -2370,9 +2843,10 @@ store_crash(Who, Pid, Class, Reason0, Stack0, Time, #{crashes := Store}) ->
 %% that call erlang:error/1 directly have an empty one.
 split_stack({Reason, []}, []) ->
     {Reason, []};
-split_stack({Reason, [F | _] = Stack}, _) when is_list(Stack) ->
+split_stack({Reason, [F | _] = Stack}, Stack0) when is_list(Stack) ->
     case is_frame(F) of
         true -> {Reason, Stack};
+        false when is_list(Stack0) -> {{Reason, Stack}, Stack0};
         false -> {{Reason, Stack}, []}
     end;
 split_stack(Reason, Stack) when is_list(Stack) ->
@@ -2427,26 +2901,39 @@ sup_name({Pid, Mod}) when is_pid(Pid), is_atom(Mod) -> bin(io_lib:format("~s ~s"
 sup_name(Other) -> fmt(Other).
 
 %% Inserts or updates the group under Key with Fun(Old | undefined); when
-%% the store is full the group changed longest ago makes room.
+%% the store is full the group changed longest ago makes room. Evaluates
+%% Fun(Old) before mutating ETS so an exception or heap-kill cannot leave
+%% Tab and Idx out of sync, and never evicts the `seq` counter entry.
 group_put(#{tab := Tab, idx := Idx}, Key, Fun) ->
+    {Old, OldSeq} = case ets:lookup(Tab, Key) of
+                        [{_, S, G}] -> {G, S};
+                        [] -> {undefined, undefined}
+                    end,
+    New = Fun(Old),
     Seq = ets:update_counter(Idx, seq, 1),
-    Old = case ets:lookup(Tab, Key) of
-              [{_, OldSeq, G}] ->
-                  ets:delete(Idx, OldSeq),
-                  G;
-              [] ->
-                  case ets:info(Tab, size) >= ?LOG_GROUPS of
-                      true ->
-                          First = ets:first(Idx),
-                          [{_, K}] = ets:lookup(Idx, First),
-                          ets:delete(Idx, First),
-                          ets:delete(Tab, K);
-                      false ->
-                          ok
-                  end,
-                  undefined
-          end,
-    ets:insert(Tab, {Key, Seq, Fun(Old)}),
+    case OldSeq of
+        undefined ->
+            case ets:info(Tab, size) >= ?LOG_GROUPS of
+                true ->
+                    case ets:first(Idx) of
+                        First when is_integer(First) ->
+                            case ets:lookup(Idx, First) of
+                                [{_, K}] ->
+                                    ets:delete(Idx, First),
+                                    ets:delete(Tab, K);
+                                [] ->
+                                    ok
+                            end;
+                        _ ->
+                            ok
+                    end;
+                false ->
+                    ok
+            end;
+        _ ->
+            ets:delete(Idx, OldSeq)
+    end,
+    ets:insert(Tab, {Key, Seq, New}),
     ets:insert(Idx, {Seq, Key}).
 
 now_ms() ->
@@ -2561,12 +3048,13 @@ lf_files() ->
                                M =:= logger_std_h orelse M =:= logger_disk_log_h,
                                is_list(F),
                                L <- [maps:get(level, H, all)]],
-    Seen = lists:foldl(fun({F, S, L}, Acc) ->
-                               case lists:keymember(F, 1, Acc) of
-                                   true -> Acc;
-                                   false -> Acc ++ [{F, S, L}]
-                               end
-                       end, [], Lager ++ Crash ++ Logger),
+    Seen = lists:reverse(
+             lists:foldl(fun({F, S, L}, Acc) ->
+                                 case lists:keymember(F, 1, Acc) of
+                                     true -> Acc;
+                                     false -> [{F, S, L} | Acc]
+                                 end
+                         end, [], Lager ++ Crash ++ Logger)),
     lists:append([lf_rotations(F, S, L) || {F, S, L} <- Seen]).
 
 %% Files of lager's file backends in Sink. The path a backend writes to
@@ -2603,14 +3091,49 @@ lf_handler_states(Sink) ->
         []
     end.
 
-%% Top-level fields of a handler state that name an existing file.
-lf_state_paths(State) when is_tuple(State), tuple_size(State) > 1 ->
-    lists:usort([P || E <- tl(tuple_to_list(State)),
-                      F <- [lf_name(E)], F =/= none,
-                      P <- [lf_lager_path(F)],
-                      filelib:is_regular(P)]);
+%% Only inspect the file-name slot (element 2) of `#state{name = File, ...}`
+%% records (matching lager_file_backend and its renamed copies), never
+%% arbitrary fields of unrelated handlers (TLS keys, credentials, configs).
+lf_state_paths(State) when is_tuple(State), tuple_size(State) >= 2, element(1, State) =:= state ->
+    case lf_name(element(2, State)) of
+        none ->
+            [];
+        F ->
+            P = lf_lager_path(F),
+            case lf_allowed_state_file(P) of
+                true -> [P];
+                false -> []
+            end
+    end;
 lf_state_paths(_) ->
     [].
+
+lf_allowed_state_file(Path) ->
+    not lf_blocked_ext(Path)
+        andalso lf_regular_no_symlink(Path)
+        andalso lf_in_log_root_or_log_ext(Path).
+
+lf_regular_no_symlink(Path) ->
+    case file:read_link_info(Path) of
+        {ok, Info} -> element(3, Info) =:= regular;
+        _ -> false
+    end.
+
+lf_blocked_ext(Path) ->
+    Ext = string:lowercase(filename:extension(Path)),
+    lists:member(Ext, [".key", ".pem", ".crt", ".cer", ".p12", ".pfx", ".der",
+                       ".jks", ".config", ".args", ".cookie", ".eterm", ".beam",
+                       ".erl", ".hrl"]).
+
+lf_in_log_root_or_log_ext(Path) ->
+    case application:get_env(lager, log_root) of
+        {ok, Root} when is_list(Root), Root =/= "" ->
+            AbsRoot = filename:absname(Root),
+            lists:prefix(AbsRoot ++ "/", Path) orelse lists:prefix(AbsRoot ++ "\\", Path)
+                orelse string:lowercase(filename:extension(Path)) =:= ".log";
+        _ ->
+            true
+    end.
 
 lf_name(B) when is_binary(B), byte_size(B) > 0, byte_size(B) < 4096 ->
     case unicode:characters_to_list(B) of
@@ -2723,20 +3246,28 @@ lf_size(Path) ->
 
 %% Bytes [From, From + Len) of the uncompressed data of a .gz file, and
 %% whether that reached its end.
+lf_gz_range(_Path, From, Len) when From < 0; Len < 0 ->
+    {error, badarg};
 lf_gz_range(Path, From, Len) when From + Len > ?LF_GZ_MAX ->
     case From >= ?LF_GZ_MAX of
         true -> {error, gz_too_far};
         false -> lf_gz_range(Path, From, ?LF_GZ_MAX - From)
     end;
 lf_gz_range(Path, From, Len) ->
-    {ok, Fd} = file:open(Path, [read, raw, binary]),
-    Z = zlib:open(),
-    try
-        ok = zlib:inflateInit(Z, 31),
-        lf_gz_loop(Fd, Z, 0, From, From + Len, [])
-    after
-        catch zlib:close(Z),
-        file:close(Fd)
+    case file:open(Path, [read, raw, binary]) of
+        {ok, Fd} ->
+            Z = zlib:open(),
+            try
+                ok = zlib:inflateInit(Z, 31),
+                lf_gz_loop(Fd, Z, 0, From, From + Len, [])
+            catch _:_ ->
+                {error, bad_gz}
+            after
+                catch zlib:close(Z),
+                file:close(Fd)
+            end;
+        {error, _} = E ->
+            E
     end.
 
 lf_gz_loop(Fd, Z, At, From, To, Acc) ->
@@ -2755,14 +3286,16 @@ lf_gz_loop(Fd, Z, At, From, To, Acc) ->
                 false -> lf_gz_loop(Fd, Z, Next, From, To, [Keep | Acc])
             end;
         eof ->
-            {ok, iolist_to_binary(lists:reverse(Acc)), true}
+            {ok, iolist_to_binary(lists:reverse(Acc)), true};
+        {error, _} = E ->
+            E
     end.
 
 %% Pages
 
 lf_read(#{gz := true, path := P}, Pos, _Dir, Bytes) ->
     Start = case Pos of
-                N when is_integer(N) -> N;
+                N when is_integer(N), N >= 0 -> N;
                 _ -> 0
             end,
     case lf_gz_range(P, Start, Bytes) of
@@ -2783,29 +3316,37 @@ lf_read(#{path := P}, Pos, Dir, Bytes) ->
     case Dir of
         back ->
             End = case Pos of
-                      N when is_integer(N) -> min(N, Size);
+                      N when is_integer(N), N >= 0 -> min(N, Size);
                       _ -> Size
                   end,
             Start0 = max(0, End - Bytes),
-            {ok, Bin} = lf_pread(P, Start0, End - Start0),
-            {Start, Body} = case Start0 of
-                                0 -> {0, Bin};
-                                _ -> lf_from_first_nl(Start0, Bin)
-                            end,
-            {ok, #{size => Size, start => Start, stop => End, gz => false,
-                   entries => lf_entries(Body, Start)}};
+            case lf_pread(P, Start0, End - Start0) of
+                {ok, Bin} ->
+                    {Start, Body} = case Start0 of
+                                        0 -> {0, Bin};
+                                        _ -> lf_from_first_nl(Start0, Bin)
+                                    end,
+                    {ok, #{size => Size, start => Start, stop => End, gz => false,
+                           entries => lf_entries(Body, Start)}};
+                {error, _} = E ->
+                    E
+            end;
         fwd ->
             Start = case Pos of
-                        N when is_integer(N) -> lf_entry_start(P, min(N, Size));
+                        N when is_integer(N), N >= 0 -> lf_entry_start(P, min(N, Size));
                         _ -> 0
                     end,
-            {ok, Bin} = lf_pread(P, Start, min(Bytes, Size - Start)),
-            Body = case Start + byte_size(Bin) >= Size of
-                       true -> Bin;
-                       false -> lf_upto_last_nl(Bin)
-                   end,
-            {ok, #{size => Size, start => Start, stop => Start + byte_size(Body), gz => false,
-                   entries => lf_entries(Body, Start)}}
+            case lf_pread(P, Start, min(Bytes, Size - Start)) of
+                {ok, Bin} ->
+                    Body = case Start + byte_size(Bin) >= Size of
+                               true -> Bin;
+                               false -> lf_upto_last_nl(Bin)
+                           end,
+                    {ok, #{size => Size, start => Start, stop => Start + byte_size(Body), gz => false,
+                           entries => lf_entries(Body, Start)}};
+                {error, _} = E ->
+                    E
+            end
     end.
 
 %% A page that would start inside a multi-line entry (a stack trace
@@ -2815,21 +3356,29 @@ lf_entry_start(_P, 0) ->
     0;
 lf_entry_start(P, Pos) ->
     {ok, Re} = lf_header_re(),
-    {ok, Line} = lf_pread(P, Pos, 512),
-    case lf_header(Line, Re) of
-        {ok, _} ->
-            Pos;
-        none ->
-            From = max(0, Pos - ?LF_PROBE),
-            {ok, Bin} = lf_pread(P, From, Pos - From),
-            {Start, Body} = case From of
-                                0 -> {0, Bin};
-                                _ -> lf_from_first_nl(From, Bin)
-                            end,
-            case [At || {At, L} <- lf_lines(Body, Start), lf_header(L, Re) =/= none] of
-                [] -> Pos;
-                Heads -> lists:last(Heads)
-            end
+    case lf_pread(P, Pos, 512) of
+        {ok, Line} ->
+            case lf_header(Line, Re) of
+                {ok, _} ->
+                    Pos;
+                none ->
+                    From = max(0, Pos - ?LF_PROBE),
+                    case lf_pread(P, From, Pos - From) of
+                        {ok, Bin} ->
+                            {Start, Body} = case From of
+                                                0 -> {0, Bin};
+                                                _ -> lf_from_first_nl(From, Bin)
+                                            end,
+                            case [At || {At, L} <- lf_lines(Body, Start), lf_header(L, Re) =/= none] of
+                                [] -> Pos;
+                                Heads -> lists:last(Heads)
+                            end;
+                        _ ->
+                            Pos
+                    end
+            end;
+        _ ->
+            Pos
     end.
 
 %% Drops a partial first line (unless the chunk is one long line).
@@ -2841,10 +3390,18 @@ lf_from_first_nl(Start, Bin) ->
             {Start, Bin}
     end.
 
+%% O(last_line_len) backward scan with zero heap allocation.
 lf_upto_last_nl(Bin) ->
-    case binary:matches(Bin, <<"\n">>) of
-        [] -> Bin;
-        Ms -> {I, 1} = lists:last(Ms), binary:part(Bin, 0, I + 1)
+    case lf_last_nl(Bin, byte_size(Bin) - 1) of
+        nomatch -> Bin;
+        I -> binary:part(Bin, 0, I + 1)
+    end.
+
+lf_last_nl(_Bin, I) when I < 0 -> nomatch;
+lf_last_nl(Bin, I) ->
+    case binary:at(Bin, I) of
+        $\n -> I;
+        _ -> lf_last_nl(Bin, I - 1)
     end.
 
 %% Lines with their positions; a line that does not start with a
@@ -2914,9 +3471,11 @@ lf_null(B) -> B.
 
 %% Text as shown: UTF-8, also when it was written as UTF-8 bytes taken
 %% for latin1 characters (one char per byte, then encoded again).
-lf_text(Bin) ->
+lf_text(Bin0) ->
+    Bin = pre_slice_bin(Bin0, ?LF_ENTRY_CHARS * 8),
     Chars = case unicode:characters_to_list(Bin, utf8) of
                 L when is_list(L) -> lf_undouble(L);
+                {incomplete, L, _} -> lf_undouble(L);
                 _ -> binary_to_list(Bin)
             end,
     clip(Chars, ?LF_ENTRY_CHARS).
@@ -2948,25 +3507,33 @@ lf_seek(P, Re, Time, Lo, Hi) when Hi - Lo > ?LF_PROBE ->
         none -> lf_seek(P, Re, Time, Mid, Hi)
     end;
 lf_seek(P, Re, Time, Lo, Hi) ->
-    {ok, Bin} = lf_pread(P, Lo, Hi - Lo + ?LF_PROBE),
-    {Start, Body} = case Lo of
-                        0 -> {0, Bin};
-                        _ -> lf_from_first_nl(Lo, Bin)
-                    end,
-    Found = [Pos || {Pos, Line} <- lf_lines(Body, Start),
-                    {ok, #{t := T}} <- [lf_header(Line, Re)], T >= Time],
-    case Found of
-        [Pos | _] -> Pos;
-        [] -> min(Hi, lf_size(P))
+    case lf_pread(P, Lo, Hi - Lo + ?LF_PROBE) of
+        {ok, Bin} ->
+            {Start, Body} = case Lo of
+                                0 -> {0, Bin};
+                                _ -> lf_from_first_nl(Lo, Bin)
+                            end,
+            Found = [Pos || {Pos, Line} <- lf_lines(Body, Start),
+                            {ok, #{t := T}} <- [lf_header(Line, Re)], T >= Time],
+            case Found of
+                [Pos | _] -> Pos;
+                [] -> min(Hi, lf_size(P))
+            end;
+        _ ->
+            min(Hi, lf_size(P))
     end.
 
 lf_first_time(P, Re, At) ->
-    {ok, Bin} = lf_pread(P, At, ?LF_PROBE),
-    {Start, Body} = lf_from_first_nl(At, Bin),
-    case [{T, Pos} || {Pos, Line} <- lf_lines(Body, Start),
-                      {ok, #{t := T}} <- [lf_header(Line, Re)]] of
-        [First | _] -> First;
-        [] -> none
+    case lf_pread(P, At, ?LF_PROBE) of
+        {ok, Bin} ->
+            {Start, Body} = lf_from_first_nl(At, Bin),
+            case [{T, Pos} || {Pos, Line} <- lf_lines(Body, Start),
+                              {ok, #{t := T}} <- [lf_header(Line, Re)]] of
+                [First | _] -> First;
+                [] -> none
+            end;
+        _ ->
+            none
     end.
 
 %% Search
@@ -2984,89 +3551,220 @@ lf_search(File, Pos, Dir, Text, MinLevel) ->
     case File of
         #{gz := true, path := P} ->
             Start = case Pos of
-                        N when is_integer(N) -> N;
+                        N when is_integer(N), N >= 0 -> N;
                         _ -> 0
                     end,
-            case lf_gz_range(P, Start, min(?LF_SCAN, ?LF_GZ_MAX)) of
-                {ok, Bin, Eof} ->
-                    Body = case Eof of true -> Bin; false -> lf_upto_last_nl(Bin) end,
-                    Hits = lf_hits(Body, Start, Pattern, Re, MaxSev, ?LF_HITS),
-                    Next = case Eof orelse Start + byte_size(Body) >= ?LF_GZ_MAX of
-                               true -> null;
-                               false -> Start + byte_size(Body)
-                           end,
-                    {ok, #{hits => Hits, next => Next, scanned => byte_size(Body)}};
-                {error, _} = E ->
-                    E
-            end;
+            lf_gz_search(P, Start, Pattern, Re, MaxSev, Deadline);
         #{path := P} ->
             Size = lf_size(P),
             Start = case {Pos, Dir} of
-                        {N, _} when is_integer(N) -> min(N, Size);
+                        {N, _} when is_integer(N), N >= 0 -> min(N, Size);
                         {_, back} -> Size;
                         {_, fwd} -> 0
                     end,
-            lf_scan(P, Size, Start, Dir, Pattern, Re, MaxSev, Deadline, 0, [])
+            lf_scan(P, Size, Start, Dir, Pattern, Re, MaxSev, Deadline, 0, 0, [])
     end.
 
-lf_scan(_P, _Size, At, _Dir, _Pat, _Re, _Sev, _Deadline, Scanned, Hits)
-  when length(Hits) >= ?LF_HITS ->
-    {ok, #{hits => lists:sublist(Hits, ?LF_HITS), next => At, scanned => Scanned}};
-lf_scan(P, Size, At, Dir, Pat, Re, Sev, Deadline, Scanned, Hits) ->
+%% Streams a .gz log file chunk by chunk instead of decompressing up to
+%% 64 MB at once, enforcing both the hit limit and scan deadline.
+lf_gz_search(_P, Start, _Pat, _Re, _Sev, _Deadline) when Start >= ?LF_GZ_MAX ->
+    {error, gz_too_far};
+lf_gz_search(P, Start, Pat, Re, Sev, Deadline) ->
+    LimitEnd = min(?LF_GZ_MAX, Start + ?LF_SCAN),
+    case file:open(P, [read, raw, binary]) of
+        {ok, Fd} ->
+            Z = zlib:open(),
+            try
+                ok = zlib:inflateInit(Z, 31),
+                lf_gz_search_loop(Fd, Z, 0, Start, LimitEnd, <<>>, Pat, Re, Sev, Deadline, 0, 0, [])
+            catch _:_ ->
+                {error, bad_gz}
+            after
+                catch zlib:close(Z),
+                file:close(Fd)
+            end;
+        {error, _} = E ->
+            E
+    end.
+
+lf_gz_search_loop(Fd, Z, At, Start, LimitEnd, Carry, Pat, Re, Sev, Deadline, Scanned, Count, HitsRev) ->
+    case Count >= ?LF_HITS orelse At >= LimitEnd orelse now_ms() > Deadline of
+        true ->
+            Next = case At >= ?LF_GZ_MAX of
+                       true -> null;
+                       false -> At - byte_size(Carry)
+                   end,
+            {ok, #{hits => lists:reverse(HitsRev), next => Next, scanned => Scanned}};
+        false ->
+            case file:read(Fd, 65536) of
+                {ok, In} ->
+                    Out = iolist_to_binary(zlib:inflate(Z, In)),
+                    NextAt = At + byte_size(Out),
+                    case NextAt =< Start of
+                        true ->
+                            lf_gz_search_loop(Fd, Z, NextAt, Start, LimitEnd, <<>>, Pat, Re, Sev,
+                                              Deadline, Scanned, Count, HitsRev);
+                        false ->
+                            Skip = max(Start - At, 0),
+                            Take = min(byte_size(Out), LimitEnd - At) - Skip,
+                            Slice = binary:part(Out, Skip, max(0, Take)),
+                            Buf = <<Carry/binary, Slice/binary>>,
+                            BufFrom = At + Skip - byte_size(Carry),
+                            {Complete, Carry1} = lf_split_tail(Buf),
+                            Left = ?LF_HITS - Count,
+                            {Found, ResumeOff} = lf_hits(Complete, BufFrom, fwd, Pat, Re, Sev, Left),
+                            Count1 = Count + length(Found),
+                            HitsRev1 = lists:reverse(Found, HitsRev),
+                            Scanned1 = Scanned + byte_size(Complete),
+                            case ResumeOff of
+                                {more, NextPos} ->
+                                    {ok, #{hits => lists:reverse(HitsRev1), next => NextPos,
+                                           scanned => Scanned1}};
+                                done ->
+                                    lf_gz_search_loop(Fd, Z, NextAt, Start, LimitEnd, Carry1,
+                                                      Pat, Re, Sev, Deadline, Scanned1, Count1, HitsRev1)
+                            end
+                    end;
+                eof ->
+                    {Found, _} = lf_hits(Carry, At - byte_size(Carry), fwd, Pat, Re, Sev, ?LF_HITS - Count),
+                    HitsRev1 = lists:reverse(Found, HitsRev),
+                    {ok, #{hits => lists:reverse(HitsRev1), next => null,
+                           scanned => Scanned + byte_size(Carry)}};
+                {error, _} = E ->
+                    E
+            end
+    end.
+
+lf_split_tail(Buf) ->
+    case lf_last_nl(Buf, byte_size(Buf) - 1) of
+        nomatch when byte_size(Buf) > ?LF_ENTRY_CHARS * 8 ->
+            {Buf, <<>>};
+        nomatch ->
+            {<<>>, Buf};
+        I ->
+            {binary:part(Buf, 0, I + 1), binary:part(Buf, I + 1, byte_size(Buf) - I - 1)}
+    end.
+
+lf_scan(_P, _Size, At, _Dir, _Pat, _Re, _Sev, _Deadline, Scanned, Count, HitsRev)
+  when Count >= ?LF_HITS ->
+    {ok, #{hits => lists:reverse(HitsRev), next => At, scanned => Scanned}};
+lf_scan(P, Size, At, Dir, Pat, Re, Sev, Deadline, Scanned, Count, HitsRev) ->
     Done = case Dir of
                fwd -> At >= Size;
                back -> At =< 0
            end,
     case Done of
         true ->
-            {ok, #{hits => Hits, next => null, scanned => Scanned}};
+            {ok, #{hits => lists:reverse(HitsRev), next => null, scanned => Scanned}};
         false ->
             case Scanned + ?LF_CHUNK > ?LF_SCAN orelse now_ms() > Deadline of
                 true ->
-                    {ok, #{hits => Hits, next => At, scanned => Scanned}};
+                    {ok, #{hits => lists:reverse(HitsRev), next => At, scanned => Scanned}};
                 false ->
-                    {From, Body, Next} =
-                        case Dir of
-                            fwd ->
-                                {ok, B} = lf_pread(P, At, min(?LF_CHUNK, Size - At)),
-                                B1 = case At + byte_size(B) >= Size of
-                                         true -> B;
-                                         false -> lf_upto_last_nl(B)
-                                     end,
-                                {At, B1, At + byte_size(B1)};
-                            back ->
-                                S0 = max(0, At - ?LF_CHUNK),
-                                {ok, B} = lf_pread(P, S0, At - S0),
-                                {S, B1} = case S0 of
-                                              0 -> {0, B};
-                                              _ -> lf_from_first_nl(S0, B)
-                                          end,
-                                {S, B1, S}
-                        end,
-                    Left = ?LF_HITS - length(Hits),
-                    Found = lf_hits(Body, From, Pat, Re, Sev, Left),
-                    Hits1 = case Dir of
-                                fwd -> Hits ++ Found;
-                                back -> Hits ++ lists:reverse(Found)
-                            end,
-                    lf_scan(P, Size, Next, Dir, Pat, Re, Sev, Deadline,
-                            Scanned + byte_size(Body), Hits1)
+                    ReadRes = case Dir of
+                                  fwd ->
+                                      case lf_pread(P, At, min(?LF_CHUNK, Size - At)) of
+                                          {ok, <<>>} -> eof;
+                                          {ok, B} ->
+                                              B1 = case At + byte_size(B) >= Size of
+                                                       true -> B;
+                                                       false -> lf_upto_last_nl(B)
+                                                   end,
+                                              {ok, At, B1, At + byte_size(B1)};
+                                          {error, _} = Err -> Err
+                                      end;
+                                  back ->
+                                      S0 = max(0, At - ?LF_CHUNK),
+                                      case lf_pread(P, S0, At - S0) of
+                                          {ok, <<>>} -> eof;
+                                          {ok, B} ->
+                                              {S, B1} = case S0 of
+                                                            0 -> {0, B};
+                                                            _ -> lf_from_first_nl(S0, B)
+                                                        end,
+                                              {ok, S, B1, S};
+                                          {error, _} = Err -> Err
+                                      end
+                              end,
+                    case ReadRes of
+                        eof ->
+                            {ok, #{hits => lists:reverse(HitsRev), next => null, scanned => Scanned}};
+                        {error, _} = E ->
+                            E;
+                        {ok, From, Body, ChunkNext} ->
+                            Left = ?LF_HITS - Count,
+                            {Found, Resume} = lf_hits(Body, From, Dir, Pat, Re, Sev, Left),
+                            Count1 = Count + length(Found),
+                            HitsRev1 = lists:reverse(Found, HitsRev),
+                            Scanned1 = Scanned + byte_size(Body),
+                            case Resume of
+                                {more, ResumeAt} ->
+                                    {ok, #{hits => lists:reverse(HitsRev1), next => ResumeAt,
+                                           scanned => Scanned1}};
+                                done ->
+                                    lf_scan(P, Size, ChunkNext, Dir, Pat, Re, Sev, Deadline,
+                                            Scanned1, Count1, HitsRev1)
+                            end
+                    end
             end
     end.
 
-lf_hits(Body, From, Pat, Re, MaxSev, Max) ->
-    case binary:match(Body, Pat) of
+%% Finds up to Max matching lines in Body without splitting non-matching lines.
+%% Returns {HitsInDirOrder, done | {more, ResumePos}}.
+lf_hits(_Body, _From, _Dir, _Pat, _Re, _MaxSev, Max) when Max =< 0 ->
+    {[], done};
+lf_hits(Body, From, Dir, Pat, Re, MaxSev, Max) ->
+    RangesRev = lf_match_lines(Body, Pat, 0, byte_size(Body), []),
+    Ordered = case Dir of
+                  back -> RangesRev;
+                  fwd -> lists:reverse(RangesRev)
+              end,
+    lf_take_hits(Ordered, Body, From, Dir, Re, MaxSev, Max, []).
+
+lf_match_lines(_Body, _Pat, Cursor, Size, Acc) when Cursor >= Size ->
+    Acc;
+lf_match_lines(Body, Pat, Cursor, Size, Acc) ->
+    case binary:match(Body, Pat, [{scope, {Cursor, Size - Cursor}}]) of
         nomatch ->
-            [];
-        _ ->
-            Lines = [{Pos, L} || {Pos, L} <- lf_lines(Body, From), binary:match(L, Pat) =/= nomatch],
-            Hits = [E || {Pos, L} <- Lines,
-                         E <- [lf_entry(Pos, case lf_header(L, Re) of
-                                                 {ok, H} -> H;
-                                                 none -> none
-                                             end, [L])],
-                         lf_level_ok(E, MaxSev)],
-            lists:sublist(Hits, Max)
+            Acc;
+        {P, _Len} ->
+            Start = case lf_last_nl(Body, P - 1) of
+                        nomatch -> 0;
+                        I -> I + 1
+                    end,
+            {End, NextCursor} =
+                case binary:match(Body, <<"\n">>, [{scope, {P, Size - P}}]) of
+                    {Q, 1} -> {Q, Q + 1};
+                    nomatch -> {Size, Size}
+                end,
+            lf_match_lines(Body, Pat, NextCursor, Size, [{Start, End} | Acc])
+    end.
+
+lf_take_hits([], _Body, _From, _Dir, _Re, _MaxSev, _Left, Acc) ->
+    {lists:reverse(Acc), done};
+lf_take_hits([{Start, End} | Rest], Body, From, Dir, Re, MaxSev, Left, Acc) ->
+    Line = binary:part(Body, Start, End - Start),
+    Hdr = case lf_header(Line, Re) of
+              {ok, H} -> H;
+              none -> none
+          end,
+    Entry = lf_entry(From + Start, Hdr, [Line]),
+    case lf_level_ok(Entry, MaxSev) of
+        true when Left =:= 1 ->
+            case Rest of
+                [] ->
+                    {lists:reverse([Entry | Acc]), done};
+                _ ->
+                    Resume = case Dir of
+                                 fwd -> From + min(byte_size(Body), End + 1);
+                                 back -> From + Start
+                             end,
+                    {lists:reverse([Entry | Acc]), {more, Resume}}
+            end;
+        true ->
+            lf_take_hits(Rest, Body, From, Dir, Re, MaxSev, Left - 1, [Entry | Acc]);
+        false ->
+            lf_take_hits(Rest, Body, From, Dir, Re, MaxSev, Left, Acc)
     end.
 
 lf_level_ok(_E, ?SEV_ALL) -> true;
@@ -3122,8 +3820,10 @@ alloc_section({Kind, Data}, Acc) when is_list(Data) ->
                              {carriers_size, C} -> {C, C};
                              _ -> {0, 0}
                          end,
-            BK = list_to_atom(atom_to_list(Prefix) ++ "_blocks"),
-            CK = list_to_atom(atom_to_list(Prefix) ++ "_carriers"),
+            {BK, CK} = case Prefix of
+                           sbcs -> {sbcs_blocks, sbcs_carriers};
+                           mbcs -> {mbcs_blocks, mbcs_carriers}
+                       end,
             Acc#{BK := maps:get(BK, Acc) + BS,
                  CK := maps:get(CK, Acc) + CS,
                  carriers_max := maps:get(carriers_max, Acc) + CMax}
@@ -3190,7 +3890,7 @@ typed_size(_) ->
 %% skip), the thresholds used and the processes or tables involved. The
 %% tool turns ids and numbers into readable text.
 diag_check(Owner) ->
-    diag_run(Owner, ?DIAG_CHECK_HEAP_WORDS, ?DIAG_CHECK_MS, fun check/0).
+    diag_run(Owner, max(?DIAG_CHECK_HEAP_WORDS, recon_heap_words()), ?DIAG_CHECK_MS, fun check/0).
 
 %% Top N of processes by growth of reductions, memory and message queue
 %% over a window of Seconds (1..60).
@@ -3211,7 +3911,10 @@ diag_guard(Caller, Owner, HeapWords, Timeout, Fun) ->
     catch error:badarg -> exit({shutdown, {error, busy}})
     end,
     CRef = erlang:monitor(process, Caller),
-    erlang:monitor_node(Owner, true),
+    case monitor_owner(Owner) of
+        true -> ok;
+        false -> exit({shutdown, {error, owner_down}})
+    end,
     {Worker, WRef} = spawn_opt(fun() -> exit({shutdown, Fun()}) end,
                                [monitor, {priority, low},
                                 {max_heap_size, #{size => HeapWords, kill => true,
@@ -3322,15 +4025,19 @@ bin_scan(K, Min, Own) ->
     Top.
 
 bin_scan(Pids, Tab, {Min, Top}, Restarts) ->
+    process_flag(trap_exit, true),
     ets:insert(Tab, [{top, Top}, {at, none}]),
     {H, Ref} = spawn_opt(fun() -> exit({shutdown, bin_scan_loop(Pids, Tab, Min, Top)}) end,
                          [monitor, {priority, low},
                           {max_heap_size, #{size => bin_heap_words(Pids), kill => true,
                                             error_logger => false}}]),
+    try link(H) catch error:noproc -> ok end,
     receive
         {'DOWN', Ref, process, H, {shutdown, Done}} ->
+            flush_exit(H),
             Done;
         {'DOWN', Ref, process, H, killed} when Restarts < ?DIAG_BIN_RESTARTS ->
+            flush_exit(H),
             [{top, Top1}] = ets:lookup(Tab, top),
             case ets:lookup(Tab, at) of
                 [{at, P}] when is_pid(P) ->
@@ -3340,9 +4047,13 @@ bin_scan(Pids, Tab, {Min, Top}, Restarts) ->
                     Top1
             end;
         {'DOWN', Ref, process, H, _} ->
+            flush_exit(H),
             [{top, Top1}] = ets:lookup(Tab, top),
             Top1
     end.
+
+flush_exit(Pid) ->
+    receive {'EXIT', Pid, _} -> ok after 0 -> ok end.
 
 %% The helper also holds its copy of the pid list (a cons cell per pid),
 %% which must not count against the binaries it reads.
@@ -3705,16 +4416,20 @@ bin_leak(K) ->
 %% it is, and a process with too many binaries to read is skipped. Returns
 %% whether every process was visited.
 leak_run(Pids, Tab, Deadline, Restarts) ->
+    process_flag(trap_exit, true),
     ets:insert(Tab, {at, none}),
     Parent = self(),
     {H, Ref} = spawn_opt(fun() -> exit({shutdown, leak_loop(Pids, Tab, Parent, Deadline, 1)}) end,
                          [monitor, {priority, low},
                           {max_heap_size, #{size => bin_heap_words(Pids), kill => true,
                                             error_logger => false}}]),
+    try link(H) catch error:noproc -> ok end,
     receive
         {'DOWN', Ref, process, H, {shutdown, Done}} ->
+            flush_exit(H),
             Done;
         {'DOWN', Ref, process, H, killed} when Restarts < ?RECON_LEAK_RESTARTS ->
+            flush_exit(H),
             case ets:lookup(Tab, at) of
                 [{at, P}] when is_pid(P) ->
                     leak_skip(Tab, P, too_many_binaries, null),
@@ -3724,24 +4439,18 @@ leak_run(Pids, Tab, Deadline, Restarts) ->
                     false
             end;
         {'DOWN', Ref, process, H, _} ->
+            flush_exit(H),
             false
     end.
 
 leak_loop([], _Tab, _Parent, _Deadline, _I) ->
     true;
 leak_loop([P | Rest], Tab, Parent, Deadline, I) ->
-    %% The helper is not linked to the worker: it checks that the worker
-    %% (killed by the guard on timeout or when the tool leaves) is still
-    %% there, and pauses so the node's own work goes first.
-    Go = case I rem ?RECON_LEAK_BATCH of
-             0 ->
-                 timer:sleep(1),
-                 is_process_alive(Parent)
-                     andalso erlang:monotonic_time(millisecond) < Deadline;
-             _ ->
-                 true
-         end,
-    case Go of
+    case I rem ?RECON_LEAK_BATCH of
+        0 -> timer:sleep(1);
+        _ -> ok
+    end,
+    case erlang:monotonic_time(millisecond) < Deadline andalso is_process_alive(Parent) of
         false ->
             false;
         true ->
@@ -4056,6 +4765,9 @@ recon_scheduler_usage(Owner, Seconds) ->
     diag_run(Owner, ?DIAG_CHECK_HEAP_WORDS, S * 1000 + 10000, fun() -> scheduler_usage(S) end).
 
 scheduler_usage(Seconds) ->
+    %% Enable scheduler_wall_time on this worker too so another tool
+    %% disconnecting mid-measurement cannot disable it underneath us.
+    _ = erlang:system_flag(scheduler_wall_time, true),
     T0 = erlang:monotonic_time(millisecond),
     W0 = swt(),
     timer:sleep(Seconds * 1000),
@@ -4074,7 +4786,7 @@ scheduler_usage(Seconds) ->
             {ok, #{seconds => Elapsed,
                    schedulers => [#{id => Id, type => Type(Id),
                                     usage => case T1 - T00 of
-                                                 0 -> 0.0;
+                                                 DT when DT =< 0 -> 0.0;
                                                  DT -> min(1.0, max(0.0, (A1 - A0) / DT))
                                              end}
                                   || {Id, A1, T1} <- W1,

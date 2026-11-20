@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useQueryRef } from '../composables/useQueryRef'
 import { errorText } from '../api/errors'
-import { computed, ref, watch } from 'vue'
+import { computed, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NCard, NSpin, NEmpty, NAlert, NTag, NButton, NIcon, NScrollbar, NInput } from 'naive-ui'
 import { RefreshOutline, SearchOutline } from '@vicons/ionicons5'
@@ -18,64 +18,81 @@ const nodes = useNodes()
 const node = computed(() =>
   nodes.currentInfo?.status === 'connected' ? nodes.currentInfo.node : null)
 
-const apps = ref<AppInfo[]>([])
+const apps = shallowRef<AppInfo[]>([])
 const selectedApp = useQueryRef('app')
-const tree = ref<AppTree | null>(null)
+const tree = shallowRef<AppTree | null>(null)
 const loadingTree = ref(false)
 const error = ref<string | null>(null)
 const selectedPid = useQueryRef('pid')
 const search = ref('')
+let appsSeq = 0
+let treeSeq = 0
 
 const visibleApps = computed(() => {
   const q = search.value.trim().toLowerCase()
   return q ? apps.value.filter((a) => a.name.toLowerCase().includes(q)) : apps.value
 })
 
-async function loadApps() {
-  if (!node.value) return
+async function loadApps(): Promise<boolean> {
+  const n = node.value
+  const req = ++appsSeq
+  if (!n) return false
   try {
-    apps.value = await client.request<AppInfo[]>('apps.list', { node: node.value })
-    if (!selectedApp.value || !apps.value.some((a) => a.name === selectedApp.value)) {
-      const running = apps.value.filter((a) => a.running)
+    const res = await client.request<AppInfo[]>('apps.list', { node: n })
+    if (req !== appsSeq || node.value !== n) return false
+    apps.value = res
+    if (!selectedApp.value || !res.some((a) => a.name === selectedApp.value)) {
+      const running = res.filter((a) => a.running)
       selectedApp.value = (running.find((a) => a.name === 'kernel') ?? running[0])?.name ?? null
     }
+    return true
   } catch (e) {
-    error.value = errorText(e)
+    if (req === appsSeq && node.value === n) error.value = errorText(e)
+    return false
   }
 }
 
 async function loadTree() {
+  const n = node.value
   const app = apps.value.find((a) => a.name === selectedApp.value)
+  const req = ++treeSeq
   tree.value = null
   error.value = null
-  if (!node.value || !app || !app.running) return
+  if (!n || !app || !app.running) { loadingTree.value = false; return }
   loadingTree.value = true
   try {
-    tree.value = await client.request<AppTree>('apps.tree', { node: node.value, app: app.name }, 40000)
+    const res = await client.request<AppTree>('apps.tree', { node: n, app: app.name }, 40000)
+    if (req !== treeSeq || node.value !== n) return
+    tree.value = res
   } catch (e) {
-    error.value = errorText(e)
+    if (req === treeSeq && node.value === n) error.value = errorText(e)
   } finally {
-    loadingTree.value = false
+    if (req === treeSeq) loadingTree.value = false
   }
 }
 
 // Keep an ?app= from the URL on first load; a node switch starts over.
 watch(node, async (_, old) => {
+  appsSeq++
+  treeSeq++
   apps.value = []
+  tree.value = null
+  error.value = null
+  loadingTree.value = false
   if (old) selectedApp.value = null
   const before = selectedApp.value
-  await loadApps()
+  const ok = await loadApps()
   // An ?app= from the URL is already selected, so the watch below does not
   // fire for it; load its tree now that the list is known.
-  if (before && selectedApp.value === before) await loadTree()
+  if (ok && before && selectedApp.value === before) await loadTree()
 }, { immediate: true })
 watch(selectedApp, () => void loadTree())
 
 // Applications may have been started or stopped since the list was read.
 async function refreshAll() {
   const before = selectedApp.value
-  await loadApps()
-  if (selectedApp.value === before) await loadTree()
+  const ok = await loadApps()
+  if (ok && selectedApp.value === before) await loadTree()
 }
 
 const current = computed(() => apps.value.find((a) => a.name === selectedApp.value) ?? null)

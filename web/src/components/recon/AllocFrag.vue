@@ -13,6 +13,7 @@ import { useRecon } from '../../stores/recon'
 import { useChartTheme } from '../../composables/useChartTheme'
 import BarChart from '../../charts/BarChart.vue'
 import UsageHeatmap from '../../charts/UsageHeatmap.vue'
+import { escapeHtml } from '../../charts/echarts'
 import { useTool } from './useTool'
 import { pct } from './shared'
 
@@ -52,9 +53,9 @@ const heat = computed(() => {
   const tooltip = (x: number, y: number) => {
     const r = byCell.get(`${x}:${y}`)
     if (!r) return ''
-    return `${t('recon.alloc.heatmap_cell', { type: r.type, instance: r.instance })}<br/>`
-      + `<b>${pct(r.mbcs_usage, 1)}</b> · ${t('recon.alloc.heatmap_detail', {
-        blocks: formatBytes(r.mbcs_blocks), carriers: formatBytes(r.mbcs_carriers) })}`
+    return `${escapeHtml(t('recon.alloc.heatmap_cell', { type: r.type, instance: r.instance }))}<br/>`
+      + `<b>${escapeHtml(pct(r.mbcs_usage, 1))}</b> · ${escapeHtml(t('recon.alloc.heatmap_detail', {
+        blocks: formatBytes(r.mbcs_blocks), carriers: formatBytes(r.mbcs_carriers) }))}`
   }
   return { rows: types.value.map(short), cols: instances.map(String), cells, tooltip }
 })

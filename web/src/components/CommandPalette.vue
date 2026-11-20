@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { NModal, NInput, NIcon, NSpin, useThemeVars, useMessage } from 'naive-ui'
@@ -121,7 +121,7 @@ function once<T>(topic: string, params: Record<string, unknown>,
   return () => { if (!done) { done = true; unsub() } }
 }
 
-const procs = ref<ProcessRow[]>([])
+const procs = shallowRef<ProcessRow[]>([])
 const procLoading = ref(false)
 let procCancel: (() => void) | null = null
 let procTimer: number | undefined
@@ -148,9 +148,9 @@ watch([q, node, () => ui.paletteOpen], ([text, n, open]) => {
 
 // Table and application lists are fetched once per opening, on the first
 // typed character, and filtered locally after that.
-const ets = ref<EtsTable[]>([])
-const mnesia = ref<MnesiaTable[]>([])
-const apps = ref<AppInfo[]>([])
+const ets = shallowRef<EtsTable[]>([])
+const mnesia = shallowRef<MnesiaTable[]>([])
+const apps = shallowRef<AppInfo[]>([])
 let listsFor: string | null = null
 let listCancels: (() => void)[] = []
 
@@ -205,6 +205,7 @@ function go(path: string, query: Record<string, string> = {}) {
 }
 
 const items = computed<Item[]>(() => {
+  if (!ui.paletteOpen) return []
   const text = q.value
   const out: Item[] = []
   const add = (item: Omit<Item, 'score'>, s: number) => { if (s >= 0) out.push({ ...item, score: s }) }

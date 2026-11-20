@@ -19,11 +19,11 @@ const lang = useLocale()
 const bookStyle = useBookStyle()
 
 const readLang = ref<Locale>(lang.locale)
-// Follow the UI language, staying on the same spot: both languages share ids.
 watch(() => lang.locale, (l) => {
-  if (l === readLang.value) return
+  if (readLang.value === l) return
   readLang.value = l
-  void go(current.value, false)
+  html.value = ''
+  if (current.value) void go(current.value, false)
 })
 
 const toc = ref<Toc | null>(null)

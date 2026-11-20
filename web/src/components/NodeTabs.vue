@@ -40,7 +40,7 @@ function onWheel(e: WheelEvent) {
   el.scrollLeft += e.deltaY
 }
 
-watch(() => [tabs.active, visible.value], async () => {
+watch([() => tabs.active, visible], async () => {
   await nextTick()
   strip.value?.querySelector('.node-tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
 })

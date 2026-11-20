@@ -1,9 +1,10 @@
 {application, eobserver, [
     {description, "A modern web UI for observing Erlang nodes"},
     {vsn, "0.0.16"},
-    {registered, [eobs_sup, eobs_nodes, eobs_node_sup, eobs_dump_sup, eobs_dump_files]},
+    {registered, [eobs_sup, eobs, eobs_dist, eobs_cookies, eobs_nodes, eobs_node_sup,
+                  eobs_dump_sup, eobs_dump_files]},
     {mod, {eobs_app, []}},
-    {applications, [kernel, stdlib, cowboy, jsx, eobserver_agent]},
+    {applications, [kernel, stdlib, crypto, cowboy, jsx, eobserver_agent]},
     {env, [{http_ip, {127, 0, 0, 1}}, {http_port, 8090}]},
     {licenses, ["Apache-2.0"]},
     {links, [{"GitHub", "https://github.com/qinbaixi/EObserver"}]}

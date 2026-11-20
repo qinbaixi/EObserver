@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { h, ref, watch } from 'vue'
+import { h, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NAutoComplete, NIcon, NTag, type AutoCompleteOption } from 'naive-ui'
 import { SearchOutline } from '@vicons/ionicons5'
@@ -38,6 +38,15 @@ watch(q, (v) => {
     }
   }, 250)
 })
+
+watch(() => props.id, () => {
+  clearTimeout(timer)
+  seq++
+  q.value = ''
+  options.value = []
+  loading.value = false
+})
+onBeforeUnmount(() => clearTimeout(timer))
 
 const kindLabel = (k: string) => (te(`crashdump.kind.${k}`) ? t(`crashdump.kind.${k}`) : k)
 

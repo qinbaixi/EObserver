@@ -85,8 +85,16 @@ disconnect_unloads_agent(Config) ->
     connect(Node),
     Peer = ?config(peer, Config),
     ?assertMatch({file, _}, peer:call(Peer, code, is_loaded, [eobs_agent])),
+    ok = eobs_events:subscribe(),
     ok = eobs_nodes:disconnect(Node),
-    ?assertEqual(false, peer:call(Peer, code, is_loaded, [eobs_agent])).
+    ?assertEqual(false, peer:call(Peer, code, is_loaded, [eobs_agent])),
+    receive
+        {eobs_frame, Frame} ->
+            ?assertMatch(#{<<"type">> := <<"event">>, <<"event">> := <<"node_removed">>},
+                         eobs_json:decode(Frame))
+    after 2000 ->
+        ct:fail(missing_node_removed_event)
+    end.
 
 unreachable_node_retries(_Config) ->
     %% Short host name: the suite's peers already put the tool in shortnames
@@ -107,7 +115,14 @@ api_requests(Config) ->
     ?assertMatch({error, {unknown_method, _}}, eobs_api:request(<<"nope">>, #{})),
     %% The JSON layer must cope with everything the summary contains.
     {ok, Summary} = eobs_api:collect(<<"node.summary">>, #{<<"node">> => NodeBin}),
-    ?assert(is_binary(eobs_json:encode(Summary))).
+    ?assert(is_binary(eobs_json:encode(Summary))),
+    %% Self-VM and unobserved nodes must be rejected across API and connect.
+    SelfBin = atom_to_binary(node(), utf8),
+    ?assertEqual({error, not_observed}, eobs_api:request(<<"node.summary">>, #{<<"node">> => SelfBin})),
+    ?assertEqual({error, not_observed}, eobs_api:request(<<"node.summary">>, #{<<"node">> => <<"nonode@nohost">>})),
+    ?assertEqual({error, not_observed}, eobs_api:collect(<<"node.summary">>, #{<<"node">> => SelfBin})),
+    ?assertEqual({error, cannot_observe_self}, eobs_nodes:connect(node(), undefined)),
+    ?assertEqual({error, cannot_observe_self}, eobs_nodes:connect(nonode@nohost, undefined)).
 
 %% A long-name target while a short-name one is observed is refused with
 %% a clear reason; once nothing is connected the tool switches modes. Both
@@ -397,12 +412,21 @@ http_password_and_origin(_Config) ->
                {"Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ=="}],
     Host = "localhost:" ++ integer_to_list(Port),
     ?assertMatch({101, _}, http_get(Port, "/ws", [{"Origin", "http://" ++ Host} | Upgrade])),
-    ?assertMatch({403, _}, http_get(Port, "/ws", [{"Origin", "http://evil.example"} | Upgrade])).
+    ?assertMatch({403, _}, http_get(Port, "/ws", [{"Origin", "http://evil.example"} | Upgrade])),
+    %% DNS rebinding: foreign Host header is rejected on loopback listeners.
+    ?assertMatch({403, _}, http_get_host(Port, "evil.example:" ++ integer_to_list(Port), "/system", [])),
+    %% Cross-site download and self-VM download are rejected.
+    ?assertMatch({403, _}, http_get(Port, "/download/logfile?node=nonode@nohost&path=/etc/passwd",
+                                    [{"Sec-Fetch-Site", "cross-site"}])),
+    ?assertMatch({404, _}, http_get(Port, "/download/logfile?node=" ++ atom_to_list(node()) ++ "&path=/etc/passwd", [])).
 
 %% Minimal HTTP/1.1 client: returns the status code and raw response.
 http_get(Port, Path, Headers) ->
+    http_get_host(Port, "localhost:" ++ integer_to_list(Port), Path, Headers).
+
+http_get_host(Port, Host, Path, Headers) ->
     {ok, S} = gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}]),
-    Lines = ["GET ", Path, " HTTP/1.1\r\nHost: localhost:", integer_to_list(Port), "\r\n",
+    Lines = ["GET ", Path, " HTTP/1.1\r\nHost: ", Host, "\r\n",
              [[K, ": ", V, "\r\n"] || {K, V} <- Headers], "Connection: close\r\n\r\n"],
     ok = gen_tcp:send(S, Lines),
     {ok, <<"HTTP/1.1 ", Code:3/binary, _/binary>> = Resp} = gen_tcp:recv(S, 0, 5000),

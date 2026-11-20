@@ -2,7 +2,7 @@
 // gen call latencies of the traced processes by request kind. Live, the
 // table is pulled every 2 s while this tab is open and a row's details on
 // click; a saved trace carries every row with its details.
-import { computed, h, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, h, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   NDataTable, NAlert, NIcon, NTooltip, NText, NEmpty, NSpin, type DataTableColumns,
@@ -24,7 +24,7 @@ const props = defineProps<{
 }>()
 
 const { t } = useI18n()
-const live = ref<TraceStats | null>(null)
+const live = shallowRef<TraceStats | null>(null)
 const error = ref<string | null>(null)
 let unsub: (() => void) | null = null
 
@@ -32,11 +32,12 @@ watch(() => props.node, (n) => {
   unsub?.()
   unsub = null
   live.value = null
+  error.value = null
   if (!n) return
   unsub = client.subscribe('trace.stats', { node: n }, 2000, (d: TraceStats) => {
     error.value = null
     live.value = d
-  }, (e) => { error.value = e })
+  }, (e) => { error.value = errorText(e) })
 }, { immediate: true })
 onBeforeUnmount(() => unsub?.())
 
@@ -107,9 +108,10 @@ const columns = computed<DataTableColumns<TraceStatsRow>>(() => [
 // --- details of the clicked row --------------------------------------------
 
 const selected = ref<number | null>(null)
-const fetched = ref<TraceStatsRow | null>(null)
+const fetched = shallowRef<TraceStatsRow | null>(null)
 const loading = ref(false)
 const detailError = ref<string | null>(null)
+let detailSeq = 0
 
 const selectedRow = computed(() => rows.value.find((r) => r.row === selected.value) ?? null)
 const detail = computed<TraceStatsRow | null>(() =>
@@ -117,28 +119,31 @@ const detail = computed<TraceStatsRow | null>(() =>
 
 async function loadDetail() {
   const n = props.node
-  if (!n || selected.value === null) return
+  const row = selected.value
+  const req = ++detailSeq
+  if (!n || row === null) return
   loading.value = true
   try {
     const r = await client.request<TraceStats>('trace.stats',
-      { node: n, id: stats.value?.id ?? null, row: selected.value })
+      { node: n, id: stats.value?.id ?? null, row })
+    if (req !== detailSeq || props.node !== n || selected.value !== row) return
     fetched.value = r.rows[0] ?? null
     detailError.value = null
   } catch (e) {
-    detailError.value = errorText(e)
+    if (req === detailSeq && props.node === n && selected.value === row) detailError.value = errorText(e)
   } finally {
-    loading.value = false
+    if (req === detailSeq) loading.value = false
   }
 }
 
-// Refetch while the selected row keeps changing.
-watch(() => [selected.value, selectedRow.value?.calls, selectedRow.value?.answered] as const,
+// Refetch only when the selected row or its call/answer counts actually change.
+watch([selected, () => selectedRow.value?.calls, () => selectedRow.value?.answered],
   ([s], [prev]) => {
     if (s === null) return
-    if (s !== prev) fetched.value = null
+    if (s !== prev) { fetched.value = null; detailError.value = null }
     void loadDetail()
   })
-watch(() => props.node, () => { selected.value = null; fetched.value = null })
+watch(() => props.node, () => { detailSeq++; selected.value = null; fetched.value = null; detailError.value = null })
 
 const rowProps = (r: TraceStatsRow) => ({
   style: 'cursor: pointer',
@@ -163,7 +168,7 @@ const capped = computed(() => (stats.value?.kinds ?? 0) >= (stats.value?.max_kin
       {{ t('trace.stats.capped', { n: stats?.max_kinds ?? 200 }) }}
     </NAlert>
     <NDataTable :columns="columns" :data="rows" :row-key="(r: TraceStatsRow) => r.row" :row-props="rowProps"
-                size="small" :max-height="selected === null ? 'calc(100vh - 380px)' : 320" :min-height="120"
+                :pagination="{ pageSize: 50 }" size="small" :max-height="selected === null ? 'calc(100vh - 380px)' : 320" :min-height="120"
                 :scroll-x="880">
       <template #empty>
         <NEmpty :description="!stats || stats.status === 'none' ? t('trace.stats.none') : t('trace.stats.empty')" />

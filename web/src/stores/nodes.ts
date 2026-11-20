@@ -51,7 +51,7 @@ export const useNodes = defineStore('nodes', () => {
     if (current.value === node) select(list.value[0]?.node ?? null)
   }
 
-  client.on('socket_open', () => void refresh())
+  client.on('socket_open', () => { void refresh().catch(() => {}) })
   client.on('node_status', (info: NodeInfo) => {
     nodes.value[info.node] = info
     if (!current.value) select(info.node)

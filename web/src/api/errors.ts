@@ -5,13 +5,18 @@ import shellZh from '../i18n/areas/shell.zh'
 
 const KEYS = Object.keys(shellZh.errors).filter((k) => k !== 'wrapped')
 const known = new Set(KEYS)
+const keyPatterns = KEYS.map((key) => [key, new RegExp(`\\b${key}\\b`)] as const)
 const t = (key: string, named: Record<string, unknown> = {}) => i18n.global.t(`shell.errors.${key}`, named)
 
+export function rawError(e: unknown): string {
+  return e instanceof Error ? e.message : String(e)
+}
+
 export function errorText(e: unknown): string {
-  const msg = e instanceof Error ? e.message : String(e)
+  const msg = rawError(e)
   if (known.has(msg)) return t(msg)
-  for (const key of KEYS) {
-    if (new RegExp(`\\b${key}\\b`).test(msg)) return t('wrapped', { text: t(key), msg })
+  for (const [key, re] of keyPatterns) {
+    if (re.test(msg)) return t('wrapped', { text: t(key), msg })
   }
   return msg
 }

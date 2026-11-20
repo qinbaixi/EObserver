@@ -27,7 +27,12 @@ function load(): Saved {
   try {
     const s = JSON.parse(localStorage.getItem(KEY) ?? 'null') as Saved | null
     if (s && Array.isArray(s.tabs)) {
-      return { tabs: s.tabs.filter((t) => t && typeof t.node === 'string' && typeof t.id === 'string'), active: s.active }
+      return {
+        tabs: s.tabs.filter(
+          (t) => t && typeof t.node === 'string' && typeof t.id === 'string' && typeof t.path === 'string',
+        ),
+        active: typeof s.active === 'string' ? s.active : null,
+      }
     }
   } catch {
     /* storage unavailable or corrupt */
@@ -120,8 +125,8 @@ export const useTabs = defineStore('tabs', () => {
 
     // The node switcher, the palette and ?node= links change the current
     // tab's node; a node with no tab yet gets the first one.
-    watch(() => nodes.current, (cur) => {
-      if (!cur) return
+    watch([() => nodes.current, () => route.matched.length], ([cur, matched]) => {
+      if (!cur || !matched) return
       const tab = activeTab()
       if (tab) {
         if (tab.node !== cur) {

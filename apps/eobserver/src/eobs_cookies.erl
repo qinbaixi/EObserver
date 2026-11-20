@@ -7,9 +7,12 @@
 -behaviour(gen_server).
 
 -export([start_link/0, list/0, save/2, rename/2, delete/1, lookup/1, hint/1, file/0]).
--export([init/1, handle_call/3, handle_cast/2]).
+-export([init/1, handle_call/3, handle_cast/2, format_status/1]).
 
 -define(MAX_ENTRIES, 50).
+-define(MAX_COOKIE_BYTES, 255).
+-define(MAX_LABEL_BYTES, 256).
+-define(LOOKUP_FLUSH_S, 60).
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
@@ -21,23 +24,31 @@ list() ->
 
 %% Stores a cookie (or refreshes it if already stored) and returns its id.
 -spec save(binary(), binary()) -> {ok, binary()} | {error, term()}.
-save(Cookie, Label) when is_binary(Cookie), Cookie =/= <<>> ->
-    gen_server:call(?MODULE, {save, Cookie, Label});
+save(Cookie, _Label) when is_binary(Cookie), byte_size(Cookie) > ?MAX_COOKIE_BYTES ->
+    {error, cookie_too_long};
+save(Cookie, Label) when is_binary(Cookie), Cookie =/= <<>>, is_binary(Label) ->
+    gen_server:call(?MODULE, {save, Cookie, clip_label(Label)});
 save(_, _) ->
     {error, empty_cookie}.
 
 %% Changes the label shown for a stored cookie.
 -spec rename(binary(), binary()) -> ok | {error, term()}.
-rename(Id, Label) when is_binary(Label) ->
-    gen_server:call(?MODULE, {rename, Id, Label}).
+rename(Id, Label) when is_binary(Id), is_binary(Label) ->
+    gen_server:call(?MODULE, {rename, Id, clip_label(Label)});
+rename(_, _) ->
+    {error, badarg}.
 
-delete(Id) ->
-    gen_server:call(?MODULE, {delete, Id}).
+delete(Id) when is_binary(Id) ->
+    gen_server:call(?MODULE, {delete, Id});
+delete(_) ->
+    {error, badarg}.
 
 %% Returns the cookie for an id and marks it as just used.
 -spec lookup(binary()) -> {ok, binary()} | {error, not_found}.
-lookup(Id) ->
-    gen_server:call(?MODULE, {lookup, Id}).
+lookup(Id) when is_binary(Id) ->
+    gen_server:call(?MODULE, {lookup, Id});
+lookup(_) ->
+    {error, not_found}.
 
 file() ->
     Dir = case application:get_env(eobserver, config_dir) of
@@ -46,12 +57,39 @@ file() ->
           end,
     filename:join(Dir, "cookies.eterm").
 
-%% First and last two characters, enough to tell cookies apart.
-hint(Cookie) when byte_size(Cookie) > 8 ->
-    <<(binary:part(Cookie, 0, 2))/binary, "…"/utf8,
-      (binary:part(Cookie, byte_size(Cookie), -2))/binary>>;
+%% First and last two graphemes, enough to tell cookies apart without
+%% slicing multi-byte UTF-8 characters mid-codepoint.
+hint(Cookie) when is_binary(Cookie) ->
+    case unicode:characters_to_binary(Cookie) of
+        Bin when is_binary(Bin) ->
+            Len = string:length(Bin),
+            case Len > 8 of
+                true ->
+                    <<(string:slice(Bin, 0, 2))/binary, "…"/utf8,
+                      (string:slice(Bin, Len - 2, 2))/binary>>;
+                false ->
+                    <<"••••"/utf8>>
+            end;
+        _ ->
+            <<"••••"/utf8>>
+    end;
 hint(_) ->
     <<"••••"/utf8>>.
+
+clip_label(Label) when byte_size(Label) > ?MAX_LABEL_BYTES ->
+    case unicode:characters_to_binary(binary:part(Label, 0, ?MAX_LABEL_BYTES)) of
+        Valid when is_binary(Valid) -> Valid;
+        {incomplete, Valid, _} -> Valid;
+        {error, Valid, _} -> Valid
+    end;
+clip_label(Label) ->
+    Label.
+
+%% Redact plaintext cookies from OTP crash reports / sys:get_status.
+format_status(#{state := Entries} = Status) when is_list(Entries) ->
+    Status#{state := [public(E) || E <- Entries]};
+format_status(Status) ->
+    Status.
 
 %% gen_server
 
@@ -62,8 +100,8 @@ handle_call(list, _From, Entries) ->
     {reply, [public(E) || E <- Entries], Entries};
 handle_call({save, Cookie, Label}, _From, Entries) ->
     {Entry, Rest} = case lists:partition(fun(#{cookie := C}) -> C =:= Cookie end, Entries) of
-                        {[E], Others} -> {E, Others};
-                        {[], Others} -> {#{id => new_id(), cookie => Cookie, label => <<>>}, Others}
+                        {[E | _], Others} -> {E, Others};
+                        {[], Others} -> {#{id => new_id(Entries), cookie => Cookie, label => <<>>}, Others}
                     end,
     Entry1 = Entry#{last_used => now_s(),
                     label => case Label of
@@ -73,7 +111,7 @@ handle_call({save, Cookie, Label}, _From, Entries) ->
     store([Entry1 | Rest], Entry1, Entries);
 handle_call({rename, Id, Label}, _From, Entries) ->
     case lists:partition(fun(#{id := I}) -> I =:= Id end, Entries) of
-        {[E], _} ->
+        {[E | _], _} ->
             New = [case I of Id -> E#{label => Label}; _ -> X end || #{id := I} = X <- Entries],
             case write(New) of
                 ok -> {reply, ok, New};
@@ -90,10 +128,15 @@ handle_call({delete, Id}, _From, Entries) ->
     end;
 handle_call({lookup, Id}, _From, Entries) ->
     case lists:partition(fun(#{id := I}) -> I =:= Id end, Entries) of
-        {[E], Rest} ->
-            E1 = E#{last_used => now_s()},
+        {[E | _], Rest} ->
+            Now = now_s(),
+            Prev = maps:get(last_used, E, 0),
+            E1 = E#{last_used => Now},
             New = [E1 | Rest],
-            _ = write(New),
+            case Now - Prev >= ?LOOKUP_FLUSH_S of
+                true -> _ = write(New);
+                false -> ok
+            end,
             {reply, {ok, maps:get(cookie, E1)}, New};
         {[], _} ->
             {reply, {error, not_found}, Entries}
@@ -110,43 +153,78 @@ store(New0, #{id := Id}, Old) ->
     end.
 
 public(#{cookie := Cookie} = E) ->
-    maps:put(hint, hint(Cookie), maps:remove(cookie, E)).
+    maps:put(hint, hint(Cookie), maps:remove(cookie, E));
+public(E) ->
+    E.
 
 %% Storage: one Erlang term per entry, readable with file:consult/1.
 
 read() ->
     case file:consult(file()) of
         {ok, Terms} ->
-            Valid = [E || #{id := _, cookie := C} = E <- Terms, is_binary(C)],
-            lists:sort(fun(#{last_used := A}, #{last_used := B}) -> A >= B end,
-                       [maps:merge(#{label => <<>>, last_used => 0}, E) || E <- Valid]);
+            Valid = [maps:merge(#{label => <<>>, last_used => 0}, E)
+                     || #{id := I, cookie := C} = E <- Terms, is_binary(I), is_binary(C), C =/= <<>>],
+            Sorted = lists:sort(fun(#{last_used := A}, #{last_used := B}) -> A >= B end, Valid),
+            dedup(Sorted, #{}, #{}, []);
         {error, _} ->
             []
     end.
 
+dedup([], _, _, Acc) ->
+    lists:reverse(Acc);
+dedup([#{id := I, cookie := C} = E | Rest], Ids, Cookies, Acc) ->
+    case is_map_key(I, Ids) orelse is_map_key(C, Cookies) of
+        true -> dedup(Rest, Ids, Cookies, Acc);
+        false -> dedup(Rest, Ids#{I => true}, Cookies#{C => true}, [E | Acc])
+    end.
+
+%% Creates the temp file empty and restricts permissions to 0600 BEFORE
+%% writing plaintext cookies (eliminating the world-readable TOCTOU window).
 write(Entries) ->
     File = file(),
-    Tmp = File ++ ".tmp",
+    Dir = filename:dirname(File),
+    Tmp = File ++ ".tmp." ++ integer_to_list(erlang:unique_integer([positive])),
     Data = unicode:characters_to_binary([io_lib:format("~tp.~n", [E]) || E <- Entries]),
-    Steps = [fun() -> filelib:ensure_dir(File) end,
-             fun() -> file:write_file(Tmp, Data) end,
-             %% Like ~/.erlang.cookie: readable by the owner only.
-             fun() -> ignore_enotsup(file:change_mode(Tmp, 8#600)) end,
-             fun() -> file:rename(Tmp, File) end],
-    run(Steps).
-
-run([]) -> ok;
-run([Step | Rest]) ->
-    case Step() of
-        ok -> run(Rest);
-        Error -> Error
+    case filelib:ensure_dir(File) of
+        ok ->
+            _ = ignore_enotsup(file:change_mode(Dir, 8#700)),
+            case file:open(Tmp, [write, raw, binary, exclusive]) of
+                {ok, Fd} ->
+                    Res = try
+                              ok = ignore_enotsup(file:change_mode(Tmp, 8#600)),
+                              ok = file:write(Fd, Data),
+                              ok = file:sync(Fd)
+                          catch _:_ ->
+                              {error, write_failed}
+                          after
+                              _ = file:close(Fd)
+                          end,
+                    case Res of
+                        ok ->
+                            case file:rename(Tmp, File) of
+                                ok -> ok;
+                                Error -> _ = file:delete(Tmp), Error
+                            end;
+                        Error ->
+                            _ = file:delete(Tmp),
+                            Error
+                    end;
+                Error ->
+                    Error
+            end;
+        Error ->
+            Error
     end.
 
 ignore_enotsup({error, enotsup}) -> ok;
 ignore_enotsup(Other) -> Other.
 
-new_id() ->
-    binary:encode_hex(crypto_free_random(6), lowercase).
+new_id(Entries) ->
+    Id = binary:encode_hex(crypto_free_random(6), lowercase),
+    case lists:any(fun(#{id := I}) -> I =:= Id end, Entries) of
+        true -> new_id(Entries);
+        false -> Id
+    end.
 
 %% A short random id without depending on the crypto application.
 crypto_free_random(N) ->

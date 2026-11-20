@@ -6,21 +6,6 @@ import {
   ChatbubblesOutline, MedkitOutline, AlbumsOutline, DocumentTextOutline, ConstructOutline, BugOutline,
   LibraryOutline,
 } from '@vicons/ionicons5'
-import OverviewPage from './pages/OverviewPage.vue'
-import SystemPage from './pages/SystemPage.vue'
-import ComingSoon from './pages/ComingSoon.vue'
-import LoadPage from './pages/LoadPage.vue'
-import ProcessesPage from './pages/ProcessesPage.vue'
-import TracePage from './pages/TracePage.vue'
-import DiagnosisPage from './pages/DiagnosisPage.vue'
-import ReconPage from './pages/ReconPage.vue'
-import LogsPage from './pages/LogsPage.vue'
-import ApplicationsPage from './pages/ApplicationsPage.vue'
-import PortsPage from './pages/PortsPage.vue'
-import SocketsPage from './pages/SocketsPage.vue'
-import TablesPage from './pages/TablesPage.vue'
-import AllocatorsPage from './pages/AllocatorsPage.vue'
-import ClusterPage from './pages/ClusterPage.vue'
 import { i18n, type Locale } from './i18n'
 
 // Titles are i18n keys (shell.nav.<name>.title / .subtitle); resolve them
@@ -62,11 +47,23 @@ export const pages: { path: string; name: string; meta: PageMeta }[] = [
   { path: '/book', name: 'book', meta: meta('book', LibraryOutline) },
 ]
 
-// The crash dump viewer and the book are loaded on first use (they need no
-// node and most sessions never open them).
-const components: Record<string, RouteComponent | (() => Promise<RouteComponent>)> = {
-  overview: OverviewPage, system: SystemPage, load: LoadPage, processes: ProcessesPage, trace: TracePage, diagnosis: DiagnosisPage, recon: ReconPage, logs: LogsPage, applications: ApplicationsPage,
-  ports: PortsPage, sockets: SocketsPage, tables: TablesPage, allocators: AllocatorsPage, cluster: ClusterPage, crashdump: () => import('./pages/CrashDumpPage.vue').then((m) => m.default),
+// All pages are code-split so initial boot only fetches the active route.
+const components: Record<string, () => Promise<RouteComponent>> = {
+  overview: () => import('./pages/OverviewPage.vue').then((m) => m.default),
+  system: () => import('./pages/SystemPage.vue').then((m) => m.default),
+  load: () => import('./pages/LoadPage.vue').then((m) => m.default),
+  processes: () => import('./pages/ProcessesPage.vue').then((m) => m.default),
+  trace: () => import('./pages/TracePage.vue').then((m) => m.default),
+  diagnosis: () => import('./pages/DiagnosisPage.vue').then((m) => m.default),
+  recon: () => import('./pages/ReconPage.vue').then((m) => m.default),
+  logs: () => import('./pages/LogsPage.vue').then((m) => m.default),
+  applications: () => import('./pages/ApplicationsPage.vue').then((m) => m.default),
+  ports: () => import('./pages/PortsPage.vue').then((m) => m.default),
+  sockets: () => import('./pages/SocketsPage.vue').then((m) => m.default),
+  tables: () => import('./pages/TablesPage.vue').then((m) => m.default),
+  allocators: () => import('./pages/AllocatorsPage.vue').then((m) => m.default),
+  cluster: () => import('./pages/ClusterPage.vue').then((m) => m.default),
+  crashdump: () => import('./pages/CrashDumpPage.vue').then((m) => m.default),
   book: () => import('./pages/BookPage.vue').then((m) => m.default),
 }
 
@@ -78,7 +75,7 @@ export const router = createRouter({
       path: p.path,
       name: p.name,
       meta: { page: p.meta },
-      component: components[p.name] ?? ComingSoon,
+      component: components[p.name] ?? (() => import('./pages/ComingSoon.vue').then((m) => m.default)),
     })),
     { path: '/:pathMatch(.*)*', redirect: '/system' },
   ],

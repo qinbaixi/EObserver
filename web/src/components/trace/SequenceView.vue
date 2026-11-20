@@ -4,7 +4,7 @@
 // order. Each message is drawn from its sender's "sent" event (so it is
 // not drawn twice); only the rows in view are rendered, so thousands of
 // messages scroll smoothly.
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NSelect, NEmpty, useThemeVars } from 'naive-ui'
 import { useChartTheme } from '../../composables/useChartTheme'
@@ -105,17 +105,17 @@ const scroller = ref<HTMLElement | null>(null)
 const scrollTop = ref(0)
 const viewW = ref(800)
 const viewH = ref(400)
-let ro: ResizeObserver | null = null
-onMounted(() => {
-  const el = scroller.value
+watch(scroller, (el, _, onCleanup) => {
   if (!el) return
-  ro = new ResizeObserver(() => {
+  viewW.value = el.clientWidth || 800
+  viewH.value = el.clientHeight || 400
+  const ro = new ResizeObserver(() => {
     viewW.value = el.clientWidth
     viewH.value = el.clientHeight
   })
   ro.observe(el)
-})
-onBeforeUnmount(() => ro?.disconnect())
+  onCleanup(() => ro.disconnect())
+}, { flush: 'post', immediate: true })
 
 const laneW = computed(() =>
   Math.max(MIN_LANE, (viewW.value - TIME_W) / Math.max(1, laneProcs.value.length)))

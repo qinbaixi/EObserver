@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NGrid, NGi, NCard, NRadioGroup, NRadioButton, NSwitch, NSpace, NAlert, NSelect } from 'naive-ui'
 import { useLoad } from '../stores/load'
@@ -19,6 +19,7 @@ const { t } = useI18n()
 const load = useLoad()
 const nodes = useNodes()
 load.start()
+onBeforeUnmount(() => load.stop())
 
 // Compare mode overlays one metric of several nodes; those nodes are
 // sampled only while it is shown.
@@ -102,6 +103,12 @@ const metricOptions = computed(() => (Object.keys(METRICS) as Metric[])
 const connectedNodes = computed(() =>
   nodes.list.filter((n) => n.status === 'connected').map((n) => n.node))
 const picked = ref<string[] | null>(null)
+watch(() => nodes.list, (list) => {
+  if (!picked.value) return
+  const known = new Set(list.map((n) => n.node))
+  const next = picked.value.filter((n) => known.has(n))
+  if (next.length !== picked.value.length) picked.value = next.length ? next : null
+})
 // Until the user picks, the current node and the next connected ones.
 const compareNodes = computed<string[]>({
   get: () => picked.value ?? [

@@ -9,7 +9,7 @@
 -behaviour(gen_server).
 
 -export([open/1, close/1, cancel/1, list/0, handle/1, id/1, path/1]).
--export([info/1, sections/2, lookup/3, count/2, read/3, reads/2,
+-export([info/1, sections/2, lookup/3, count/2, read/3, reads/2, open_fd/1, pread_fd/3,
          summaries/2, summary/3, entries/2, cache/3]).
 -export([start_link/3, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
@@ -20,6 +20,8 @@
 -define(PROGRESS_MS, 250).
 %% How long a cached result computed during the scan is reused.
 -define(SCAN_CACHE_MS, 2000).
+%% Maximum per-process heap/line indices retained in Meta before evicting oldest.
+-define(PROC_CACHE_MAX, 64).
 
 -record(h, {id, pid, idx, meta, path}).
 
@@ -32,35 +34,48 @@
 open(Path0) ->
     case normalize(Path0) of
         {ok, Path} ->
-            case eobs_dump_scan:check(Path) of
-                {ok, #{size := Size, mtime := Mtime}} ->
-                    case catch claim(Path, 250) of
-                        {error, _} = Error ->
-                            Error;
-                        {existing, Id} ->
-                            {ok, Id};
-                        claimed ->
-                            Result = start(Path, Size),
-                            case Result of
-                                {ok, _} -> eobs_dump_files:add(Path, Size, Mtime);
-                                _ -> ets:delete(?REG, {path, Path})
-                            end,
-                            Result
-                    end;
-                Error ->
-                    Error
+            case eobs_dump_files:allowed(Path) of
+                false ->
+                    {error, eacces};
+                true ->
+                    case eobs_dump_scan:check(Path) of
+                        {ok, #{size := Size, mtime := Mtime}} ->
+                            case catch claim(Path, 250) of
+                                {error, _} = Error ->
+                                    Error;
+                                {existing, Id} ->
+                                    {ok, Id};
+                                claimed ->
+                                    Pending = {pending, self()},
+                                    try start(Path, Size) of
+                                        {ok, _} = Ok ->
+                                            eobs_dump_files:add(Path, Size, Mtime),
+                                            Ok;
+                                        Error ->
+                                            ets:delete_object(?REG, {{path, Path}, Pending}),
+                                            Error
+                                    catch
+                                        C:R:St ->
+                                            ets:delete_object(?REG, {{path, Path}, Pending}),
+                                            erlang:raise(C, R, St)
+                                    end
+                            end;
+                        Error ->
+                            Error
+                    end
             end;
         Error ->
             Error
     end.
 
 %% Opens are serialised per path through the registry: the first caller
-%% inserts {path, P} => pending; others wait for its id.
+%% inserts {path, P} => {pending, self()}; others wait for its id or
+%% evict the claim if the opener died.
 claim(_Path, 0) ->
     throw({error, busy});
 claim(Path, Tries) ->
     Key = {path, Path},
-    case ets:insert_new(?REG, {Key, pending}) of
+    case ets:insert_new(?REG, {Key, {pending, self()}}) of
         true ->
             claimed;
         false ->
@@ -68,7 +83,18 @@ claim(Path, Tries) ->
                 [{_, Id}] when is_binary(Id) ->
                     case handle(Id) of
                         {ok, _} -> {existing, Id};
-                        {error, not_found} -> ets:delete_object(?REG, {Key, Id}), claim(Path, Tries - 1)
+                        {error, not_found} ->
+                            ets:delete_object(?REG, {Key, Id}),
+                            claim(Path, Tries - 1)
+                    end;
+                [{_, {pending, Owner} = Claim}] ->
+                    case is_process_alive(Owner) of
+                        false ->
+                            ets:delete_object(?REG, {Key, Claim}),
+                            claim(Path, Tries - 1);
+                        true ->
+                            timer:sleep(20),
+                            claim(Path, Tries - 1)
                     end;
                 _ ->
                     timer:sleep(20),
@@ -151,10 +177,13 @@ info(#h{id = Id, idx = Idx, meta = Meta}) ->
     Elapsed = max(1, Get(finished, erlang:monotonic_time(millisecond)) - Started),
     Rate = round(Scanned * 1000 / Elapsed),
     Eta = case Status of
-              scanning when Rate > 0 -> round((Size - Scanned) / Rate);
+              scanning when Rate > 0 -> round(max(0, Size - Scanned) / Rate);
               _ -> null
           end,
-    Words = ets:info(Idx, memory) + ets:info(Meta, memory),
+    Words = case {ets:info(Idx, memory), ets:info(Meta, memory)} of
+                {W1, W2} when is_integer(W1), is_integer(W2) -> W1 + W2;
+                _ -> error(badarg)
+            end,
     maps:merge(maps:remove(started, Static),
                maps:merge(maps:merge(Progress, maps:with([truncated, last_tag, last_id], Result)),
                           #{id => Id, status => Status, error => Get(error, null),
@@ -233,6 +262,18 @@ reads(#h{path = Path} = H, Locs) ->
             end
     end.
 
+open_fd(#h{path = Path} = H) ->
+    alive(H),
+    file:open(Path, [read, raw, binary]).
+
+pread_fd(_Fd, _Off, 0) -> {ok, <<>>};
+pread_fd(Fd, Off, Len) when is_integer(Off), Off >= 0, is_integer(Len), Len > 0, Len =< ?MAX_READ ->
+    pread(Fd, Off, Len);
+pread_fd(_Fd, _Off, Len) when is_integer(Len), Len > ?MAX_READ ->
+    {error, too_large};
+pread_fd(_Fd, _Off, _Len) ->
+    {error, badarg}.
+
 pread(_Fd, _Off, 0) -> {ok, <<>>};
 pread(Fd, Off, Len) ->
     case file:pread(Fd, Off, Len) of
@@ -248,9 +289,18 @@ summaries(#h{idx = Idx, meta = Meta} = H, Tag) ->
         No ->
             L = lists:keysort(1, ets:select(Idx, [{{{No, '$1', '$2'}, '_', '$3'}, [],
                                                    [{{'$2', '$1', '$3'}}]}])),
-            Schemas = maps:from_list([{N, K} || [N, K] <- ets:match(Meta, {{schema, '$1'}, '$2'})]),
+            Schemas = load_schemas(Meta),
             [{eobs_dump_scan:key_id(Id), eobs_dump_scan:expand_summary(S, Schemas)}
              || {_, Id, S} <- L]
+    end.
+
+load_schemas(Meta) ->
+    case ets:lookup(Meta, schema_seq) of
+        [{_, Max}] when is_integer(Max), Max > 0 ->
+            maps:from_list([{N, K} || N <- lists:seq(1, Max),
+                                      [{_, K}] <- [ets:lookup(Meta, {schema, N})]]);
+        _ ->
+            #{}
     end.
 
 -spec summary(handle(), binary(), binary() | null) -> {ok, map()} | not_found.
@@ -272,7 +322,8 @@ summary(#h{idx = Idx, meta = Meta} = H, Tag, Id) ->
 
 %% Memoises Fun() under Key for this dump. While the scan runs the index
 %% is still growing, so a result is only reused for ?SCAN_CACHE_MS; one
-%% computed (started) after the scan is kept for good.
+%% computed (started) after the scan is kept for good. Per-process heap
+%% and line indices are bounded so browsing many processes cannot OOM.
 -spec cache(handle(), term(), fun(() -> T)) -> T.
 cache(#h{meta = Meta}, Key, Fun) ->
     Now = erlang:monotonic_time(millisecond),
@@ -285,8 +336,34 @@ cache(#h{meta = Meta}, Key, Fun) ->
         _ ->
             Value = Fun(),
             ets:insert(Meta, {{cache, Key}, Value, case Scanning of true -> Now; false -> final end}),
+            maybe_track_proc_cache(Meta, Key),
             Value
     end.
+
+maybe_track_proc_cache(Meta, Key) when is_tuple(Key),
+                                       (element(1, Key) =:= eobs_heap orelse
+                                        element(1, Key) =:= eobs_lines) ->
+    Seq = ets:update_counter(Meta, proc_cache_seq, 1, {proc_cache_seq, 0}),
+    ets:insert(Meta, {{proc_cache, Seq}, Key}),
+    case Seq > ?PROC_CACHE_MAX andalso Seq rem 8 =:= 0 of
+        true ->
+            Cutoff = Seq - ?PROC_CACHE_MAX,
+            Start = max(1, Cutoff - 16),
+            evict_proc_cache(Meta, Start, Cutoff);
+        false ->
+            ok
+    end;
+maybe_track_proc_cache(_, _) ->
+    ok.
+
+evict_proc_cache(_Meta, S, Cutoff) when S > Cutoff ->
+    ok;
+evict_proc_cache(Meta, S, Cutoff) ->
+    case ets:take(Meta, {proc_cache, S}) of
+        [{_, OldKey}] -> ets:delete(Meta, {cache, OldKey});
+        [] -> ok
+    end,
+    evict_proc_cache(Meta, S + 1, Cutoff).
 
 %% All sections of a tag with their summaries, from one pass over the
 %% index (so the two always agree, even during the scan), in file order:
@@ -298,7 +375,7 @@ entries(#h{idx = Idx, meta = Meta} = H, Tag) ->
         No ->
             L = ets:select(Idx, [{{{No, '$1', '$2'}, '$3'}, [], [{{'$2', '$1', '$3', none}}]},
                                  {{{No, '$1', '$2'}, '$3', '$4'}, [], [{{'$2', '$1', '$3', '$4'}}]}]),
-            Schemas = maps:from_list([{N, K} || [N, K] <- ets:match(Meta, {{schema, '$1'}, '$2'})]),
+            Schemas = load_schemas(Meta),
             [{eobs_dump_scan:key_id(Id), Off, Len,
               case S of
                   none -> none;
@@ -318,12 +395,17 @@ alive(#h{meta = Meta}) ->
     ok.
 
 normalize(Path) when is_binary(Path), Path =/= <<>> ->
-    case unicode:characters_to_list(Path) of
-        L when is_list(L) -> normalize(L);
-        _ -> {error, badarg}
+    case eobs_dump_files:valid_path(Path) of
+        true ->
+            {ok, unicode:characters_to_binary(eobs_dump_files:absolute(unicode:characters_to_list(Path)))};
+        false ->
+            {error, badarg}
     end;
 normalize([_ | _] = Path) ->
-    {ok, unicode:characters_to_binary(eobs_dump_files:absolute(Path))};
+    case eobs_dump_files:valid_path(Path) of
+        true -> {ok, unicode:characters_to_binary(eobs_dump_files:absolute(Path))};
+        false -> {error, badarg}
+    end;
 normalize(_) ->
     {error, badarg}.
 
@@ -371,8 +453,7 @@ publish(H) ->
 handle_call(cancel, _From, #{h := #h{meta = Meta} = H, scanner := Scanner} = State) ->
     case Scanner of
         {Pid, Ref} ->
-            demonitor(Ref, [flush]),
-            exit(Pid, kill),
+            stop_scanner(Pid, Ref, Meta),
             ets:insert(Meta, [{status, cancelled}, {finished, erlang:monotonic_time(millisecond)}]),
             publish(H);
         undefined ->
@@ -401,11 +482,26 @@ handle_info({'DOWN', Ref, process, _, Reason}, #{h := #h{meta = Meta} = H, scann
 handle_info(_Msg, State) ->
     {noreply, State}.
 
-terminate(_Reason, #{h := #h{id = Id, path = Path}, scanner := Scanner}) ->
+terminate(_Reason, #{h := #h{id = Id, path = Path, meta = Meta}, scanner := Scanner}) ->
     case Scanner of
-        {Pid, _} -> exit(Pid, kill);
+        {Pid, Ref} -> stop_scanner(Pid, Ref, Meta);
         undefined -> ok
     end,
     catch ets:delete(?REG, {id, Id}),
     catch ets:delete_object(?REG, {{path, Path}, Id}),
+    ok.
+
+%% Kills the scanner and any summary workers and waits for all of them to
+%% exit so no late ETS writes occur after status flips or tables close.
+stop_scanner(Pid, Ref, Meta) ->
+    Workers = case catch ets:take(Meta, scan_workers) of
+                  [{_, Ws}] when is_list(Ws) -> Ws;
+                  _ -> []
+              end,
+    WRefs = [{W, monitor(process, W)} || W <- Workers],
+    exit(Pid, kill),
+    [exit(W, kill) || {W, _} <- WRefs],
+    receive {'DOWN', Ref, process, Pid, _} -> ok after 5000 -> demonitor(Ref, [flush]) end,
+    [receive {'DOWN', R, process, W, _} -> ok after 5000 -> demonitor(R, [flush]) end
+     || {W, R} <- WRefs],
     ok.

@@ -23,10 +23,13 @@
 -define(SUMMARY_MAX, 65536).
 %% Longer summary bodies are passed with every line cut to this size.
 -define(LINE_MAX, 4096).
+%% Maximum total size of the cut body passed to summary/3.
+-define(SUMMARY_CUT_MAX, 4194304).
 %% Summary bodies beyond this are not summarised at all.
 -define(SUMMARY_HARD_MAX, 67108864).
 %% A "\n=" with no newline within this many bytes is not a header.
 -define(HEADER_MAX, 65536).
+-define(TAG_MAX, 64).
 -define(MAX_WORKERS, 4).
 -define(MAGIC, "=erl_crash_dump:").
 
@@ -99,27 +102,32 @@ scan(Path, Idx, Meta, Opts) ->
     Want = maps:from_list([{T, true} || T <- summary_tags(Mod)]),
     case file:open(Path, [read, raw, binary]) of
         {ok, Fd} ->
-            {ok, Size} = file:position(Fd, eof),
-            {ok, 0} = file:position(Fd, bof),
-            Workers = case map_size(Want) of
-                          0 -> [];
-                          _ -> [spawn_link(fun() -> worker(Mod, Idx, Meta) end)
-                                || _ <- lists:seq(1, min(?MAX_WORKERS, erlang:system_info(schedulers_online)))]
-                      end,
-            S = #s{fd = Fd, path = Path, mod = Mod, idx = Idx, meta = Meta, size = Size,
-                   want = Want, workers = Workers, progress = Progress},
             try
-                case file:read(Fd, ?CHUNK) of
-                    {ok, <<?MAGIC, _/binary>> = First} ->
-                        %% A virtual newline so that the first header looks
-                        %% like every other one.
-                        loop(<<$\n, First/binary>>, -1, S);
-                    {ok, _} -> {error, not_a_dump};
-                    eof -> {error, empty};
-                    {error, _} = Error -> Error
+                {ok, Size} = file:position(Fd, eof),
+                {ok, 0} = file:position(Fd, bof),
+                Workers = case map_size(Want) of
+                              0 -> [];
+                              _ -> [spawn_link(fun() -> worker(Mod, Idx, Meta) end)
+                                    || _ <- lists:seq(1, min(?MAX_WORKERS, erlang:system_info(schedulers_online)))]
+                          end,
+                ets:insert(Meta, {scan_workers, Workers}),
+                S = #s{fd = Fd, path = Path, mod = Mod, idx = Idx, meta = Meta, size = Size,
+                       want = Want, workers = Workers, progress = Progress},
+                try
+                    case file:read(Fd, ?CHUNK) of
+                        {ok, <<?MAGIC, _/binary>> = First} ->
+                            %% A virtual newline so that the first header looks
+                            %% like every other one.
+                            loop(<<$\n, First/binary>>, -1, S);
+                        {ok, _} -> {error, not_a_dump};
+                        eof -> {error, empty};
+                        {error, _} = Error -> Error
+                    end
+                after
+                    catch ets:delete(Meta, scan_workers),
+                    [begin unlink(W), exit(W, kill) end || W <- Workers]
                 end
             after
-                [begin unlink(W), exit(W, kill) end || W <- Workers],
                 file:close(Fd)
             end;
         Error ->
@@ -167,39 +175,76 @@ headers(Buf, BufOff, [{P, 2} | Matches], Acc, Jobs, S) ->
     Size = byte_size(Buf),
     case binary:match(Buf, <<"\n">>, [{scope, {P + 2, Size - P - 2}}]) of
         {Q, 1} ->
-            {Acc1, Jobs1, S1} = close_section(BufOff + P, Buf, BufOff, Acc, Jobs, S),
-            S2 = open_section(binary:part(Buf, P + 2, Q - P - 2), BufOff + Q + 1, S1),
-            headers(Buf, BufOff, Matches, Acc1, Jobs1, S2);
+            Line = binary:part(Buf, P + 2, Q - P - 2),
+            case is_header_line(Line) of
+                true ->
+                    {Acc1, Jobs1, S1} = close_section(BufOff + P, Buf, BufOff, Acc, Jobs, S),
+                    S2 = open_section(Line, BufOff + Q + 1, S1),
+                    headers(Buf, BufOff, Matches, Acc1, Jobs1, S2);
+                false ->
+                    headers(Buf, BufOff, Matches, Acc, Jobs, S)
+            end;
         nomatch when Size - P > ?HEADER_MAX ->
             headers(Buf, BufOff, Matches, Acc, Jobs, S);
         nomatch ->
             {P, Acc, Jobs, S}
     end.
 
-finish(Buf, BufOff, Keep, #s{size = Size} = S) ->
+finish(Buf, BufOff, Keep, S) ->
+    ActualSize = max(0, BufOff + byte_size(Buf)),
     %% A header cut off without its newline still names the last section.
     {Acc, Jobs, S1} = case Keep < byte_size(Buf) andalso Buf of
                           <<_:Keep/binary, "\n=", Line/binary>> ->
-                              {A, J, S0} = close_section(BufOff + Keep, Buf, BufOff, [], [], S),
-                              {A, J, open_section(Line, Size, S0)};
+                              case is_header_line(Line) of
+                                  true ->
+                                      {A, J, S0} = close_section(BufOff + Keep, Buf, BufOff, [], [], S),
+                                      {A, J, open_section(Line, ActualSize, S0)};
+                                  false ->
+                                      {[], [], S}
+                              end;
                           _ ->
                               {[], [], S}
                       end,
-    End = case Size > 0 andalso binary:last(Buf) =:= $\n of
-              true -> Size - 1;
-              false -> Size
+    End = case ActualSize > 0 andalso byte_size(Buf) > 0 andalso binary:last(Buf) =:= $\n of
+              true -> ActualSize - 1;
+              false -> ActualSize
           end,
     {Acc1, Jobs1, S2} = close_section(max(End, cur_start(S1)), Buf, BufOff, Acc, Jobs, S1),
     ets:insert(S2#s.idx, Acc1),
     S3 = drain(dispatch(Jobs1, S2)),
     flush(S3),
     {LastTag, LastId} = case S1#s.cur of
-                            {_, T, I, _, _} -> {T, I};
+                            {_, T, I, _, _} -> {copy_opt(T), copy_opt(I)};
                             none -> {null, null}
                         end,
-    (S3#s.progress)(#{scanned => Size, sections => S3#s.sections, skipped => S3#s.skipped}),
-    {ok, #{scanned => Size, sections => S3#s.sections, skipped => S3#s.skipped,
+    (S3#s.progress)(#{scanned => ActualSize, sections => S3#s.sections, skipped => S3#s.skipped}),
+    {ok, #{scanned => ActualSize, sections => S3#s.sections, skipped => S3#s.skipped,
            truncated => LastTag =/= <<"end">>, last_tag => LastTag, last_id => LastId}}.
+
+copy_opt(B) when is_binary(B) -> binary:copy(B);
+copy_opt(X) -> X.
+
+is_header_line(Line0) ->
+    Line = case Line0 of
+               <<L:(byte_size(Line0) - 1)/binary, $\r>> -> L;
+               _ -> Line0
+           end,
+    Tag = case binary:split(Line, <<":">>) of
+              [T, _] -> T;
+              [T] -> T
+          end,
+    valid_tag(Tag).
+
+valid_tag(<<C, Rest/binary>>) when C >= $a, C =< $z, byte_size(Rest) < ?TAG_MAX ->
+    valid_tag_rest(Rest);
+valid_tag(_) ->
+    false.
+
+valid_tag_rest(<<>>) -> true;
+valid_tag_rest(<<C, Rest/binary>>) when C >= $a, C =< $z; C >= $0, C =< $9; C =:= $_ ->
+    valid_tag_rest(Rest);
+valid_tag_rest(_) ->
+    false.
 
 cur_start(#s{cur = {_, _, _, Start, _}}) -> Start;
 cur_start(_) -> 0.
@@ -296,8 +341,15 @@ dispatch(Jobs, #s{workers = Workers, inflight = Inflight} = S) ->
     wait(S#s{inflight = Refs ++ Inflight}, 2 * N).
 
 slices(Jobs, N) ->
-    Tagged = lists:zip(lists:seq(0, length(Jobs) - 1), Jobs),
-    [[J || {I, J} <- Tagged, I rem N =:= K] || K <- lists:seq(0, N - 1)].
+    Buckets = erlang:make_tuple(N, []),
+    Filled = distribute(Jobs, 0, N, Buckets),
+    [lists:reverse(B) || B <- tuple_to_list(Filled)].
+
+distribute([], _, _, Buckets) ->
+    Buckets;
+distribute([J | Js], I, N, Buckets) ->
+    Idx = (I rem N) + 1,
+    distribute(Js, I + 1, N, setelement(Idx, Buckets, [J | element(Idx, Buckets)])).
 
 %% Waits for the oldest batches until at most Max are in flight.
 wait(#s{inflight = Inflight} = S, Max) when length(Inflight) =< Max ->
@@ -337,14 +389,31 @@ summarise(Mod, Meta, {Key, Len, Tag, Id, {ok, Body0}}, {Acc, Skipped}) ->
     end.
 
 %% Bodies over ?SUMMARY_MAX are summarised with every line cut to
-%% ?LINE_MAX bytes ("..." appended), so that a huge link list or the like
-%% does not hide the fields after it.
+%% ?LINE_MAX bytes ("..." appended), capped at ?SUMMARY_CUT_MAX bytes total,
+%% so that a huge link list or millions of short lines do not blow up memory.
 cut_lines(Body) ->
     Lines = binary:split(Body, <<"\n">>, [global]),
-    iolist_to_binary(lists:join(<<"\n">>, [cut_line(L) || L <- Lines])).
+    iolist_to_binary(lists:join(<<"\n">>, cut_lines_acc(Lines, ?SUMMARY_CUT_MAX, []))).
 
-cut_line(L) when byte_size(L) > ?LINE_MAX -> [binary:part(L, 0, ?LINE_MAX), <<"...">>];
+cut_lines_acc([], _, Acc) ->
+    lists:reverse(Acc);
+cut_lines_acc(_, Rem, Acc) when Rem =< 0 ->
+    lists:reverse(Acc);
+cut_lines_acc([L | Ls], Rem, Acc) ->
+    Cut = cut_line(L),
+    Sz = iolist_size(Cut) + 1,
+    cut_lines_acc(Ls, Rem - Sz, [Cut | Acc]).
+
+cut_line(L) when byte_size(L) > ?LINE_MAX -> [utf8_prefix(L, ?LINE_MAX), <<"...">>];
 cut_line(L) -> L.
+
+utf8_prefix(Bin, N) ->
+    P = binary:part(Bin, 0, N),
+    case unicode:characters_to_binary(P) of
+        B when is_binary(B) -> B;
+        {incomplete, B, _} -> B;
+        {error, B, _} -> B
+    end.
 
 %% A summary is stored as {SchemaNo, ValuesTuple}; the keys are kept once
 %% per schema in the meta table. Binaries are copied: a sub-binary of the
@@ -373,7 +442,11 @@ schema(Keys, Meta) ->
             No
     end.
 
-copy_bins(B) when is_binary(B) -> binary:copy(B);
+copy_bins(B) when is_binary(B) ->
+    case binary:referenced_byte_size(B) > byte_size(B) of
+        true -> binary:copy(B);
+        false -> B
+    end;
 copy_bins([H | T]) -> [copy_bins(H) | copy_bins(T)];
 copy_bins(T) when is_tuple(T) -> list_to_tuple(copy_bins(tuple_to_list(T)));
 copy_bins(M) when is_map(M) -> maps:map(fun(_, V) -> copy_bins(V) end, M);

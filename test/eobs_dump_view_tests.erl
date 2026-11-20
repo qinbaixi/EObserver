@@ -219,7 +219,14 @@ bad_input(H) ->
     ?assertEqual({error, not_found}, eobs_dump_view:detail(H, <<"bogus">>, <<"x">>)),
     #{rows := []} = eobs_dump_view:query(H, <<"processes">>, #{offset => 100000}),
     #{rows := [_]} = eobs_dump_view:query(H, <<"processes">>, #{offset => -5, limit => 1}),
-    #{rows := []} = eobs_dump_view:query(H, <<"processes">>, #{limit => -1}).
+    #{rows := []} = eobs_dump_view:query(H, <<"processes">>, #{limit => -1}),
+    %% atom_query out-of-range offsets and zero limit must not crash
+    #{rows := []} = eobs_dump_view:query(H, <<"atoms">>, #{offset => 999999, order => asc}),
+    #{rows := []} = eobs_dump_view:query(H, <<"atoms">>, #{offset => 999999, order => desc}),
+    #{rows := []} = eobs_dump_view:query(H, <<"atoms">>, #{offset => 0, limit => 0, order => asc}),
+    %% invalid UTF-8 filters/search must not crash
+    #{rows := _} = eobs_dump_view:query(H, <<"processes">>, #{filter => <<16#ff, 16#fe>>}),
+    _ = eobs_dump_view:search(H, <<16#ff, 16#fe>>).
 
 %% A dump cut in the middle of a process heap.
 truncated_test_() ->
@@ -314,3 +321,83 @@ parse_ref_test() ->
     ?assertEqual({{int, <<"-12">>}, <<>>}, eobs_dump_term:parse_ref(<<"I-12">>)),
     ?assertEqual({{pid, <<"<0.1.0>">>}, <<>>}, eobs_dump_term:parse_ref(<<"P<0.1.0>">>)),
     ?assertMatch({{bad, _}, <<>>}, eobs_dump_term:parse_ref(<<"?">>)).
+
+quoted_links_and_crlf_test() ->
+    ?assertEqual([<<"a">>, <<"b">>], eobs_dump_parse:lines(<<"a\r\n\r\nb\r\n">>)),
+    ?assertEqual(#{links => [<<"<0.1.0>">>],
+                   monitors => [<<"{'a,b>}',n@h}">>],
+                   monitored_by => []},
+                 eobs_dump_parse:links(<<"[<0.1.0>, {to,{'a,b>}',n@h},#Ref<0.1.2.3>}]">>)).
+
+etf_zip_bomb_and_deep_skip_test() ->
+    %% Claims 10 bytes uncompressed but actually inflates to 200 KB of zeros.
+    Bomb = zlib:compress(binary:copy(<<0>>, 200000)),
+    Bad1 = <<131, 80, 10:32, Bomb/binary>>,
+    ?assertMatch(#{text := <<"<external term,", _/binary>>}, eobs_dump_term:etf_text(Bad1, 0)),
+    %% Claims > 4 MB uncompressed.
+    Bad2 = <<131, 80, (10 bsl 20):32, Bomb/binary>>,
+    ?assertMatch(#{text := <<"<external term,", _/binary>>}, eobs_dump_term:etf_text(Bad2, 0)),
+    %% Deeply nested tuples skipped past depth limit must not hang or blow stack.
+    Deep = lists:foldl(fun(_, Acc) -> <<104, 1, Acc/binary>> end, <<97, 1>>, lists:seq(1, 200)),
+    Res = eobs_dump_term:etf_text(<<131, Deep/binary>>, 0),
+    ?assert(is_binary(maps:get(text, Res))).
+
+utf8_slogan_clip_test() ->
+    %% 4096 bytes cuts right through a 3-byte UTF-8 character; output must remain valid UTF-8.
+    Slogan = binary:copy(<<"中"/utf8>>, 2000),
+    #{params := #{text := Clipped}} = eobs_dump_view:classify(Slogan, none_handle),
+    ?assert(is_binary(json(Clipped))),
+    %% Invalid UTF-8 slogan must not crash classify.
+    Res = eobs_dump_view:classify(<<16#ff, 16#fe, "bad">>, none_handle),
+    ?assertMatch(#{code := unknown}, Res).
+
+cyclic_heap_and_non_string_list_test_() ->
+    {setup,
+     fun() ->
+             Dir = filename:join(os:getenv("TMPDIR", "/tmp"),
+                                 lists:concat(["eobs_dump_cycle_", os:getpid()])),
+             ok = filelib:ensure_path(Dir),
+             Path = filename:join(Dir, "cycle.dump"),
+             %% Build a 25-element list of 65 ($A) ending in atom 'ok' (not a string).
+             ConsChain = [io_lib:format("~.16B:lI65|H~.16B\n", [16#1000 + I, 16#1000 + I + 1])
+                          || I <- lists:seq(0, 24)],
+             LastCell = io_lib:format("~.16B:lA2:ok|N\n", [16#1000 + 25]),
+             %% Refc binary at addr 9000 with 100 bytes; slice starting at offset 50.
+             BinPayload = base64:encode(iolist_to_binary([binary:copy(<<"x">>, 50), <<"TARGET_SLICE">>,
+                                                          binary:copy(<<"y">>, 38)])),
+             Dump = iolist_to_binary([
+                 <<"=erl_crash_dump:0.5\nnow\nSlogan: cycle test\n">>,
+                 <<"=proc:<0.1.0>\nState: Waiting\n">>,
+                 <<"=proc_messages:<0.1.0>\n">>,
+                 <<"H100:\nH200:\nH300:\nH400:\nH1000:\nH500:\n">>,
+                 <<"=proc_heap:<0.1.0>\n">>,
+                 <<"100:lI65|H100\n">>,             % cyclic cons
+                 <<"200:t1:H201\n201:t1:H200\n">>,  % cyclic tuple
+                 <<"300:H300\n">>,                  % cyclic ref
+                 <<"400:Mh1:1:H401\n401:Mn1:H401\n">>, % cyclic hashmap
+                 ConsChain, LastCell,
+                 <<"500:Yc9000:32:C\n">>,           % refc binary offset 0x32=50, len 0xC=12
+                 <<"=binary:9000\n64:">>, BinPayload, <<"\n=end\n">>
+             ]),
+             ok = file:write_file(Path, Dump),
+             {open(Path), Dir}
+     end,
+     fun({H, Dir}) ->
+             eobs_dump:close(element(2, H)),
+             file:del_dir_r(Dir)
+     end,
+     fun({H, _}) ->
+             fun() ->
+                     #{total := 6, items := [M1, M2, M3, M4, M5, M6]} =
+                         eobs_dump_view:process_part(H, <<"<0.1.0>">>, <<"messages">>, 0, 10),
+                     ?assertNotEqual(nomatch, binary:match(maps:get(text, M1), <<"<cycle>">>)),
+                     ?assertNotEqual(nomatch, binary:match(maps:get(text, M2), <<"<cycle>">>)),
+                     ?assertNotEqual(nomatch, binary:match(maps:get(text, M3), <<"<cycle>">>)),
+                     ?assertMatch(<<"#{", _/binary>>, maps:get(text, M4)),
+                     %% Non-string list past item limit must render as list, NOT quoted string!
+                     ?assertMatch(<<"[", _/binary>>, maps:get(text, M5)),
+                     %% Direct-seek binary slice at offset 50
+                     ?assertEqual(<<"<<\"TARGET_SLICE\">>">>, maps:get(text, M6)),
+                     _ = json([M1, M2, M3, M4, M5, M6])
+             end
+     end}.

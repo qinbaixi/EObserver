@@ -105,8 +105,8 @@ do_general(H) ->
         dump_version => Vsn,
         word_size => eobs_dump_parse:word_size(SysVsn),
         otp_release => otp_release(SysVsn),
-        slogan => case is_binary(Slogan) andalso byte_size(Slogan) > 65536 of
-                      true -> <<(binary:part(Slogan, 0, 65536))/binary, "...">>;
+        slogan => case is_binary(Slogan) of
+                      true -> clip(Slogan, 65536);
                       false -> Slogan
                   end}.
 
@@ -149,7 +149,7 @@ limits(H) ->
 %% Reason: the slogan classified into a code + params.
 
 classify(Slogan0, H) ->
-    Slogan = string:trim(to_bin(Slogan0)),
+    Slogan = safe_trim(to_bin(Slogan0)),
     Short = clip(Slogan, 4096),
     case classify_text(Slogan) of
         {unknown, _} ->
@@ -204,7 +204,12 @@ classify_text(S) ->
 
 classify_rules(S, []) -> {unknown, S};
 classify_rules(S, [{Re, Fun} | Rules]) ->
-    case re:run(S, Re, [{capture, all_but_first, binary}, dotall, unicode]) of
+    case try re:run(S, Re, [{capture, all_but_first, binary}, dotall, unicode])
+         catch _:_ ->
+             try re:run(S, Re, [{capture, all_but_first, binary}, dotall])
+             catch _:_ -> nomatch
+             end
+         end of
         {match, Groups} ->
             try Fun(Groups)
             catch _:_ -> classify_rules(S, Rules)
@@ -213,14 +218,12 @@ classify_rules(S, [{Re, Fun} | Rules]) ->
     end.
 
 app_of(Reason) ->
-    case re:run(Reason, "application_start_failure,'?([A-Za-z0-9_@]+)'?",
-                [{capture, all_but_first, binary}]) of
+    case try re:run(Reason, "application_start_failure,'?([A-Za-z0-9_@]+)'?",
+                    [{capture, all_but_first, binary}])
+         catch _:_ -> nomatch
+         end of
         {match, [App]} -> App;
-        _ ->
-            case re:run(Reason, "^\\{?'?([a-z][A-Za-z0-9_@]*)'?,", [{capture, all_but_first, binary}]) of
-                {match, [_]} -> null;
-                _ -> null
-            end
+        _ -> null
     end.
 
 %% erlang:halt/1,2 on the calling scheduler's stack means a deliberate halt.
@@ -238,13 +241,22 @@ halted1(H) ->
 
 calling_scheduler(H) ->
     case maps:get(calling_thread, general(H), null) of
+        <<"dirty_cpu_scheduler:", N/binary>> ->
+            sched_by_tags(H, [<<"dirty_cpu_scheduler">>, <<"scheduler">>], N);
+        <<"dirty_io_scheduler:", N/binary>> ->
+            sched_by_tags(H, [<<"dirty_io_scheduler">>, <<"scheduler">>], N);
         <<"scheduler:", N/binary>> ->
-            Tags = [<<"scheduler">>, <<"dirty_cpu_scheduler">>, <<"dirty_io_scheduler">>],
-            case [B || T <- Tags, {ok, B} <- [section_body(H, T, N)]] of
-                [Body | _] -> eobs_dump_parse:scheduler(Body);
-                [] -> none
-            end;
-        _ -> none
+            sched_by_tags(H, [<<"scheduler">>, <<"dirty_cpu_scheduler">>, <<"dirty_io_scheduler">>], N);
+        _ ->
+            none
+    end.
+
+sched_by_tags(_H, [], _N) ->
+    none;
+sched_by_tags(H, [Tag | Tags], N) ->
+    case section_body(H, Tag, N) of
+        {ok, Body} -> eobs_dump_parse:scheduler(Body);
+        _ -> sched_by_tags(H, Tags, N)
     end.
 
 %% ---------------------------------------------------------------------
@@ -300,13 +312,13 @@ f_calling(H, _) ->
 f_oom_culprit(H, #{reason := #{code := Code}, full := true})
   when Code =:= oom; Code =:= out_of_memory_heap ->
     T = proc_table(H),
-    Garbing = [tab_id(T, I) || I <- first_bits(match_bits(T, <<"\tgarbing\t">>), maps:get(n, T), 5)],
+    Garbing = [tab_id(T, I) || I <- match_first_rows(T, <<"\tgarbing\t">>, 5)],
     [begin
          Row = proc_row_by_id(H, Pid),
          finding(critical, garbage_collecting,
                  #{pid => Pid, name => maps:get(name, Row, null), memory => maps:get(memory, Row, null)},
                  proc_target(Pid))
-     end || Pid <- lists:sublist(Garbing, 5)];
+     end || Pid <- Garbing];
 f_oom_culprit(_, _) -> [].
 
 f_top_memory(_H, #{top := #{memory := [Top | _]}, memory := Mem, reason := #{code := Code}}) ->
@@ -383,10 +395,26 @@ f_many_procs(_H, #{counts := #{processes := N}}) when N >= 100000 ->
     [finding(info, many_processes, #{count => N}, null)];
 f_many_procs(_, _) -> [].
 
+%% Dirty schedulers share one run queue per pool; report each shared queue once.
 f_run_queue(H, _) ->
     Rows = rows(H, <<"schedulers">>),
-    [finding(warning, run_queue_long, #{scheduler => Id, type => T, length => L}, null)
-     || #{id := Id, type := T, run_queue := L} <- Rows, is_integer(L), L >= 100].
+    {_, Fs} = lists:foldl(
+                fun(#{id := Id, type := T, run_queue := L}, {Seen, Acc}) when is_integer(L), L >= 100 ->
+                        Key = case T of
+                                  <<"normal">> -> {normal, Id};
+                                  _ -> {dirty, T}
+                              end,
+                        case maps:is_key(Key, Seen) of
+                            true -> {Seen, Acc};
+                            false ->
+                                F = finding(warning, run_queue_long,
+                                            #{scheduler => Id, type => T, length => L}, null),
+                                {Seen#{Key => true}, [F | Acc]}
+                        end;
+                   (_, State) ->
+                        State
+                end, {#{}, []}, Rows),
+    lists:reverse(Fs).
 
 f_port_queue(H, #{full := true}) ->
     [finding(warning, port_queue, #{port => P, name => N, bytes => Q}, #{kind => port, key => P})
@@ -424,7 +452,7 @@ norm_opts(Opts) when is_map(Opts) ->
                _ -> null
            end,
     Filter = case Get(filter, <<>>) of
-                 F when is_binary(F) -> string:lowercase(string:trim(F));
+                 F when is_binary(F) -> safe_lower(safe_trim(F));
                  _ -> <<>>
              end,
     #{offset => clamp(Get(offset, 0), 0, 1 bsl 40),
@@ -459,8 +487,8 @@ page(Cols, Rows, #{offset := Off, limit := Lim, sort := Sort0, order := Order, f
     Sorted = case Sort of
                  null -> Filtered;
                  _ ->
-                     Asc = lists:sort(fun(A, B) -> cmp(sort_val(A, Sort), sort_val(B, Sort)) end,
-                                      Filtered),
+                     Keyed = [{sort_val(R, Sort), R} || R <- Filtered],
+                     Asc = [R || {_, R} <- lists:sort(fun({A, _}, {B, _}) -> cmp(A, B) end, Keyed)],
                      case Order of
                          asc -> Asc;
                          desc -> lists:reverse(Asc)
@@ -481,14 +509,14 @@ row_matches(Row, Keys, F) ->
               end, Keys).
 
 contains(V, F) ->
-    binary:match(string:lowercase(V), F) =/= nomatch.
+    binary:match(safe_lower(V), F) =/= nomatch.
 
 sort_val(Row, K) ->
     case maps:get(K, Row, null) of
         #{text := T} -> T;
         V when is_binary(V) ->
             case id_key(V) of
-                none -> string:lowercase(V);
+                none -> safe_lower(V);
                 Key -> Key
             end;
         V -> V
@@ -504,10 +532,35 @@ id_key(<<"<", _/binary>> = V) -> id_nums(V);
 id_key(<<"#Port<", _/binary>> = V) -> id_nums(V);
 id_key(_) -> none.
 
-id_nums(V) ->
-    case re:run(V, "^(?:#Port)?<(\\d+)\\.(\\d+)(?:\\.(\\d+))?>$", [{capture, all_but_first, binary}]) of
-        {match, Ns} -> {id, [binary_to_integer(N) || N <- Ns, N =/= <<>>]};
-        _ -> none
+id_nums(<<"#Port<", Rest/binary>>) -> id_nums_inner(Rest);
+id_nums(<<"<", Rest/binary>>) -> id_nums_inner(Rest);
+id_nums(_) -> none.
+
+id_nums_inner(Rest) when byte_size(Rest) >= 4 ->
+    case binary:last(Rest) of
+        $> ->
+            Inner = binary:part(Rest, 0, byte_size(Rest) - 1),
+            case binary:split(Inner, <<".">>, [global]) of
+                [A, B] -> parse_id_parts([A, B]);
+                [A, B, C] -> parse_id_parts([A, B, C]);
+                _ -> none
+            end;
+        _ ->
+            none
+    end;
+id_nums_inner(_) ->
+    none.
+
+parse_id_parts(Parts) ->
+    try {id, [parse_nonneg_int(P) || P <- Parts]}
+    catch _:_ -> none
+    end.
+
+parse_nonneg_int(<<>>) -> error(badarg);
+parse_nonneg_int(Bin) ->
+    case binary_to_integer(Bin) of
+        N when N >= 0 -> N;
+        _ -> error(badarg)
     end.
 
 default_sort(<<"ports">>) -> id;
@@ -729,11 +782,20 @@ alloc_sums(KVs) ->
                    (_, Acc) -> Acc
                 end, {0, 0}, KVs).
 
-alloc_key(K) ->
-    case re:run(K, "^(mbcs|sbcs|mbcs_pool) (blocks|carriers)(\\[[^\\]]*\\])? size$",
-                [{capture, [2], binary}]) of
-        {match, [<<"blocks">>]} -> blocks;
-        {match, [<<"carriers">>]} -> carriers;
+alloc_key(<<"mbcs ", Rest/binary>>) -> alloc_kind_size(Rest);
+alloc_key(<<"sbcs ", Rest/binary>>) -> alloc_kind_size(Rest);
+alloc_key(<<"mbcs_pool ", Rest/binary>>) -> alloc_kind_size(Rest);
+alloc_key(_) -> none.
+
+alloc_kind_size(<<"blocks size">>) -> blocks;
+alloc_kind_size(<<"carriers size">>) -> carriers;
+alloc_kind_size(<<"blocks[", Rest/binary>>) -> alloc_bracket_size(Rest, blocks);
+alloc_kind_size(<<"carriers[", Rest/binary>>) -> alloc_bracket_size(Rest, carriers);
+alloc_kind_size(_) -> none.
+
+alloc_bracket_size(Rest, Kind) ->
+    case binary:split(Rest, <<"]">>) of
+        [_, <<" size">>] -> Kind;
         _ -> none
     end.
 
@@ -790,10 +852,13 @@ build_proc_table(H) ->
     WS = word_size(H),
     Sums = summaries_all(H, <<"proc">>),
     {Ids, Texts, Ints, States} =
-        lists:foldl(fun({Id, S}, {IA, TA, NA, SA}) ->
+        lists:foldl(fun({Id0, S}, {IA, TA, NA, SA}) ->
+                            Id = to_bin(Id0),
                             R = proc_row(Id, S, WS),
                             Line = iolist_to_binary(
-                                     lists:join($\t, [lower(maps:get(K, R)) || K <- [pid, name, state, init, current]])),
+                                     [lists:join($\t, [clean_col(maps:get(K, R))
+                                                       || K <- [pid, name, state, init, current]]),
+                                      $\n]),
                             St = maps:get(state, S, <<"?">>),
                             {[Id | IA], [Line | TA],
                              [[int64(maps:get(K, R)) || K <- [reds, memory, mq, heap, bin]] | NA],
@@ -807,8 +872,14 @@ build_proc_table(H) ->
       ints => maps:from_list(lists:zip([<<"reds">>, <<"memory">>, <<"mq">>, <<"heap">>, <<"bin">>],
                                        IntCols))}.
 
-lower(null) -> <<>>;
-lower(B) -> string:lowercase(B).
+clean_col(null) -> <<>>;
+clean_col(B) when is_binary(B) ->
+    L = safe_lower(B),
+    case binary:match(L, [<<"\t">>, <<"\n">>, <<"\r">>]) of
+        nomatch -> L;
+        _ -> binary:replace(L, [<<"\t">>, <<"\n">>, <<"\r">>], <<" ">>, [global])
+    end;
+clean_col(_) -> <<>>.
 
 int64(null) -> 0;
 int64(I) when is_integer(I) -> max(-(1 bsl 63), min(I, (1 bsl 63) - 1)).
@@ -817,12 +888,11 @@ transpose(Rows, Cols) ->
     [iolist_to_binary([<<(lists:nth(C, R)):64/signed>> || R <- Rows]) || C <- lists:seq(1, Cols)].
 
 pack_strings(L) ->
-    {Offs, _} = lists:mapfoldl(fun(B, O) -> {<<O:32>>, O + byte_size(B)} end, 0, L),
-    Total = lists:sum([byte_size(B) || B <- L]),
-    {iolist_to_binary(L), iolist_to_binary([Offs, <<Total:32>>])}.
+    {Offs, Total} = lists:mapfoldl(fun(B, O) -> {<<O:64>>, O + byte_size(B)} end, 0, L),
+    {iolist_to_binary(L), iolist_to_binary([Offs, <<Total:64>>])}.
 
 packed_at({Blob, Offs}, I) ->
-    <<_:(I * 4)/binary, O1:32, O2:32, _/binary>> = Offs,
+    <<_:(I * 8)/binary, O1:64, O2:64, _/binary>> = Offs,
     binary:part(Blob, O1, O2 - O1).
 
 tab_id(T, I) -> packed_at(maps:get(ids, T), I).
@@ -838,11 +908,17 @@ build_perm(#{n := N} = T, Key) ->
                    [pid_key(tab_id(T, I)) || I <- seq(N)];
                error ->
                    Field = text_field(Key),
-                   [lists:nth(Field, binary:split(packed_at(maps:get(text, T), I), <<"\t">>, [global]))
-                    || I <- seq(N)]
+                   [row_field(packed_at(maps:get(text, T), I), Field) || I <- seq(N)]
            end,
     Sorted = lists:sort(lists:zip(Vals, seq(N))),
     << <<I:32>> || {_, I} <- Sorted >>.
+
+row_field(Line, Field) ->
+    Body = case byte_size(Line) > 0 andalso binary:last(Line) of
+               $\n -> binary:part(Line, 0, byte_size(Line) - 1);
+               _ -> Line
+           end,
+    lists:nth(Field, binary:split(Body, <<"\t">>, [global])).
 
 seq(0) -> [];
 seq(N) -> lists:seq(0, N - 1).
@@ -861,41 +937,93 @@ pid_key(<<"<", Rest/binary>> = Pid) ->
 pid_key(Pid) -> [Pid].
 
 perm_slice(_, N, _, Off, _) when Off >= N -> [];
+perm_slice(_, _, _, _, Lim) when Lim =< 0 -> [];
 perm_slice(Perm, N, Order, Off, Lim) ->
     [perm_at(Perm, N, Order, P) || P <- lists:seq(Off, min(N, Off + Lim) - 1)].
 
 perm_at(Perm, _N, asc, P) -> <<_:(P * 4)/binary, I:32, _/binary>> = Perm, I;
 perm_at(Perm, N, desc, P) -> perm_at(Perm, N, asc, N - 1 - P).
 
-perm_filter(Perm, _N, Order, Bits, Off, Lim) ->
-    Fold = fun(I, {Count, Acc}) ->
-                   case bit(Bits, I) of
-                       true when Count >= Off, Count < Off + Lim -> {Count + 1, [I | Acc]};
-                       true -> {Count + 1, Acc};
-                       false -> {Count, Acc}
-                   end
-           end,
-    Is = [I || <<I:32>> <= Perm],
-    {Total, Acc} = lists:foldl(Fold, {0, []}, case Order of asc -> Is; desc -> lists:reverse(Is) end),
-    {Total, lists:reverse(Acc)}.
+%% Filters Perm directly via binary indexing without unpacking 1M ints to a list.
+perm_filter(Perm, N, Order, Bits, Off, Lim) ->
+    perm_filter_loop(Perm, N, Order, Bits, Off, Off + Lim, 0, 0, []).
+
+perm_filter_loop(_Perm, N, _Order, _Bits, _Off, _Stop, P, Count, Acc) when P >= N ->
+    {Count, lists:reverse(Acc)};
+perm_filter_loop(Perm, N, Order, Bits, Off, Stop, P, Count, Acc) ->
+    I = perm_at(Perm, N, Order, P),
+    case bit(Bits, I) of
+        true when Count >= Off, Count < Stop ->
+            perm_filter_loop(Perm, N, Order, Bits, Off, Stop, P + 1, Count + 1, [I | Acc]);
+        true ->
+            perm_filter_loop(Perm, N, Order, Bits, Off, Stop, P + 1, Count + 1, Acc);
+        false ->
+            perm_filter_loop(Perm, N, Order, Bits, Off, Stop, P + 1, Count, Acc)
+    end.
 
 bit(Bits, I) ->
     <<_:I, B:1, _/bits>> = Bits,
     B =:= 1.
 
-%% Bitmap of rows whose text columns contain F.
+%% Streaming bitmap of rows whose text columns contain F.
+%% Advances straight past each matched row's end offset so repeated hits
+%% inside one row never allocate a multi-million-tuple match list.
+match_bits(#{n := 0}, _F) ->
+    <<>>;
 match_bits(#{n := N, text := {Blob, Offs}}, F) ->
-    Positions = [P || {P, _} <- binary:matches(Blob, F)],
-    Rows = rows_of(Positions, Offs, 0, N, []),
-    to_bits(lists:usort(Rows), 0, N, []).
+    FLen = byte_size(F),
+    BlobSize = byte_size(Blob),
+    CP = binary:compile_pattern(F),
+    Rows = match_scan(Blob, BlobSize, Offs, CP, FLen, 0, 0, N, infinity, []),
+    to_bits(lists:reverse(Rows), 0, N, []).
 
-rows_of([], _, _, _, Acc) -> Acc;
-rows_of(_, _, I, N, Acc) when I >= N -> Acc;
-rows_of([P | Ps] = All, Offs, I, N, Acc) ->
-    <<_:(I * 4)/binary, _:32, End:32, _/binary>> = Offs,
+%% Streaming scan stopping after at most Max matching row indices.
+match_first_rows(#{n := 0}, _F, _Max) ->
+    [];
+match_first_rows(#{n := N, text := {Blob, Offs}}, F, Max) ->
+    FLen = byte_size(F),
+    BlobSize = byte_size(Blob),
+    CP = binary:compile_pattern(F),
+    lists:reverse(match_scan(Blob, BlobSize, Offs, CP, FLen, 0, 0, N, Max, [])).
+
+match_scan(_Blob, _Size, _Offs, _CP, _FLen, _Pos, _I, _N, 0, Acc) ->
+    Acc;
+match_scan(_Blob, Size, _Offs, _CP, _FLen, Pos, I, N, _Max, Acc) when Pos >= Size; I >= N ->
+    Acc;
+match_scan(Blob, Size, Offs, CP, FLen, Pos, I, N, Max, Acc) ->
+    case binary:match(Blob, CP, [{scope, {Pos, Size - Pos}}]) of
+        nomatch ->
+            Acc;
+        {P, _} ->
+            {RowIdx, End} = find_row(Offs, P, I, N),
+            case RowIdx < N of
+                false ->
+                    Acc;
+                true when P + FLen =< End ->
+                    NextMax = case Max of infinity -> infinity; M -> M - 1 end,
+                    match_scan(Blob, Size, Offs, CP, FLen, End, RowIdx + 1, N, NextMax, [RowIdx | Acc]);
+                true ->
+                    %% Crossed the row boundary (only possible if F contains \n): skip past End.
+                    match_scan(Blob, Size, Offs, CP, FLen, End, RowIdx + 1, N, Max, Acc)
+            end
+    end.
+
+%% Advance row index I until End > P (binary search when far ahead).
+find_row(Offs, P, I, N) ->
+    <<_:(I * 8)/binary, _:64, End:64, _/binary>> = Offs,
     case P < End of
-        true -> rows_of(Ps, Offs, I, N, [I | Acc]);
-        false -> rows_of(All, Offs, I + 1, N, Acc)
+        true -> {I, End};
+        false -> find_row_bsearch(Offs, P, I + 1, N - 1, N)
+    end.
+
+find_row_bsearch(_Offs, _P, Lo, Hi, N) when Lo > Hi -> {N, 0};
+find_row_bsearch(Offs, P, Lo, Hi, N) ->
+    Mid = (Lo + Hi) div 2,
+    <<_:(Mid * 8)/binary, Start:64, End:64, _/binary>> = Offs,
+    if
+        P < Start -> find_row_bsearch(Offs, P, Lo, Mid - 1, N);
+        P >= End -> find_row_bsearch(Offs, P, Mid + 1, Hi, N);
+        true -> {Mid, End}
     end.
 
 to_bits([], Pos, N, Acc) ->
@@ -950,16 +1078,18 @@ atom_query(H, #{offset := Off, limit := Lim, order := Order0, sort := Sort, filt
     N = eobs_dump_term:line_count(H, <<"atoms">>, null),
     Row = fun(Line, Name) -> #{index => N - Line, name => Name} end,
     case F of
+        <<>> when Off >= N; Lim =< 0 ->
+            #{total => N, columns => Cols, rows => []};
         <<>> ->
-            {Lines, First} = case Order of
-                                 desc -> {lists:seq(Off, min(N, Off + Lim) - 1), Off};
-                                 asc -> {lists:seq(max(0, N - Off - Lim), N - Off - 1),
-                                         max(0, N - Off - Lim)}
-                             end,
-            case Lines of
-                [] -> #{total => N, columns => Cols, rows => []};
-                _ ->
-                    {_, Names} = eobs_dump_term:lines(H, <<"atoms">>, null, First, length(Lines)),
+            {From, To} = case Order of
+                             desc -> {Off, min(N, Off + Lim) - 1};
+                             asc -> {max(0, N - Off - Lim), N - Off - 1}
+                         end,
+            case From =< To of
+                false -> #{total => N, columns => Cols, rows => []};
+                true ->
+                    Lines = lists:seq(From, To),
+                    {_, Names} = eobs_dump_term:lines(H, <<"atoms">>, null, From, length(Lines)),
                     Rows = [Row(L, Nm) || {L, Nm} <- lists:zip(Lines, Names)],
                     #{total => N, columns => Cols,
                       rows => case Order of asc -> lists:reverse(Rows); desc -> Rows end}
@@ -991,7 +1121,7 @@ scan_atoms(H, Off, Len, Pos, Carry, LineNo, F, Acc) ->
             Acc1 = match_atom_lines(Complete, LineNo, F, Acc),
             case length(Acc1) > 100000 of
                 true -> lists:reverse(Acc1);
-                false -> scan_atoms(H, Off, Len, Pos + byte_size(Chunk), Last,
+                false -> scan_atoms(H, Off, Len, Pos + byte_size(Chunk), binary:copy(Last),
                                     LineNo + length(Complete), F, Acc1)
             end;
         _ ->
@@ -1000,13 +1130,18 @@ scan_atoms(H, Off, Len, Pos, Carry, LineNo, F, Acc) ->
 
 match_atom_lines([], _, _, Acc) -> Acc;
 match_atom_lines([L | Ls], N, F, Acc) ->
-    Acc1 = case binary:match(string:lowercase(L), F) of
+    Acc1 = case binary:match(safe_lower(L), F) of
                nomatch -> Acc;
-               _ -> [{N, strip_cr(L)} | Acc]
+               _ -> [{N, binary:copy(strip_cr(L))} | Acc]
            end,
     match_atom_lines(Ls, N + 1, F, Acc1).
 
-strip_cr(L) -> string:trim(L, trailing, "\r").
+strip_cr(L) when byte_size(L) > 0 ->
+    case binary:last(L) of
+        $\r -> binary:part(L, 0, byte_size(L) - 1);
+        _ -> L
+    end;
+strip_cr(L) -> L.
 
 %% ---------------------------------------------------------------------
 %% Persistent terms
@@ -1019,10 +1154,9 @@ pt_query(H, #{offset := Off, limit := Lim, order := Order, sort := Sort, filter 
             {Total, Items} = eobs_dump_term:persistent_terms(H, Off, Lim, 0),
             #{total => Total, columns => Cols, rows => Items};
         false ->
-            %% Keys rendered once (short), then filtered/sorted by text.
+            %% Keys rendered once (short, without rendering values), then filtered/sorted.
             Keys = eobs_dump:cache(H, {eobs_view, pt_keys}, fun() ->
-                       {_, Items} = eobs_dump_term:persistent_terms(H, 0, min(N, 100000), 0),
-                       [{I, maps:get(text, K)} || {I, #{key := K}} <- lists:zip(seq(length(Items)), Items)]
+                       eobs_dump_term:persistent_term_keys(H, 0, min(N, 100000))
                    end),
             Matching = [{T, I} || {I, T} <- Keys, F =:= <<>> orelse contains(T, F)],
             Sorted = case Sort of
@@ -1031,8 +1165,8 @@ pt_query(H, #{offset := Off, limit := Lim, order := Order, sort := Sort, filter 
                              case Order of asc -> Asc; desc -> lists:reverse(Asc) end;
                          _ -> lists:keysort(2, Matching)
                      end,
-            Rows = [hd(element(2, eobs_dump_term:persistent_terms(H, I, 1, 0)))
-                    || {_, I} <- slice(Sorted, Off, Lim)],
+            Indices = [I || {_, I} <- slice(Sorted, Off, Lim)],
+            Rows = eobs_dump_term:persistent_terms_at(H, Indices, 0),
             #{total => length(Sorted), columns => Cols, rows => Rows}
     end.
 
@@ -1120,16 +1254,22 @@ proc_truncated(H, Pid) ->
     end.
 
 %% "{name,node}" monitors point at a registered process on this node.
-resolve_name(H, <<"{", _/binary>> = M) ->
-    case re:run(M, "^\\{([^,]+),([^}]+)\\}$", [{capture, all_but_first, binary}]) of
-        {match, [Name, Node]} ->
-            Local = maps:get(node, general(H), null),
-            case eobs_dump_parse:unquote_atom(Node) =:= Local of
-                true -> case registered(H, Name) of
-                            null -> M;
-                            Pid -> Pid
-                        end;
-                false -> M
+resolve_name(H, <<"{", Rest/binary>> = M) when byte_size(Rest) >= 3 ->
+    case binary:last(Rest) of
+        $} ->
+            Inner = binary:part(Rest, 0, byte_size(Rest) - 1),
+            case binary:split(Inner, <<",">>) of
+                [Name, Node] when Name =/= <<>>, Node =/= <<>> ->
+                    Local = maps:get(node, general(H), null),
+                    case eobs_dump_parse:unquote_atom(Node) =:= Local of
+                        true ->
+                            case registered(H, Name) of
+                                null -> M;
+                                Pid -> Pid
+                            end;
+                        false -> M
+                    end;
+                _ -> M
             end;
         _ -> M
     end;
@@ -1217,9 +1357,12 @@ do_detail(H, <<"module">>, Key) ->
     case section_body(H, <<"mod">>, Name) of
         {ok, Body} ->
             M = eobs_dump_parse:mod(Body),
-            Terms = [#{key => F, value => T}
-                     || F <- [<<"cur_attrib">>, <<"cur_comp">>, <<"old_attrib">>, <<"old_comp">>],
-                        {ok, T} <- [eobs_dump_term:mod_attr(H, Name, F, 0)]],
+            FieldDefs = [{<<"cur_attrib">>, cur_attrib}, {<<"cur_comp">>, cur_comp},
+                         {<<"old_attrib">>, old_attrib}, {<<"old_comp">>, old_comp}],
+            Terms = [#{key => F, value => eobs_dump_term:render_mod_attr(H, Name, F, Data, 0)}
+                     || {F, K} <- FieldDefs,
+                        Data <- [maps:get(K, M, undefined)],
+                        is_binary(Data)],
             #{title => eobs_dump_parse:unquote_atom(Name),
               fields => fields(#{current_size => maps:get(cur, M, null),
                                  old_size => maps:get(old, M, null)},
@@ -1228,8 +1371,9 @@ do_detail(H, <<"module">>, Key) ->
         _ -> {error, not_found}
     end;
 do_detail(H, <<"allocator">>, Key) ->
-    Insts = [{Id, eobs_dump_parse:allocator(B)} || {Id, B} <- section_bodies(H, <<"allocator">>),
-                                                   Id =:= Key orelse alloc_type(Id) =:= Key],
+    Secs = [{Id, Off, Len} || {Id, Off, Len} <- eobs_dump:sections(H, <<"allocator">>),
+                              Id =:= Key orelse alloc_type(Id) =:= Key],
+    Insts = [{Id, eobs_dump_parse:allocator(B)} || {Id, B} <- read_sections(H, Secs)],
     case Insts of
         [] -> {error, not_found};
         _ ->
@@ -1241,17 +1385,20 @@ do_detail(H, <<"allocator">>, Key) ->
                             || {Id, KVs} <- Insts]}
     end;
 do_detail(H, <<"scheduler">>, Key) ->
-    Found = [B || T <- [<<"scheduler">>, <<"dirty_cpu_scheduler">>, <<"dirty_io_scheduler">>],
-                  {ok, B} <- [section_body(H, T, Key)]],
-    case Found of
-        [Body | _] ->
-            S = eobs_dump_parse:scheduler(Body),
+    {Tags, Id} = case Key of
+                     <<"dirty_cpu:", N/binary>> -> {[<<"dirty_cpu_scheduler">>], N};
+                     <<"dirty_io:", N/binary>> -> {[<<"dirty_io_scheduler">>], N};
+                     <<"normal:", N/binary>> -> {[<<"scheduler">>], N};
+                     _ -> {[<<"scheduler">>, <<"dirty_cpu_scheduler">>, <<"dirty_io_scheduler">>], Key}
+                 end,
+    case sched_by_tags(H, Tags, Id) of
+        #{} = S ->
             #{title => Key,
               fields => fields(S, [process, process_state, process_internal_state, process_pc,
                                    process_cp, port, sleep_flags, sleep_aux, rq_max, rq_high,
                                    rq_normal, rq_low, rq_port, rq_flags]),
               stack => maps:get(stack, S, [])};
-        [] -> {error, not_found}
+        none -> {error, not_found}
     end;
 do_detail(H, <<"timer">>, Key) ->
     case [R || R = #{owner := O} <- rows(H, <<"timers">>), O =:= Key] of
@@ -1302,7 +1449,7 @@ find_ets(H, Key) ->
 %% Search: [{kind, key, label}], at most 50
 
 search(H, Q0) when is_binary(Q0) ->
-    Q = string:lowercase(string:trim(Q0)),
+    Q = safe_lower(safe_trim(Q0)),
     case byte_size(Q) of
         0 -> [];
         N when N > 256 -> [];
@@ -1321,11 +1468,13 @@ do_search(H, Q) ->
             end,
     Others =
         [#{kind => port, key => Id, label => label(Id, N)}
-         || #{id := Id, name := N} = R <- rows(H, <<"ports">>), match_any(R, [id, name, controls], Q)]
+         || #{id := Id, name := N} = R <- rows(H, <<"ports">>),
+            is_binary(Id), match_any(R, [id, name, controls], Q)]
         ++ [#{kind => ets, key => T1, label => label(T1, O)}
-            || #{table := T1, owner := O} = R <- rows(H, <<"ets">>), match_any(R, [table, name], Q)]
+            || #{table := T1, owner := O} = R <- rows(H, <<"ets">>),
+               is_binary(T1), match_any(R, [table, name], Q)]
         ++ [#{kind => module, key => N, label => N}
-            || #{name := N} <- rows(H, <<"modules">>), contains(N, Q)]
+            || #{name := N} <- rows(H, <<"modules">>), is_binary(N), contains(N, Q)]
         ++ [#{kind => node, key => integer_to_binary(C), label => N}
             || #{channel := C, name := N} <- rows(H, <<"nodes">>), is_binary(N), contains(N, Q),
                is_integer(C)],
@@ -1335,16 +1484,20 @@ do_search(H, Q) ->
 
 search_procs(H, Q) ->
     T = proc_table(H),
-    Bits = match_bits(T, Q),
     [begin
-                 Id = tab_id(T, I),
-                 Fields = binary:split(packed_at(maps:get(text, T), I), <<"\t">>, [global]),
-                 Label = case lists:nth(2, Fields) of
-                             <<>> -> iolist_to_binary([Id, " ", lists:nth(4, Fields)]);
-                             _ -> iolist_to_binary([Id, " ", name_of(H, Id)])
-                         end,
-                 #{kind => process, key => Id, label => Label}
-             end || I <- first_bits(Bits, maps:get(n, T), 20)].
+         Id = tab_id(T, I),
+         Line = packed_at(maps:get(text, T), I),
+         Body = case byte_size(Line) > 0 andalso binary:last(Line) of
+                    $\n -> binary:part(Line, 0, byte_size(Line) - 1);
+                    _ -> Line
+                end,
+         Fields = binary:split(Body, <<"\t">>, [global]),
+         Label = case lists:nth(2, Fields) of
+                     <<>> -> iolist_to_binary([Id, " ", lists:nth(4, Fields)]);
+                     _ -> iolist_to_binary([Id, " ", name_of(H, Id)])
+                 end,
+         #{kind => process, key => Id, label => Label}
+     end || I <- match_first_rows(T, Q, 20)].
 
 exact_pid(H, Q) ->
     Pid = case Q of
@@ -1378,16 +1531,6 @@ match_any(Row, Keys, Q) ->
                       end
               end, Keys).
 
-first_bits(Bits, N, Max) -> first_bits(Bits, 0, N, Max, []).
-
-first_bits(_, _, _, 0, Acc) -> lists:reverse(Acc);
-first_bits(_, I, N, _, Acc) when I >= N -> lists:reverse(Acc);
-first_bits(Bits, I, N, Max, Acc) ->
-    case bit(Bits, I) of
-        true -> first_bits(Bits, I + 1, N, Max - 1, [I | Acc]);
-        false -> first_bits(Bits, I + 1, N, Max, Acc)
-    end.
-
 %% =====================================================================
 %% Helpers
 
@@ -1413,28 +1556,76 @@ section_body(H, Tag, Id, Max) ->
 
 %% [{Id, Body}] for every section of Tag (small sections only).
 section_bodies(H, Tag) ->
-    Secs = eobs_dump:sections(H, Tag),
+    read_sections(H, eobs_dump:sections(H, Tag)).
+
+read_sections(_H, []) ->
+    [];
+read_sections(H, Secs) ->
     Locs = [{Off, min(Len, ?MAX_SECTION)} || {_, Off, Len} <- Secs],
-    Results = case Locs of
-                  [] -> [];
-                  _ -> read_many(H, Locs)
-              end,
+    Results = read_many(H, Locs),
     [{Id, B} || {{Id, _, _}, {ok, B}} <- lists:zip(Secs, Results)].
 
-%% One fd for many reads when the reader offers it.
+%% One fd for many reads, respecting a 64 MB total budget instead of
+%% bypassing eobs_dump's ?MAX_READ cap.
 read_many(H, Locs) ->
-    case erlang:function_exported(eobs_dump, reads, 2) of
-        true ->
-            case eobs_dump:reads(H, Locs) of
-                L when is_list(L) -> L;
-                _ -> [eobs_dump:read(H, O, L) || {O, L} <- Locs]
-            end;
-        false ->
-            [eobs_dump:read(H, O, L) || {O, L} <- Locs]
-    end.
+    {Capped, RestCount} = cap_locs(Locs, 64 * ?MB, []),
+    Got = case Capped of
+              [] -> [];
+              _ -> read_batches(H, chunk_locs(Capped, 16 * ?MB))
+          end,
+    Got ++ lists:duplicate(RestCount, {error, too_large}).
+
+cap_locs([], _Budget, Acc) ->
+    {lists:reverse(Acc), 0};
+cap_locs([{_O, L} = Loc | Rest], Budget, Acc) when L =< Budget ->
+    cap_locs(Rest, Budget - L, [Loc | Acc]);
+cap_locs(Rest, _Budget, Acc) ->
+    {lists:reverse(Acc), length(Rest)}.
+
+chunk_locs(Locs, MaxBatch) ->
+    chunk_locs(Locs, MaxBatch, 0, [], []).
+
+chunk_locs([], _, _, [], Batches) ->
+    lists:reverse(Batches);
+chunk_locs([], _, _, Cur, Batches) ->
+    lists:reverse([lists:reverse(Cur) | Batches]);
+chunk_locs([{_, L} = Loc | Rest], MaxBatch, CurSz, Cur, Batches)
+  when Cur =/= [], CurSz + L > MaxBatch ->
+    chunk_locs(Rest, MaxBatch, L, [Loc], [lists:reverse(Cur) | Batches]);
+chunk_locs([{_, L} = Loc | Rest], MaxBatch, CurSz, Cur, Batches) ->
+    chunk_locs(Rest, MaxBatch, CurSz + L, [Loc | Cur], Batches).
+
+read_batches(_H, []) ->
+    [];
+read_batches(H, [Batch | Batches]) ->
+    Res = case eobs_dump:reads(H, Batch) of
+              L when is_list(L) -> L;
+              Err -> lists:duplicate(length(Batch), Err)
+          end,
+    Res ++ read_batches(H, Batches).
 
 to_bin(B) when is_binary(B) -> B;
 to_bin(_) -> <<>>.
 
-clip(B, N) when byte_size(B) > N -> <<(binary:part(B, 0, N))/binary, "...">>;
+clip(B, N) when is_binary(B), byte_size(B) > N ->
+    <<(utf8_prefix(B, N))/binary, "...">>;
 clip(B, _) -> B.
+
+utf8_prefix(Bin, N) ->
+    P = binary:part(Bin, 0, N),
+    case unicode:characters_to_binary(P) of
+        B when is_binary(B) -> B;
+        {incomplete, B, _} -> B;
+        {error, B, _} -> B
+    end.
+
+safe_trim(B) when is_binary(B) ->
+    try string:trim(B)
+    catch _:_ -> B
+    end.
+
+safe_lower(B) when is_binary(B) ->
+    try string:lowercase(B)
+    catch _:_ ->
+        << <<(if C >= $A, C =< $Z -> C + 32; true -> C end)>> || <<C>> <= B >>
+    end.

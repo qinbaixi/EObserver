@@ -98,7 +98,7 @@ jobs:
             os: ubuntu-24.04
             electron: --linux AppImage tar.gz --x64
           - name: macos-arm64
-            os: macos-14
+            os: macos-15
             electron: --mac dmg zip --arm64
           - name: windows-x64
             os: windows-2022

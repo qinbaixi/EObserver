@@ -8,8 +8,12 @@
 -module(eobs_nodes).
 -behaviour(gen_server).
 
--export([start_link/0, connect/2, connect/3, disconnect/1, list/0, lookup/1, file/0]).
+-export([start_link/0, connect/2, connect/3, disconnect/1, list/0, lookup/1,
+         is_observed/1, update_info/2, file/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
+
+-define(REG, eobs_nodes_reg).
+-define(MAX_NODES, 100).
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
@@ -24,23 +28,62 @@ connect(Node, Cookie) ->
 %% forget to observe for this run only.
 -spec connect(node(), atom() | undefined, {cookie_id, binary()} | default | forget) ->
           {ok, pid()} | {error, term()}.
+connect(Node, _Cookie, _Remember) when Node =:= nonode@nohost ->
+    {error, cannot_observe_self};
 connect(Node, Cookie, Remember) when is_atom(Node) ->
-    gen_server:call(?MODULE, {connect, Node, Cookie, Remember}).
+    case Node =:= node() of
+        true -> {error, cannot_observe_self};
+        false -> gen_server:call(?MODULE, {connect, Node, Cookie, Remember})
+    end.
 
+%% Detaches Node from the registry first (never blocking eobs_nodes), then
+%% stops the eobs_node process in the caller with a bounded timeout.
 disconnect(Node) ->
-    gen_server:call(?MODULE, {disconnect, Node}).
+    case gen_server:call(?MODULE, {detach, Node}) of
+        {ok, Pid} ->
+            try eobs_node:stop(Pid)
+            catch exit:_ -> exit(Pid, kill)
+            end,
+            ok;
+        Error ->
+            Error
+    end.
 
-%% Returns the current state of every observed node.
+%% Returns the current state of every observed node without blocking on
+%% individual eobs_node gen_servers.
 list() ->
-    Pids = gen_server:call(?MODULE, pids),
-    [Info || Pid <- Pids, {ok, Info} <- [safe_info(Pid)]].
+    case ets:whereis(?REG) of
+        undefined -> [];
+        _ -> [Info || {_Node, _Pid, Info} <- ets:tab2list(?REG)]
+    end.
 
 lookup(Node) ->
-    gen_server:call(?MODULE, {lookup, Node}).
+    case ets:whereis(?REG) of
+        undefined -> {error, not_found};
+        _ ->
+            case ets:lookup(?REG, Node) of
+                [{_, Pid, _}] -> {ok, Pid};
+                [] -> {error, not_found}
+            end
+    end.
 
-safe_info(Pid) ->
-    try {ok, eobs_node:info(Pid)}
-    catch exit:_ -> error
+%% Lock-free O(1) check used by eobs_api, eobs_download and eobs_node:call/4
+%% to guarantee the agent is never invoked on EObserver's own VM or on an
+%% unobserved node.
+-spec is_observed(node()) -> boolean().
+is_observed(Node) when is_atom(Node), Node =/= nonode@nohost ->
+    Node =/= node()
+        andalso ets:whereis(?REG) =/= undefined
+        andalso ets:member(?REG, Node);
+is_observed(_) ->
+    false.
+
+update_info(Node, Info) ->
+    case ets:whereis(?REG) of
+        undefined -> ok;
+        _ ->
+            _ = ets:update_element(?REG, Node, {3, Info}),
+            ok
     end.
 
 %% gen_server
@@ -48,45 +91,55 @@ safe_info(Pid) ->
 file() ->
     filename:join(filename:dirname(eobs_cookies:file()), "nodes.eterm").
 
-%% State: #{nodes => #{node() => pid()}, saved => #{node() => Remember}}.
+%% State: #{nodes => #{node() => {pid(), reference()}}, saved => #{node() => Remember}}.
 init([]) ->
+    ets:new(?REG, [named_table, public, set, {read_concurrency, true}]),
+    %% Clean up any orphaned eobs_node children left behind by a prior restart.
+    case whereis(eobs_node_sup) of
+        undefined -> ok;
+        _ -> [supervisor:terminate_child(eobs_node_sup, P)
+              || {_, P, _, _} <- supervisor:which_children(eobs_node_sup), is_pid(P)]
+    end,
     self() ! restore,
     {ok, #{nodes => #{}, saved => read()}}.
 
 handle_call({connect, Node, Cookie, Remember}, _From, #{nodes := Nodes} = State) ->
-    State1 = case {Nodes, Cookie} of
-                 %% A retry without a cookie keeps the cookie (and the saved
-                 %% entry) the node was added with.
-                 {#{Node := _}, undefined} -> State;
-                 _ -> remember(Node, Remember, State)
-             end,
     case Nodes of
-        #{Node := Pid} ->
+        #{Node := {Pid, _MonRef}} ->
+            State1 = case Cookie of
+                         undefined -> State;
+                         _ -> remember(Node, Remember, State)
+                     end,
             eobs_node:reconnect(Pid, Cookie),
             {reply, {ok, Pid}, State1};
+        _ when map_size(Nodes) >= ?MAX_NODES ->
+            {reply, {error, too_many_nodes}, State};
         _ ->
             case start(Node, Cookie) of
-                {ok, Pid} -> {reply, {ok, Pid}, State1#{nodes := Nodes#{Node => Pid}}};
-                {error, _} = Error -> {reply, Error, State}
+                {ok, Pid, MonRef} ->
+                    State1 = remember(Node, Remember, State),
+                    {reply, {ok, Pid}, State1#{nodes := Nodes#{Node => {Pid, MonRef}}}};
+                {error, _} = Error ->
+                    {reply, Error, State}
             end
     end;
-handle_call({disconnect, Node}, _From, #{nodes := Nodes, saved := Saved} = State) ->
+handle_call({detach, Node}, _From, #{nodes := Nodes, saved := Saved} = State) ->
     State1 = case maps:is_key(Node, Saved) of
                  true -> save(State#{saved := maps:remove(Node, Saved)});
                  false -> State
              end,
     case maps:take(Node, Nodes) of
-        {Pid, Rest} ->
-            eobs_node:stop(Pid),
-            {reply, ok, State1#{nodes := Rest}};
+        {{Pid, MonRef}, Rest} ->
+            erlang:demonitor(MonRef, [flush]),
+            ets:delete(?REG, Node),
+            eobs_events:publish(node_removed, #{node => Node}),
+            {reply, {ok, Pid}, State1#{nodes := Rest}};
         error ->
             {reply, {error, not_found}, State1}
     end;
-handle_call(pids, _From, #{nodes := Nodes} = State) ->
-    {reply, maps:values(Nodes), State};
 handle_call({lookup, Node}, _From, #{nodes := Nodes} = State) ->
     case Nodes of
-        #{Node := Pid} -> {reply, {ok, Pid}, State};
+        #{Node := {Pid, _}} -> {reply, {ok, Pid}, State};
         _ -> {reply, {error, not_found}, State}
     end.
 
@@ -102,8 +155,9 @@ handle_info(restore, #{nodes := Nodes, saved := Saved} = State) ->
                         end, Nodes, Saved),
     {noreply, State#{nodes := Started}};
 handle_info({'DOWN', _, process, Pid, _}, #{nodes := Nodes} = State) ->
-    case [N || {N, P} <- maps:to_list(Nodes), P =:= Pid] of
+    case [N || {N, {P, _}} <- maps:to_list(Nodes), P =:= Pid] of
         [Node] ->
+            ets:delete(?REG, Node),
             eobs_events:publish(node_removed, #{node => Node}),
             {noreply, State#{nodes := maps:remove(Node, Nodes)}};
         [] ->
@@ -117,8 +171,11 @@ handle_info(_Msg, State) ->
 start(Node, Cookie) ->
     case eobs_node_sup:start_child(Node, Cookie) of
         {ok, Pid} ->
-            monitor(process, Pid),
-            {ok, Pid};
+            MonRef = monitor(process, Pid),
+            InitInfo = #{node => Node, status => connecting, error => null,
+                         summary => undefined, agent => undefined},
+            ets:insert(?REG, {Node, Pid, InitInfo}),
+            {ok, Pid, MonRef};
         Error ->
             Error
     end.
@@ -134,7 +191,7 @@ restore(Node, Remember, Nodes) ->
                      undefined
              end,
     case start(Node, Cookie) of
-        {ok, Pid} -> Nodes#{Node => Pid};
+        {ok, Pid, MonRef} -> Nodes#{Node => {Pid, MonRef}};
         {error, _} -> Nodes
     end.
 

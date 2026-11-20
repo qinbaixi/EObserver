@@ -31,6 +31,9 @@ check() ->
          end || {Sort, Order} <- [{reds, desc}, {memory, desc}, {name, asc}, {message_queue_len, desc}]],
     #{rows := _} = eobs_agent:process_list(node(), Session, #{sort => reds, order => desc,
                                                               filter => <<"code">>, offset => 0, limit => 20}),
+    %% Regression: offset=0, limit=0 must not crash top_k/3 on empty gb_trees.
+    #{rows := []} = eobs_agent:process_list(node(), Session, #{sort => reds, order => desc,
+                                                               filter => <<>>, offset => 0, limit => 0}),
     {ok, #{pid := Self}} = eobs_agent:process_detail(Self),
     {ok, _} = eobs_agent:process_state(list_to_binary(pid_to_list(whereis(application_controller))), 5000),
     Victim = spawn(timer, sleep, [infinity]),
@@ -50,12 +53,16 @@ check() ->
     end,
     T = ets:new(smoke, [public]),
     ets:insert(T, [{K, K * 2} || K <- lists:seq(1, 100)]),
+    %% Large binary must format cleanly within chars_limit without OOM.
+    ets:insert(T, {big_bin, binary:copy(<<$x>>, 2000000)}),
     Tabs = eobs_agent:ets_list(),
     [#{id := Id}] = [X || X = #{name := smoke} <- Tabs],
-    {ok, #{total := 100, rows := Rows}} = eobs_agent:ets_rows(Id, #{offset => 10, limit => 20}),
+    {ok, #{total := 101, rows := Rows}} = eobs_agent:ets_rows(Id, #{offset => 10, limit => 20}),
     20 = length(Rows),
     {ok, #{total := 1, keys := [Key]}} = eobs_agent:ets_rows(Id, #{search => <<"{42,84}">>}),
     {ok, [#{text := <<"{42,84}">>, ref := Ref, editable := true}]} = eobs_agent:table_object(ets, Id, Key),
+    {ok, #{total := 1, keys := [BigKey]}} = eobs_agent:ets_rows(Id, #{search => <<"big_bin">>}),
+    {ok, [#{editable := false}]} = eobs_agent:table_object(ets, Id, BigKey),
     ok = eobs_agent:table_write(ets, Id, {42, changed}, Ref),
     [{42, changed}] = ets:lookup(T, 42),
     {ok, [#{ref := Ref2}]} = eobs_agent:table_object(ets, Id, Key),
@@ -123,6 +130,8 @@ check() ->
     false = lists:member(eobs_agent_logs, logger:get_handler_ids()),
     lager_smoke(),
     logfile_smoke(),
+    ok = eobs_agent:prepare_unload(),
+    undefined = whereis(eobs_agent_srv),
     ok.
 
 %% A logger file handler's file can be listed, read, searched and nothing

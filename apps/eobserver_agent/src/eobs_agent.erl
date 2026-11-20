@@ -1769,10 +1769,10 @@ call_stats(Pid, Dir, Msg, Ts, Event, St) ->
             Tab = maps:get(stats, St2),
             ets:update_counter(Tab, Key, [{?S_CALLS, 1}, {?S_PENDING, 1}]),
             #{pending := Pending} = St3 = make_room(St2),
-            case Pending of
-                #{{Pid, Ref} := {PrevKey, _, _, _, _, _}} ->
+            case maps:find({Pid, Ref}, Pending) of
+                {ok, {PrevKey, _, _, _, _, _}} ->
                     ets:update_counter(Tab, PrevKey, [{?S_PENDING, -1}, {?S_UNANSWERED, 1}]);
-                _ ->
+                error ->
                     ok
             end,
             Peer = case Event of
